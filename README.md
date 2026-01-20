@@ -1,13 +1,12 @@
 # Garden-of-Inheritance
 <img width="158" height="265" alt="mendel" src="https://github.com/user-attachments/assets/a24fc04f-9603-46cc-8878-a7a7f7b54a32" />
 
-Mendel's pea garden simulator:
+## Getting Started
 
-Run Garden-of-Inheritance.py to start the simulator.
+To launch the simulator, run: **Garden-of-Inheritance.py**
 
-Press H at any time to open the Help menu.
-
-For a quick introduction, see Guide.pdf.
+- Press **H** at any time to open the in-game Help menu.
+- For a quick introduction and gameplay overview, see [**Guide.pdf**](https://github.com/jgirstmair/Garden-of-Inheritance/edit/main/README.md#:~:text=Guide.pdf).
 
 ## License
 
