@@ -4,3 +4,7 @@
 Mendel's pea garden simulator
 
 Run Garden-of-Inheritance.py to start the simulator.
+
+## License
+
+This project is licensed under the BSD 3-Clause License – see the LICENSE file for details.
