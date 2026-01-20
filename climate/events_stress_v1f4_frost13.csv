@@ -1,0 +1,30 @@
+date,plant_id,type,message,delta,stage,gdd,senescent,dead,stress_index,stress_streak
+1866-04-07,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,22.5,False,False,0.00,0
+1866-04-08,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,30.6,False,False,0.00,0
+1866-04-09,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,38.8,False,False,0.00,0
+1866-04-10,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,47.0,False,False,0.00,0
+1866-04-11,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,55.2,False,False,0.00,0
+1866-04-12,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,63.9,False,False,0.00,0
+1866-04-13,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,72.5,False,False,0.00,0
+1866-04-14,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,81.3,False,False,0.00,0
+1866-04-15,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,90.2,False,False,0.00,0
+1866-04-16,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,99.4,False,False,0.00,0
+1866-04-17,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,108.9,False,False,0.00,0
+1866-04-18,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,118.7,False,False,0.00,0
+1866-04-19,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,128.7,False,False,0.00,0
+1866-04-20,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,138.7,False,False,0.00,0
+1866-04-21,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,148.7,False,False,0.00,0
+1866-04-22,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,159.1,False,False,0.00,0
+1866-04-23,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,169.7,False,False,0.00,0
+1866-04-24,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,180.3,False,False,0.00,0
+1866-04-25,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,191.2,False,False,0.00,0
+1866-04-26,P_spring,recovery,Favorable conditions – plant recovering,0,vegetative,202.3,False,False,0.00,0
+1866-05-16,P_spring,stage,Flowering started,,flowering,422.6,False,False,0.00,0
+1866-06-06,P_spring,stage,Podding started,,podding,688.2,False,False,0.00,0
+1866-06-20,P_spring,wither,Natural lifespan exceeded (76d > 75d),-9999,podding,843.6,False,True,0.00,0
+1866-12-01,P_autumn,stress,Frost damage,-9,vegetative,395.8,False,False,1.30,1
+1866-12-02,P_autumn,stress,Frost damage,-9,vegetative,395.8,False,False,2.47,1
+1866-12-03,P_autumn,stress,Frost damage,-11,vegetative,395.8,False,False,3.52,1
+1866-12-03,P_autumn,chronic_stress,Chronic stress weakening the plant,-2,vegetative,395.8,False,False,3.52,1
+1866-12-04,P_autumn,stress,Frost damage,-6,vegetative,395.8,False,True,4.47,1
+1866-12-04,P_autumn,wither,Plant succumbed to accumulated stress,-9999,vegetative,395.8,False,True,4.47,1
