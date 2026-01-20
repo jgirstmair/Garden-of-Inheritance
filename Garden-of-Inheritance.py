@@ -1,3 +1,15 @@
+"""
+Garden of Inheritance - Pea Garden Genetics Simulator
+
+Main application file for the Mendel's Pea Garden simulation.
+Provides a visual interface for exploring Mendelian genetics through
+plant breeding experiments.
+
+Version: v69
+Author: Based on Gregor Mendel's pea experiments
+"""
+
+
 ### --- Standard Library (Built-ins) --- ###
 import csv
 import json
@@ -10,7 +22,6 @@ import time
 import datetime as dt
 import math
 from collections import defaultdict
-import datetime as dt
 from pathlib import Path
 from typing import List, Set
 
@@ -379,6 +390,10 @@ class GardenApp:
     def _darken(c, amount):
         return GardenApp._mix(c, "#000000", amount)
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_inspect_unified(self):
         idx = getattr(self, "selected_index", None)
         plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
@@ -638,6 +653,9 @@ class GardenApp:
         except Exception:
             pass
 
+# ============================================================================
+# Initialization
+# ============================================================================
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Garden of Inheritance")
@@ -775,6 +793,10 @@ class GardenApp:
         except Exception:
 
             pass
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_remove_all_plants(self):
         try:
             self._ga_snapshot_all_live_plants()
@@ -835,6 +857,10 @@ class GardenApp:
         except Exception:
             return 0.0
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_emasculate_selected(self):
         idx = self.selected_index
         plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
@@ -872,6 +898,10 @@ class GardenApp:
         val = tk.StringVar(value=f"{current_len:.2f}")
 
         # Slider callback: update label + val so Apply sees slider changes
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
         def _on_slide(v):
             try:
                 secs = max(0.1, float(v))          # allow 0.1 s/hour
@@ -1220,6 +1250,10 @@ class GardenApp:
 
         self.render_all()
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_grid_wizard(self):
         """Allow user to reopen the garden size wizard from the menu."""
         try:
@@ -1425,6 +1459,10 @@ class GardenApp:
                     seen.add(nb); q.append(nb); region.append(nb)
         return region
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_plant_area_from_group(self, kind, match_fn):
         idx = self.selected_index
         if idx is None:
@@ -1461,6 +1499,10 @@ class GardenApp:
             self._toast("Select an empty tile to plant.", level="warn"); return
         self._plant_one_from_group(idx, kind, match_fn)
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_plant_seed_quick(self):
         """Open grouped seed chooser for the currently selected tile (empty or dead → empty)."""
         if len(self.selected_tiles) == 0:
@@ -2009,6 +2051,10 @@ class GardenApp:
         except Exception:
             pass
 
+
+# ============================================================================
+# Rendering Methods
+# ============================================================================
     def render_all(self):
         try:
             self._update_header()
@@ -2287,6 +2333,10 @@ class GardenApp:
 
      # ---------- Pollen helpers ----------
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_pollinate(self):
         """Open Summary focused on Pollen tab so user can pick a pollen packet to use."""
         try:
@@ -2522,6 +2572,10 @@ class GardenApp:
 
         self.open_history_archive_browser(self.root, default_pid=pid)
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_genetics(self):
         idx = self.selected_index
         plant = self.tiles[idx].plant if (idx is not None) else None
@@ -3200,6 +3254,10 @@ class GardenApp:
         self._drag_start_y = None
         self._dragging_select = False
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_tile_left_press(self, event, index: int):
         """Start of a left-click: may become a drag-selection or a Shift-click multi-select."""
 
@@ -3320,6 +3378,10 @@ class GardenApp:
         self.render_all()
 
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_tile_left_release(self, event, index: int):
         """Finish click / drag. If it was just a click, behave like old _on_tile_click."""
         dragging = bool(self._dragging_select)
@@ -3526,6 +3588,10 @@ class GardenApp:
             menu.grab_release()
 
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_next_phase(self):
         self.garden.next_phase()
         # Traits rarely change every phase; keep cache so we don't rebuild unless needed.
@@ -3560,6 +3626,10 @@ class GardenApp:
             return [idx]
         return []
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_remove_selected(self):
         indices = self._selected_indices()
         if not indices:
@@ -3611,6 +3681,10 @@ class GardenApp:
 
 
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_water_selected(self):
         indices = self._selected_indices()
         if not indices:
@@ -3726,6 +3800,10 @@ class GardenApp:
         except Exception:
             return 0.10
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_harvest_selected(self):
             idx = self.selected_index
             plant = self.tiles[idx].plant if (idx is not None) else None
@@ -3983,6 +4061,10 @@ class GardenApp:
             except Exception:
                 pass
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_harvest_all_selected(self):
         """Harvest all remaining pods from the selected plant, then remove it."""
         idx = self.selected_index
@@ -4235,6 +4317,10 @@ class GardenApp:
 
         return p
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_seed_selected(self, seed: dict):
         idx = self.selected_index
         plant_here = self.tiles[idx].plant if idx is not None else None
@@ -4620,6 +4706,10 @@ class GardenApp:
         except Exception:
             pass
 
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
     def _on_fast_forward(self):
         # Dialog: ask for days + daily render option
         dlg = FFDialog(self.root, title="Fast Forward")
@@ -4821,6 +4911,10 @@ class GardenApp:
         canvas.create_window((0, 0), window=inner, anchor="nw")
 
         # --- Update scrollregion whenever size changes ---
+
+# ============================================================================
+# Event Handlers
+# ============================================================================
         def _on_configure(event):
             canvas.configure(scrollregion=canvas.bbox("all"))
 

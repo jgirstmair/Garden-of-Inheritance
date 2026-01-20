@@ -88,8 +88,7 @@ def stage_icon_path_for_plant(plant) -> str:
     if plant is not None and not getattr(plant, "alive", True):
         path = os.path.join(ICONS_DIR, "dead.png")
         path_hires = path.replace(".png", "_64x64.png")
-        result = path_hires if os.path.exists(path_hires) else path
-        return result
+        return path_hires if os.path.exists(path_hires) else path
 
     # Empty plot
     if plant is None:
@@ -98,7 +97,7 @@ def stage_icon_path_for_plant(plant) -> str:
         return path_hires if os.path.exists(path_hires) else path
 
     stage = getattr(plant, "stage", 0)
-    
+
     # Stage 3: Split into early/late leafy without creating new stage
     if stage == 3:
         try:
@@ -207,6 +206,39 @@ def stage_icon_path_for_plant(plant) -> str:
             for path in candidates:
                 if os.path.exists(path):
                     return path
+
+    # Stage 7: Mature seeds (show seed traits)
+    if stage == 7:
+        try:
+            traits = getattr(plant, "traits", {}) or {}
+            seed_shape = traits.get("seed_shape")
+            seed_color = traits.get("seed_color")
+            
+            # Try seed-specific composite icon first
+            if seed_shape and seed_color:
+                candidates = [
+                    os.path.join(ICONS_DIR, f"seeds_{seed_color}_{seed_shape}_64x64.png"),
+                    os.path.join(ICONS_DIR, f"seeds_{seed_color}_{seed_shape}.png"),
+                    os.path.join(ICONS_DIR, f"seed_{seed_color}_{seed_shape}_64x64.png"),
+                    os.path.join(ICONS_DIR, f"seed_{seed_color}_{seed_shape}.png"),
+                ]
+                for path in candidates:
+                    if os.path.exists(path):
+                        return path
+            
+            # Fallback to just seed color
+            if seed_color:
+                candidates = [
+                    os.path.join(ICONS_DIR, f"seeds_{seed_color}_64x64.png"),
+                    os.path.join(ICONS_DIR, f"seeds_{seed_color}.png"),
+                    os.path.join(ICONS_DIR, f"seed_{seed_color}_64x64.png"),
+                    os.path.join(ICONS_DIR, f"seed_{seed_color}.png"),
+                ]
+                for path in candidates:
+                    if os.path.exists(path):
+                        return path
+        except Exception:
+            pass
 
     # Default stage icon
     path = stage_icon_path(stage)
