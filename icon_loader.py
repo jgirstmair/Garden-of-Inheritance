@@ -98,7 +98,11 @@ def stage_icon_path_for_plant(plant) -> str:
         return path_hires if os.path.exists(path_hires) else path
 
     stage = getattr(plant, "stage", 0)
-    
+
+    # NOTE:
+    # Stage 6–7 icon logic is handled later and depends ONLY on pods_remaining.
+    # Do NOT add emasculation-based overrides here.
+
     # Stage 3: Split into early/late leafy without creating new stage
     if stage == 3:
         try:
@@ -194,34 +198,28 @@ def stage_icon_path_for_plant(plant) -> str:
         except Exception:
             pass
 
-    # Stage 6-7: Mature pods (both stages show pod icons)
-    # Exception: Emasculated plants remain showing flowering stage (no pods develop)
-    if stage >= 6 and stage <= 7:
-        # Check if plant was emasculated - if so, show flowering icon instead
-        is_emasculated = getattr(plant, "emasculated", False)
-        
-        if is_emasculated:
-            # Emasculated plants show flowering stage icon even in pod stages
+    # Stage 6–7: Pod development depends ONLY on pods_remaining
+    if 6 <= stage <= 7:
+        pods_remaining = int(getattr(plant, "pods_remaining", 0) or 0)
+
+        if pods_remaining > 0:
+            # Show pod icons
             if flower_position and flower_color:
-                try:
-                    path = flower_icon_path_hi(flower_position, flower_color)
-                    if path:
-                        return path
-                except Exception:
-                    pass
-        elif flower_position and flower_color:
-            # Normal plants show pods
-            pod_color = get_trait("pod_color")
-            if pod_color:
-                # Try _64x64.png first (grid version), then regular .png
-                filename_base = f"{flower_position}_{flower_color}-flowers_{pod_color}-pods"
-                candidates = [
-                    os.path.join(ICONS_DIR, f"{filename_base}_64x64.png"),
-                    os.path.join(ICONS_DIR, f"{filename_base}.png"),
-                ]
-                for path in candidates:
-                    if os.path.exists(path):
-                        return path
+                pod_color = get_trait("pod_color")
+                if pod_color:
+                    filename_base = f"{flower_position}_{flower_color}-flowers_{pod_color}-pods"
+                    for path in [
+                        os.path.join(ICONS_DIR, f"{filename_base}_64x64.png"),
+                        os.path.join(ICONS_DIR, f"{filename_base}.png"),
+                    ]:
+                        if os.path.exists(path):
+                            return path
+        else:
+            # No pods → stay flowering
+            if flower_position and flower_color:
+                path = flower_icon_path_hi(flower_position, flower_color)
+                if path:
+                    return path
 
     # Default stage icon
     path = stage_icon_path(stage)

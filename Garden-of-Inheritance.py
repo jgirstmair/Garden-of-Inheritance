@@ -641,6 +641,13 @@ class GardenApp:
 
         today = self._today()
 
+        # Emasculated flowers have no anthers -> never show pollen availability
+        if bool(getattr(plant, "emasculated", False)):
+            plant.last_anther_check_day = today
+            plant.anthers_available_today = False
+            plant.anthers_collected_day = None
+            return False
+
         # Only roll once per day
         if getattr(plant, "last_anther_check_day", None) != today:
             plant.last_anther_check_day = today
@@ -994,10 +1001,15 @@ class GardenApp:
         plant.emasculated = True
         plant.emasc_day = int(getattr(self.garden, "day", 0))
         plant.emasc_phase = getattr(self.garden, "phase", "morning")
+
+        # Emasculation removes anthers -> clear any pollen/anther state immediately
+        plant.anthers_available_today = False
+        plant.last_anther_check_day = None
+        plant.anthers_collected_day = None
+
         self._toast(f"Emasculated - selfing ~{int(100*plant.selfing_frac_before_emasc)}%")
         self.render_all()
 
-    
     def _open_speed_dialog(self):
         """Popup to adjust simulation speed: seconds of real time per simulated HOUR."""
         win = Toplevel(self.root)
@@ -1446,30 +1458,54 @@ class GardenApp:
         # Redraw so borders use the new color
         self.render_all()
 
-
     def _get_seed_groups(self):
         groups = []
+
+        # Starter seeds
         starters = int(getattr(self, "available_seeds", 0) or 0)
-        groups.append(('S', None, None, starters, f"Starter seeds (F0) — x{starters}", lambda s: False))
+        groups.append(
+            ('S', None, None, starters,
+             f"Starter seeds (F0) — x{starters}",
+             lambda s: False)
+        )
+
+        # Group harvested seeds by mother plant
         gmap = defaultdict(list)
         for s in self.harvest_inventory:
-            k = ('X' if s.get('donor_id') else 'H', s.get('source_id'), s.get('donor_id'))
+            k = ('M', s.get('source_id'))
             gmap[k].append(s)
-        for (kind, src, donor), items in sorted(
+
+        # Build UI groups
+        for (kind, src), items in sorted(
             gmap.items(),
-            key=lambda kv: (kv[0][0], kv[0][1] or 0, kv[0][2] or 0)
+            key=lambda kv: kv[0][1] or 0
         ):
             count = len(items)
-            if kind == 'X':
+
+            # --- label (genetic-style, keep seed count) ---
+            selfed_seeds = [s for s in items if not s.get("donor_id")]
+            crossed_seeds = [s for s in items if s.get("donor_id")]
+
+            if crossed_seeds and not selfed_seeds:
+                donor = crossed_seeds[0].get("donor_id")
                 label = f"♀#{src} × ♂#{donor} — x{count}"
+
+            elif selfed_seeds and not crossed_seeds:
+                label = f"♀#{src} (selfed) — x{count}"
+
+            elif crossed_seeds and selfed_seeds:
+                donor = crossed_seeds[0].get("donor_id")
+                label = f"♀#{src} × ♂#{donor} (?) — x{count}"
+
             else:
-                label = f"Seed #{src} — x{count}"
-            def make_match_fn(_kind=kind, _src=src, _donor=donor):
-                return lambda s: (
-                    (_kind == 'X' and s.get('donor_id') == _donor and s.get('source_id') == _src) or
-                    (_kind == 'H' and (not s.get('donor_id')) and s.get('source_id') == _src)
-                )
-            groups.append((kind, src, donor, count, label, make_match_fn()))
+                label = f"Seeds from ♀#{src} — x{count}"
+
+            # --- match function: all seeds from this mother ---
+            def make_match_fn(_src=src):
+                return lambda s: s.get("source_id") == _src
+
+            groups.append(('M', src, None, count, label, make_match_fn()))
+
         return groups
 
     def _plant_one_from_group(self, index, kind, match_fn):
@@ -2481,23 +2517,64 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_pollinate(self):
-        """Open Summary focused on Pollen tab so user can pick a pollen packet to use."""
-        try:
-            # IMPORTANT: pass self.inventory (contains pollen), not self.harvest_inventory (seeds list)
-            pop = InventoryPopup(self.root, self.garden, self.inventory, self._on_seed_selected, app=self)
+        """
+        If exactly one viable pollen source exists today, auto-apply it.
+        Otherwise open Summary focused on Pollen tab so user can pick.
+        """
+        # Must have a valid recipient selected
+        idx = getattr(self, "selected_index", None)
+        plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
+        if not plant or not getattr(plant, "alive", False):
+            self._toast("Select a living recipient plant first.")
+            return
 
+        today = self._today()
+
+        # Gather viable pollen packets (same-day only)
+        try:
+            packets = self.inventory.get_all("pollen") if hasattr(self.inventory, "get_all") else []
+        except Exception:
+            packets = []
+
+        def get_expires_day(pkt):
+            try:
+                if isinstance(pkt, dict):
+                    return int(pkt.get("expires_day", -999999))
+                return int(getattr(pkt, "expires_day", -999999))
+            except Exception:
+                return -999999
+
+        viable = [p for p in packets if get_expires_day(p) == today]
+
+        # Group by source_id
+        groups = defaultdict(list)
+        for p in viable:
+            try:
+                sid = int(p.get("source_id")) if isinstance(p, dict) else int(getattr(p, "source_id", 0) or 0)
+            except Exception:
+                sid = 0
+            groups[sid].append(p)
+
+        # Auto-apply if exactly one pollen source is available
+        if len(groups) == 1 and len(viable) > 0:
+            only_sid = next(iter(groups.keys()))
+            pkt = groups[only_sid][0]
+            self._apply_pollen(pkt)
+            return
+
+        # Otherwise open the chooser (current behavior)
+        try:
+            pop = InventoryPopup(self.root, self.garden, self.inventory, self._on_seed_selected, app=self)
             try:
                 self.summary_popup = pop
             except Exception:
                 pass
 
-            # Select Pollen tab
             try:
                 pop.nb.select(pop.pollen_frame)
             except Exception:
                 pass
 
-            # Bring to front
             try:
                 pop.lift()
                 pop.focus_force()
@@ -2588,59 +2665,30 @@ class GardenApp:
     def _apply_pollen(self, packet):
         """Apply selected pollen to the currently selected plant."""
 
-        # Keep original object so we can consume it later
-        packet_obj = packet
-
-        # --- normalize packet (Pollen object → dict-like) ---
         if packet is None:
             self._toast("No pollen selected.")
             return
 
+        packet_obj = packet  # keep original for inventory removal
+
+        # --- normalize packet (Pollen object → dict-like) ---
         if not isinstance(packet, dict):
             src = getattr(packet, "source_plant", None)
             packet = {
-                "id": getattr(packet, "id", None),  # keep an id too (handy for fallback removal)
+                "id": getattr(packet, "id", None),
                 "source_id": getattr(src, "id", "?") if src else "?",
                 "genotype": dict(getattr(src, "genotype", {})) if src and getattr(src, "genotype", None) else None,
                 "traits": dict(getattr(src, "traits", {})) if src else {},
                 "expires_day": getattr(packet, "expires_day", self._today()),
             }
         else:
-            # If it already came in dict-form, still keep id if present
             packet.setdefault("id", None)
-
-        # --- consume the pollen packet (single-use) ---
-        consumed = False
-        try:
-            # Preferred: inventory has a remove() API
-            if hasattr(self.inventory, "remove"):
-                self.inventory.remove(packet_obj)
-                consumed = True
-        except Exception:
-            consumed = False
-
-        if not consumed:
-            # Fallback: remove by id from an internal list if available
-            pid = packet.get("id", None)
-            try:
-                if pid is not None and hasattr(self.inventory, "items"):
-                    self.inventory.items = [x for x in self.inventory.items if getattr(x, "id", None) != pid]
-                    consumed = True
-            except Exception:
-                pass
-
-        # Refresh Summary popup if open so the pollen disappears immediately
-        try:
-            if getattr(self, "summary_popup", None) is not None and self.summary_popup.winfo_exists():
-                self.summary_popup.refresh_current_tab()
-        except Exception:
-            pass
 
         # --- recipient plant ---
         idx = getattr(self, "selected_index", None)
-        plant = self.tiles[idx].plant if idx is not None else None
+        plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
 
-        if not plant or not getattr(plant, "alive", False):
+        if not plant or not getattr(plant, "alive", True):
             self._toast("Select a living recipient plant first.")
             return
 
@@ -2648,12 +2696,17 @@ class GardenApp:
             self._toast("Recipient must be flowering (Stage 5).")
             return
 
-        if self.garden.phase not in ("morning", "noon"):
+        if getattr(self.garden, "phase", None) not in ("morning", "noon"):
             self._toast("Apply pollen in morning or noon.")
             return
 
+        # --- viability check BEFORE consuming ---
         today = self._today()
-        if int(packet.get("expires_day", -1)) != int(today):
+        try:
+            if int(packet.get("expires_day", -1)) != int(today):
+                self._toast("This pollen is no longer viable.")
+                return
+        except Exception:
             self._toast("This pollen is no longer viable.")
             return
 
@@ -2666,24 +2719,40 @@ class GardenApp:
         if not donor_geno:
             donor_geno = infer_genotype_from_traits(packet.get("traits", {}), random)
 
-        pollen_gam = random_gamete(donor_geno, random)
+        # pollen_gam = random_gamete(donor_geno, random)  # delete if unused, or store it
 
-        # --- record pending cross (seed created at harvest) ---
+        # --- record pending cross ---
         pc = getattr(plant, "pending_cross", {}) or {}
         donors = pc.setdefault("donors", [])
         donors.append({
             "donor_id": packet.get("source_id", "?"),
             "donor_genotype": dict(donor_geno),
-            "day": self.garden.day,
+            "day": getattr(self.garden, "day", None),
         })
-
         plant.pending_cross = pc
         plant.pollinated = True
-        # --- consume pollen (single-use) ---
+
+        # Pods for emasculated plants only after successful pollination
+        if getattr(plant, "emasculated", False) and int(getattr(plant, "pods_remaining", 0) or 0) <= 0:
+            plant.pods_remaining = int(getattr(plant, "pods_total", 0) or 0)
+            plant.ovules_left = int(getattr(plant, "ovules_per_pod", 0) or 0)
+
+        # --- NOW consume pollen (single-use) ---
+        consumed = False
         try:
-            self.inventory.remove(packet_obj)
+            if hasattr(self.inventory, "remove"):
+                self.inventory.remove(packet_obj)
+                consumed = True
         except Exception:
-            pass
+            consumed = False
+
+        if not consumed:
+            pid = packet.get("id", None)
+            try:
+                if pid is not None and hasattr(self.inventory, "items"):
+                    self.inventory.items = [x for x in self.inventory.items if getattr(x, "id", None) != pid]
+            except Exception:
+                pass
 
         # Refresh summary popup if open
         try:
@@ -3635,7 +3704,7 @@ class GardenApp:
 
             # ▼ define and fill the submenu *before* using it
             area_menu = tk.Menu(menu, tearoff=False)
-            for kind, src, donor, count, label, match_fn in self._get_seed_groups():
+            for kind, src, donor, count, label, match_fn in (self._get_seed_groups() or []):
                 area_menu.add_command(
                     label=label,
                     state=("normal" if count else "disabled"),

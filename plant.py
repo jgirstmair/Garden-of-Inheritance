@@ -141,8 +141,11 @@ class Plant:
                 # Mendel-era average ~10 pods per plant (±2), clamped 5-20
                 self.pods_total = max(5, min(20, int(round(random.gauss(10, 2)))))
             
-            if not getattr(self, "pods_remaining", 0):
+            # Pods exist by default ONLY for non-emasculated plants (selfing possible)
+            if not self.emasculated:
                 self.pods_remaining = int(self.pods_total)
+            else:
+                self.pods_remaining = 0
             
             if not getattr(self, "ovules_per_pod", 0):
                 # Typical peas ~7±2 ovules per flower (clamped 5-12)
@@ -167,16 +170,20 @@ class Plant:
     def advance_growth(self):
         """
         Advance plant growth stage based on age and health.
-        
-        Handles:
-        - Germination delay for seeds
-        - Health-based growth speed modifications
-        - Stage transitions
-        - Trait revelation at appropriate stages
         """
         if not self.alive or self.stage >= 7:
             return
-        
+
+        # ------------------------------------------------------------
+        # Safety invariant:
+        # Emasculated plants without pollination must not have pods
+        # ------------------------------------------------------------
+        if self.emasculated and not self.pollinated:
+            self.pods_remaining = 0
+        elif self.pollinated and self.pods_remaining <= 0:
+            # Pollination restores pod development
+            self.pods_remaining = int(self.pods_total)
+
         # Base thresholds for each stage (in days)
         base_thresholds = [0, 0, 4, 8, 13, 18, 25, 30]
         
