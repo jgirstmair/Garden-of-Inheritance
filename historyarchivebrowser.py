@@ -1,3 +1,62 @@
+"""
+History Archive Browser Module
+
+Provides the Trait Inheritance Explorer interface for browsing plant breeding
+history, visualizing family trees, and detecting Mendelian laws.
+
+Features:
+- Plant archive browsing and visualization
+- Family tree rendering with trait inheritance  
+- Mendelian law detection (Dominance, Segregation, Independent Assortment)
+- Pedigree analysis and sibling comparison
+- CSV export of breeding experiments
+- Genotype-phenotype relationship exploration
+
+The module contains:
+1. Standalone law-testing functions for integration with main app
+2. HistoryArchiveBrowser class for the visual interface
+"""
+
+# ============================================================================
+# Imports
+# ============================================================================
+
+# Standard library
+import functools
+import math
+import os
+import platform
+import re
+import traceback
+from collections import Counter
+from itertools import combinations
+
+# Third-party
+import tkinter as tk
+from tkinter import messagebox, ttk
+
+# Local
+from icon_loader import *
+
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+EXPORT_DIR = os.path.join(ROOT_DIR, "export")
+
+# Create export directory
+try:
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+except Exception:
+    pass
+
+
+# ============================================================================
+# Standalone Mendelian Law Testing Functions
+# ============================================================================
+
 
 import functools
 import math
@@ -348,8 +407,12 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
         f_a1, f_a2 = f_pair[0], f_pair[1]
         if not (m_a1 == m_a2 and f_a1 == f_a2):
             return None
-        if m_a1 == f_a1:
-            return None
+        # REMOVED: if m_a1 == f_a1: return None
+        # This check was too restrictive - it rejected selfed true-breeding lines.
+        # Mendel used selfing to establish homozygous lines, then crossed them.
+        # As long as grandparents are homozygous and parent is heterozygous,
+        # we have valid Mendelian segregation regardless of whether grandparents
+        # came from AA × aa or from selfed AA × AA lines.
 
         def _canon(pair):
             a1, a2 = pair[0], pair[1]
@@ -1977,7 +2040,10 @@ class HistoryArchiveBrowser(tk.Toplevel):
             """
             Signature for a Law 2 experiment:
             - F1 is heterozygous at 'locus'
-            - Grandparents are pure opposite homozygotes at 'locus'
+            - Grandparents are homozygous at 'locus'
+            
+            Note: Grandparents may have same or different alleles (AA×AA, aa×aa, or AA×aa).
+            Mendel established true-breeding lines via selfing before crossing them.
             """
             parent_geno = _geno_from_snap_law2(parent_snap)
             if not isinstance(parent_geno, dict):
@@ -2006,11 +2072,14 @@ class HistoryArchiveBrowser(tk.Toplevel):
             m_a1, m_a2 = m_pair[0], m_pair[1]
             f_a1, f_a2 = f_pair[0], f_pair[1]
 
-            # grandparents homozygous and opposite
+            # Grandparents must be homozygous
             if not (m_a1 == m_a2 and f_a1 == f_a2):
                 return None
-            if m_a1 == f_a1:
-                return None
+            # REMOVED: if m_a1 == f_a1: return None
+            # This check rejected selfed true-breeding lines (e.g., AA × AA).
+            # Mendel's method: self-pollinate to establish homozygous lines,
+            # then cross them. As long as parent is heterozygous and grandparents
+            # are homozygous, we have valid segregation.
 
             def _canon(pair):
                 a1, a2 = pair[0], pair[1]
@@ -3000,6 +3069,22 @@ class HistoryArchiveBrowser(tk.Toplevel):
         try:
             traits = (snap.get("traits", {}) if isinstance(snap, dict) else getattr(snap, "traits", {}) or {})
             val = str(traits.get(trait_key, "")).strip().lower()
+            
+            # If traits are completely empty, try to derive from genotype
+            if not traits or not any(traits.values()):
+                try:
+                    genotype = snap.get("genotype", {}) if isinstance(snap, dict) else getattr(snap, "genotype", {})
+                    if genotype and trait_key in ("flowers", "flower", "flower_color"):
+                        # Derive flower color from A locus
+                        a_alleles = genotype.get("A", [])
+                        if a_alleles and len(a_alleles) >= 2:
+                            # If has at least one A allele → purple (dominant)
+                            # If aa → white (recessive)
+                            has_A = any(str(a).upper() == "A" for a in a_alleles)
+                            val = "purple" if has_A else "white"
+                            traits = {"flower_color": val}  # Update traits for fallthrough
+                except Exception:
+                    pass
 
             # Flowers: if the requested trait is color (or generic "flowers"), use color-only icon
             if trait_key in ("flowers", "flower", "flower_color"):

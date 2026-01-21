@@ -195,18 +195,33 @@ def stage_icon_path_for_plant(plant) -> str:
             pass
 
     # Stage 6-7: Mature pods (both stages show pod icons)
-    if stage >= 6 and stage <= 7 and flower_position and flower_color:
-        pod_color = get_trait("pod_color")
-        if pod_color:
-            # Try _64x64.png first (grid version), then regular .png
-            filename_base = f"{flower_position}_{flower_color}-flowers_{pod_color}-pods"
-            candidates = [
-                os.path.join(ICONS_DIR, f"{filename_base}_64x64.png"),
-                os.path.join(ICONS_DIR, f"{filename_base}.png"),
-            ]
-            for path in candidates:
-                if os.path.exists(path):
-                    return path
+    # Exception: Emasculated plants remain showing flowering stage (no pods develop)
+    if stage >= 6 and stage <= 7:
+        # Check if plant was emasculated - if so, show flowering icon instead
+        is_emasculated = getattr(plant, "emasculated", False)
+        
+        if is_emasculated:
+            # Emasculated plants show flowering stage icon even in pod stages
+            if flower_position and flower_color:
+                try:
+                    path = flower_icon_path_hi(flower_position, flower_color)
+                    if path:
+                        return path
+                except Exception:
+                    pass
+        elif flower_position and flower_color:
+            # Normal plants show pods
+            pod_color = get_trait("pod_color")
+            if pod_color:
+                # Try _64x64.png first (grid version), then regular .png
+                filename_base = f"{flower_position}_{flower_color}-flowers_{pod_color}-pods"
+                candidates = [
+                    os.path.join(ICONS_DIR, f"{filename_base}_64x64.png"),
+                    os.path.join(ICONS_DIR, f"{filename_base}.png"),
+                ]
+                for path in candidates:
+                    if os.path.exists(path):
+                        return path
 
     # Default stage icon
     path = stage_icon_path(stage)

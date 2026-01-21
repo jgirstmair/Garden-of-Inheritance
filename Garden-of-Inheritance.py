@@ -1,16 +1,60 @@
 """
 Garden of Inheritance - Pea Garden Genetics Simulator
 
-Main application file for the Mendel's Pea Garden simulation.
+Main application file for Mendel's Pea Garden simulation.
 Provides a visual interface for exploring Mendelian genetics through
 plant breeding experiments.
 
+Overview:
+---------
+This application simulates a garden where users can plant, breed, and observe
+pea plants to discover Mendelian genetics principles. The simulation includes:
+
+Features:
+---------
+- Interactive garden grid with tile-based plant placement
+- Real-time plant growth and development simulation
+- Genetic trait inheritance (flower color, pod color, seed traits, height)
+- Breeding mechanics (pollination, emasculation, self-pollination)
+- Seed harvesting and inventory management
+- Historical archive browser for pedigree analysis
+- Mendelian law detection (Dominance, Segregation, Independent Assortment)
+- Environmental simulation (weather, temperature, seasons)
+- Day/night visual cycles
+- Time controls (pause, fast-forward, auto-advance)
+
+Architecture:
+-------------
+The application is organized around these main components:
+
+1. **GardenApp**: Main application class managing UI and game loop
+2. **GardenEnvironment**: Manages time, weather, and environmental state
+3. **Plant**: Individual plant simulation with genetics
+4. **TileCanvas**: Visual representation of garden tiles
+5. **Inventory**: Seed and pollen storage
+6. **HistoryArchiveBrowser**: Pedigree viewer and analysis tool
+
+File Structure:
+---------------
+- Lines 1-365: Imports, configuration, helper classes
+- Lines 366-5892: GardenApp class (main application)
+  - Event handlers
+  - UI building (_build_ui)
+  - Rendering (render_all, selection panel)
+  - Plant interactions (pollinate, harvest, etc.)
+  - Time and simulation controls
+  - Archive and save system
+
 Version: v69
-Author: Based on Gregor Mendel's pea experiments
+Author: Based on Gregor Mendel's pea experiments (1856-1863)
 """
 
 
-### --- Standard Library (Built-ins) --- ###
+# ============================================================================
+# Imports
+# ============================================================================
+
+# --- Standard Library (Built-ins) ---
 import csv
 import json
 import logging
@@ -25,8 +69,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import List, Set
 
-
-### --- Third-Party / Installed Modules --- ###
+# --- Third-Party / Installed Modules ---
 from PIL import Image, ImageDraw, ImageTk
 import tkinter as tk
 from tkinter import (
@@ -37,7 +80,7 @@ from tkinter import (
     ttk,
 )
 
-### --- Local Modules / Single-File Embeds --- ###
+# --- Local Modules / Single-File Embeds ---
 from crashhandler import CrashHandler
 from tile import TileCanvas
 from plant import Plant, STAGE_NAMES
@@ -48,75 +91,145 @@ from icon_loader import *
 from inventory import Inventory, InventoryPopup, Seed, Pollen
 
 
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+
 def _pg_base_dir():
-    try: return os.path.dirname(os.path.abspath(__file__))
-    except Exception: return os.getcwd()
+    """Get base directory for the application."""
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        return os.getcwd()
+
+
 _PG_BASE_DIR = _pg_base_dir()
 _PG_LOG_PATH = os.path.join(_PG_BASE_DIR, "pea_garden.log")
-if not logging.getLogger().handlers:
-    logging.basicConfig(filename=_PG_LOG_PATH, filemode="a",
-                            level=logging.ERROR,
-                            format="%(asctime)s %(levelname)s %(message)s")
 
-# --- Stable working dir & resource paths -------------------------------------
+# Configure logging (if not already configured)
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        filename=_PG_LOG_PATH,
+        filemode="a",
+        level=logging.ERROR,
+        format="%(asctime)s %(levelname)s %(message)s"
+    )
+
+
+# ============================================================================
+# Resource Path Management
+# ============================================================================
+
 def __pg_script_dir():
+    """
+    Get script directory, handling both normal and PyInstaller execution.
+    
+    Returns:
+        Path object pointing to script directory
+    """
     try:
         if getattr(sys, "frozen", False):
             return Path(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)))
         return Path(os.path.dirname(os.path.abspath(__file__)))
     except Exception:
         return Path(os.getcwd())
-__PG_BASE_DIR = __pg_script_dir()
-def resource_path(*parts) -> Path:
-    return __PG_BASE_DIR.joinpath(*parts)
-try: os.chdir(__PG_BASE_DIR)
-except Exception: pass
-# ------------------------------------------------------------------------------
 
-# ----------- define “today” as day_of_month everywhere pollen uses day --------
+
+__PG_BASE_DIR = __pg_script_dir()
+
+
+def resource_path(*parts) -> Path:
+    """
+    Get path to resource file relative to application base.
+    
+    Args:
+        *parts: Path components to join
+        
+    Returns:
+        Path object to resource
+    """
+    return __PG_BASE_DIR.joinpath(*parts)
+
+
+# Set working directory to script location
+try:
+    os.chdir(__PG_BASE_DIR)
+except Exception:
+    pass
+
+
+# ============================================================================
+# Helper Function for Pollen Day Tracking
+# ============================================================================
+
 def _today(self) -> int:
+    """
+    Get current day of month from garden environment.
+    
+    Single source of truth for "today" used by pollen, seeds, UI, fast-forward.
+    
+    Args:
+        self: Object with garden attribute
+        
+    Returns:
+        Current day of month (0 if unavailable)
+    """
     return int(getattr(self.garden, "day_of_month", getattr(self.garden, "day", 0)))
-# ------------------------------------------------------------------------------
+
+
+# ============================================================================
+# Visual Configuration
+# ============================================================================
 
 SOIL_COLORS = [
     "#7f9f7a",  # muted meadow green
     "#88a884",  # fresh spring grass
-    # "#759870",  # darker, shaded grass
     "#8fb28b",  # sunlit patch
     "#6f8f6a",  # cool, dense grass
     "#9abf97",  # young growth
     "#83a37f",  # slightly dry grass
     "#7a9a76",  # balanced neutral
     "#8caf89",  # warm green
-    # "#6b8a66",  # deeper tone
     "#a3c6a0",  # very light, fresh
-    # "#789672",  # cooler earth-green
     "#8fae8b",  # soft garden green
     "#93b28f",  # spring grass
-    # "#88a984",  # slightly darker
     "#9ab89a",  # sunlit patch
     "#84a77f",  # cool green
 ]
 
 
+# ============================================================================
+# Dialog Classes
+# ============================================================================
+
 class FFDialog(simpledialog.Dialog):
     """
-    Looks like askstring(), but includes:
-    - Entry for number of days
-    - Checkbox for daily rendering
-    - Spinbox for hourly render interval in FF (1–23 hours)
+    Fast-Forward dialog with options for:
+    - Number of days to advance
+    - Daily rendering toggle
+    - Hourly render interval (1-23 hours)
     """
+    
     def body(self, master):
+        """
+        Build dialog body with input fields.
+        
+        Args:
+            master: Parent widget
+            
+        Returns:
+            Widget to receive initial focus
+        """
         tk.Label(
             master,
             text="Enter the number of days to fast-forward:"
         ).grid(row=0, column=0, sticky="w", pady=4)
-
+        
         # Days to fast-forward
         self.days_var = tk.StringVar()
         self.entry = tk.Entry(master, textvariable=self.days_var)
         self.entry.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-
+        
         # Daily rendering checkbox (ticked by default)
         self.daily_var = tk.BooleanVar(value=True)
         self.cb = tk.Checkbutton(
@@ -126,14 +239,14 @@ class FFDialog(simpledialog.Dialog):
             anchor="w"
         )
         self.cb.grid(row=2, column=0, sticky="w", pady=(0, 4))
-
+        
         # Hourly render interval
         tk.Label(
             master,
             text="Render every N simulated h (1–23):"
         ).grid(row=3, column=0, sticky="w", pady=(4, 2))
-
-        self.interval_var = tk.IntVar(value=9)  # default was 9h in your code
+        
+        self.interval_var = tk.IntVar(value=9)  # Default 9 hours
         self.interval_spin = tk.Spinbox(
             master,
             from_=1,
@@ -142,18 +255,16 @@ class FFDialog(simpledialog.Dialog):
             width=5
         )
         self.interval_spin.grid(row=4, column=0, sticky="w", pady=(0, 6))
-
-        return self.entry  # initial focus goes to the day entry
-
+        
+        return self.entry  # Initial focus on day entry
+    
     def apply(self):
+        """Store dialog results when OK is pressed."""
         self.result = {
             "days": self.days_var.get(),
             "daily": self.daily_var.get(),
-            "interval": self.interval_var.get(),  # new
+            "interval": self.interval_var.get(),
         }
-
-
-__version__ = "v69"
 """
 
 pea_garden_ui_topbar.py — UI reorganized
@@ -440,10 +551,17 @@ class GardenApp:
         # pods / harvest
         if getattr(plant, "stage", 0) >= 6:
             pods = int(getattr(plant, "pods_remaining", 0) or 0)
-            if getattr(plant, "stage", 0) >= 7 and pods > 0:
+            is_emasculated = getattr(plant, "emasculated", False)
+            
+            if is_emasculated and pods == 0:
+                # Emasculated plant with no pods - explain why
+                parts.append("No pods (emasculated, not pollinated)")
+            elif getattr(plant, "stage", 0) >= 7 and pods > 0:
                 parts.append(f"Harvestable ({pods})")
             elif pods > 0:
                 parts.append(f"Pods: {pods}")
+            elif pods == 0:
+                parts.append("No pods")
 
         if len(parts) == 1:
             parts.append("Growing")
@@ -1445,9 +1563,13 @@ class GardenApp:
         return [i for i in out if 0 <= i < len(self.tiles)]
 
     def _contiguous_empty_region(self, start_idx):
+        """Find contiguous region of empty or dead-plant tiles for area planting."""
         if start_idx is None: return []
-        if self.tiles[start_idx].plant is not None:
-            return []
+        # Start tile must be empty or have a dead plant
+        start_plant = self.tiles[start_idx].plant
+        if start_plant is not None and getattr(start_plant, 'alive', True):
+            return []  # Living plant blocks area planting
+        
         seen = {start_idx}
         q = [start_idx]
         region = [start_idx]
@@ -1455,7 +1577,9 @@ class GardenApp:
             cur = q.pop(0)
             for nb in self._neighbors4(cur):
                 if nb in seen: continue
-                if self.tiles[nb].plant is None:
+                nb_plant = self.tiles[nb].plant
+                # Include empty tiles and tiles with dead plants
+                if nb_plant is None or not getattr(nb_plant, 'alive', True):
                     seen.add(nb); q.append(nb); region.append(nb)
         return region
 
@@ -1464,39 +1588,58 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_plant_area_from_group(self, kind, match_fn):
+        """Plant seeds in a contiguous area, automatically replacing dead plants."""
         idx = self.selected_index
         if idx is None:
-            self._toast("Select an empty tile first.", level="warn"); return
+            self._toast("Select a tile first.", level="warn"); return
+        
+        # Check if starting tile is available (empty or dead plant)
         pl = self.tiles[idx].plant
-        if pl is not None and not getattr(pl, "alive", True):
-            self.tiles[idx].plant = None
-        if self.tiles[idx].plant is not None:
-            self._toast("Select an empty tile to plant.", level="warn"); return
+        if pl is not None and getattr(pl, 'alive', True):
+            self._toast("Select an empty tile or dead plant to start planting.", level="warn")
+            return
+        
+        # Get region including dead plants
         region = self._contiguous_empty_region(idx) or [idx]
+        
         if kind == 'S':
             avail = int(getattr(self, "available_seeds", 0) or 0)
         else:
             avail = sum(1 for s in self.harvest_inventory if match_fn(s))
         if avail <= 0:
             self._toast("No seeds available in this group.", level="warn"); return
+        
         planted = 0
         for slot in region:
             if planted >= avail: break
+            # Clear dead plant if present, then plant
+            slot_plant = self.tiles[slot].plant
+            if slot_plant is not None and not getattr(slot_plant, 'alive', True):
+                self.tiles[slot].plant = None
+            # Now plant if tile is empty
             if self.tiles[slot].plant is None:
                 if self._plant_one_from_group(slot, kind, match_fn):
                     planted += 1
+        
         self._toast(f"Planted {planted} seed(s) in area.", level="info")
         self.render_all()
 
     def _on_plant_seed_from_group(self, kind, match_fn):
+        """Plant a single seed from a group, automatically replacing dead plants."""
         idx = self.selected_index
         if idx is None:
             self._toast("Select a tile first.", level="warn"); return
+        
+        # Allow planting on empty tiles or dead plants
         pl = self.tiles[idx].plant
+        if pl is not None and getattr(pl, 'alive', True):
+            self._toast("Select an empty tile or dead plant to plant.", level="warn")
+            return
+        
+        # Clear dead plant if present
         if pl is not None and not getattr(pl, "alive", True):
             self.tiles[idx].plant = None
-        if self.tiles[idx].plant is not None:
-            self._toast("Select an empty tile to plant.", level="warn"); return
+        
         self._plant_one_from_group(idx, kind, match_fn)
 
 
@@ -3810,9 +3953,18 @@ class GardenApp:
             if not plant or not plant.alive or plant.stage < 7:
                 self._toast("Plant is not ready to harvest.")
                 return
+            
+            # Check if emasculated and has no pods
+            is_emasculated = getattr(plant, "emasculated", False)
+            pods_remaining = int(getattr(plant, "pods_remaining", 0) or 0)
+            
+            if is_emasculated and pods_remaining <= 0:
+                self._toast("No pods to harvest: this plant was emasculated and not successfully pollinated.", level="warn")
+                return
+            
             # Realism: manage pods/ovules capacity — use up ONE WHOLE POD per click
             try:
-                if getattr(plant, "pods_remaining", 0) <= 0:
+                if pods_remaining <= 0:
                     self._toast("No pods remaining on this plant.")
                     return
                 # If this pod has no ovules left, advance to next pod now
@@ -4080,6 +4232,12 @@ class GardenApp:
         except Exception:
             remaining = 0
 
+        # Check if emasculated with no pods
+        is_emasculated = getattr(plant, "emasculated", False)
+        if is_emasculated and remaining <= 0:
+            self._toast("No pods to harvest: this plant was emasculated and not successfully pollinated.", level="warn")
+            return
+
         if remaining <= 0:
             self._toast("No pods remaining on this plant.")
             return
@@ -4326,6 +4484,7 @@ class GardenApp:
         plant_here = self.tiles[idx].plant if idx is not None else None
         if idx is None:
             return
+        # Allow planting on dead plants (auto-replaces them) or empty tiles
         if plant_here is not None and getattr(plant_here, 'alive', True):
             self._toast("Select an empty tile first.")
             return
