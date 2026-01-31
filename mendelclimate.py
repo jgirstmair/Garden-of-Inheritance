@@ -102,7 +102,7 @@ class MendelClimate:
         # AR(1) anomaly state (stochastic mode only)
         self.anom_last = 0.0
         self.phi = 0.6
-        self.sigma = 1.8
+        self.sigma = 1.8  # Original working value
         self.rng = random.Random(seed)
         
         # Amplitude scaling parameters
@@ -349,6 +349,9 @@ class MendelClimate:
             and getattr(self, "yearly_monthly", None)
         )
         
+        # Initialize y_eff (effective year for lookups)
+        y_eff = y
+        
         cur = nxt = None
         if use_yearly and getattr(self, "yearly_years", None):
             years = self.yearly_years
@@ -360,8 +363,6 @@ class MendelClimate:
                     y_eff = years[-1]
                 else:
                     y_eff = y
-            else:
-                y_eff = y
             
             # Current month
             cur = self.yearly_monthly.get((y_eff, m))
@@ -378,7 +379,8 @@ class MendelClimate:
             nm = 1 if m == 12 else m + 1
             nxt = self.monthly.get(nm, cur)
         
-        # Interpolate within the month
+        # Interpolate linearly through the month from current to next month
+        # This creates smooth seasonal transitions
         if m == 12:
             dim = (dt.date(date.year + 1, 1, 1) - dt.date(date.year, m, 1)).days
         else:
@@ -494,12 +496,9 @@ class MendelClimate:
         next_T06 = self._anchors_for_date(next_date, year_like=year_like)[0]
         hours = self._hourly_from_three_anchors(T06, T14, T22, next_T06, amp_scale=amp)
         
-        # Nudge toward 5-day climatology
-        target = self._daily_mean_from_5day(date)
-        meanH = sum(hours) / 24.0
-        offset = target - meanH
-        blend = 0.05  # 0 = pure anchors, 1 = pure 5-day
-        hours = [h + offset * blend for h in hours]
+        # No climatology nudging needed - we use Mendel's actual measurements
+        # The natural variation comes from interpolation alone
+        
         
         # Enforce minimum realistic diurnal amplitude
         meanH = sum(hours) / 24.0
@@ -516,11 +515,12 @@ class MendelClimate:
             gain = max(1.25, min_amp / max(0.001, amp_now))
             hours = [meanH + (h - meanH) * gain for h in hours]
         
-        # Add AR(1) anomaly in stochastic mode
-        if self.mode != "historical":
-            shock = self.rng.gauss(0.0, self.sigma)
-            self.anom_last = self.phi * self.anom_last + (1 - self.phi) * shock
-            hours = [h + self.anom_last for h in hours]
+        # No stochastic anomaly needed - Mendel's data provides the baseline
+        # Natural variation comes from smooth interpolation
+        # if self.mode != "historical":
+        #     shock = self.rng.gauss(0.0, self.sigma)
+        #     self.anom_last = self.phi * self.anom_last + (1 - self.phi) * shock
+        #     hours = [h + self.anom_last for h in hours]
         
         # ====================================================================
         # Precipitation and Discrete Events

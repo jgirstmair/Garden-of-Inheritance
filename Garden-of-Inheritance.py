@@ -89,6 +89,7 @@ from garden import GardenEnvironment
 from mendelclimate import MendelClimate
 from icon_loader import *
 from inventory import Inventory, InventoryPopup, Seed, Pollen
+from mendel_temperature_tracker import TemperatureTracker
 
 
 # ============================================================================
@@ -818,13 +819,17 @@ class GardenApp:
         self.auto_water_ff = tk.BooleanVar(value=True)      # ✅
         self.auto_water_normal = tk.BooleanVar(value=False) # ☐
         self.cross_random = tk.BooleanVar(self.root, value=True)  # ✅ "Random X on harvest"
+        self.auto_record_temperature = tk.BooleanVar(value=True)  # ✅ "Auto-record temperature"
+        self.auto_record_temperature.trace_add(
+            "write", lambda *_: self._update_temp_button_state()
+        )
+
+        # 🔗 Bridge auto-record flag to garden for TemperatureTracker
+        self.garden.auto_record_temperature = self.auto_record_temperature
 
         # Fast-forward rendering mode: hourly vs daily redraw
         self.ff_render_daily = tk.BooleanVar(value=False)
         self.ff_render_interval = tk.IntVar(value=9)  # default: every 9 simulated hours
-
-        self.selected_tiles: Set[TileCanvas] = set()
-        self.display_index = 0
 
         # --- multi-selection state for drag selection ---
         self.multi_selected_indices = set()
@@ -848,6 +853,8 @@ class GardenApp:
         self.grid_bg = "#eeeeee"
         self.grid_bg = getattr(self, "grid_bg", "#eeeeee")
         self._build_ui()
+        self._update_temp_button_state()
+
 
         # ✅ add this so day/night shading always starts from the true base color
         for t in self.tiles:
@@ -881,6 +888,45 @@ class GardenApp:
         self._season = Season(climate)
         self._season_registered = set()
 
+        # Initialize climate on garden for temperature tracker
+        if climate:
+            self.garden.climate = climate
+        
+        # Add datetime property helper to garden for temperature tracker
+        def _get_datetime(garden_self):
+            """Property to get current simulation datetime."""
+            import datetime as dt
+            try:
+                return dt.datetime(
+                    year=garden_self.year,
+                    month=garden_self.month,
+                    day=garden_self.day_of_month,
+                    hour=int(garden_self.clock_hour),
+                    minute=int((garden_self.clock_hour % 1) * 60)
+                )
+            except Exception:
+                return dt.datetime(1856, 4, 1, 6, 0)
+        
+        # Attach as a property-like attribute
+        self.garden.datetime = property(lambda self: _get_datetime(self))
+        # Also store the function for direct access
+        self.garden._get_datetime = lambda: _get_datetime(self.garden)
+        
+        # Initialize temperature tracker
+        try:
+            self.temp_tracker = TemperatureTracker(
+                self.garden,
+                data_dir="data",
+                climate_csv="climate/mendel_yearly_monthly_6_14_22.csv"
+            )
+            self._last_temp_check_hour = self.garden.clock_hour
+
+            # 🔑 IMPORTANT: sync temp button state now that tracker exists
+            self._update_temp_button_state()
+
+        except Exception as e:
+            logging.error(f"Failed to initialize temperature tracker: {e}")
+            self.temp_tracker = None
 
         # app._season_cycle_mode = lambda e=None: (
         #     setattr(app, "_season_mode", {"off":"overlay","overlay":"enforce","enforce":"off"}[getattr(app, "_season_mode", "off")]) or
@@ -1171,6 +1217,37 @@ class GardenApp:
 
             # Advance phase and optionally render
             self.garden.next_phase()
+            
+            # Update temperature button state when hour changes (+ auto-record if enabled)
+            try:
+                current_hour = int(getattr(self.garden, 'clock_hour', 6))
+                last_hour = getattr(self, "_last_temp_check_hour", None)
+
+                if last_hour is None:
+                    self._last_temp_check_hour = current_hour
+                elif current_hour != last_hour:
+                    self._update_temp_button_state()
+                    self._last_temp_check_hour = current_hour
+
+                    # AUTO-RECORD (same logic as _on_next_phase)
+                    auto_record_enabled = self.auto_record_temperature.get()
+                    has_tracker = self.temp_tracker is not None
+
+                    if auto_record_enabled and has_tracker:
+                        try:
+                            can_measure, hour, reason = self.temp_tracker.can_measure_now()
+
+                            if can_measure:
+                                success, message = self.temp_tracker.take_measurement()
+                                if success:
+                                    logging.info(f"Auto-recorded: {message}")
+                                else:
+                                    logging.warning(f"Auto-record failed: {message}")
+                        except Exception as e:
+                            logging.error(f"Error in auto-record: {e}", exc_info=True)
+            except Exception:
+                pass
+            
             # Auto-water in NORMAL mode at safe phases (morning/evening)
             try:
                 if (not getattr(self, 'fast_forward', False)) and getattr(
@@ -1700,41 +1777,51 @@ class GardenApp:
 
     def _build_ui(self):
 
-        # ---- Menubar / View ----
+        # ---- Menubar ----
         self.menubar = tk.Menu(self.root) if not hasattr(self, "menubar") else self.menubar
+        
+        # ---- File Menu ----
+        file_menu = tk.Menu(self.menubar, tearoff=0)
+        file_menu.add_command(label="Save Garden", command=self._on_save_garden)
+        
+        # Load submenu (dynamically populated)
+        self.load_submenu = tk.Menu(file_menu, tearoff=0, postcommand=lambda: self._build_load_menu(self.load_submenu))
+        file_menu.add_cascade(label="Load Garden", menu=self.load_submenu)
+        
+        file_menu.add_separator()
+        file_menu.add_command(label="Delete Saves…", command=self._on_delete_saves)
+        
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.root.quit)
+        self.menubar.add_cascade(label="File", menu=file_menu)
+        
+        # ---- View Menu ----
         view_menu = tk.Menu(self.menubar, tearoff=0)
-
-        # --- Day / Night toggle ---
-        self.daynight_var = tk.BooleanVar(value=self.enable_daynight)
-        view_menu.add_checkbutton(
-            label="Day / Night cycle",
-            variable=self.daynight_var,
-            command=self._toggle_daynight
-        )
-
-        # View Garden size wizard…
+        
+        # Meteorological Observatory
+        def _open_observatory():
+            if hasattr(self, 'temp_tracker') and self.temp_tracker:
+                self.temp_tracker.open_observatory()
+            else:
+                messagebox.showinfo("Observatory", "Temperature tracker not available")
+        
+        view_menu.add_command(label="Help / Legend", command=self._show_help)
+        
         view_menu.add_separator()
         view_menu.add_command(
-            label="Garden size wizard…",
-            command=self._on_grid_wizard
+            label="Genotype Viewer…",
+            command=self._on_genetics
         )
-
-        # Change grid background color
-        def _choose_grid_bg():
-            color = colorchooser.askcolor(title="Choose Grid Background Color", initialcolor=self.grid_bg)[1]
-            if color:
-                self.grid_bg = color
-
-                # Buttons on each tile (keep soil colors)
-                try:
-                    for i, btn in enumerate(getattr(self, "tile_buttons", [])):
-                        soil = getattr(self, "tile_soil_colors", {}).get(i, self.grid_bg)
-                        btn.configure(bg=soil, activebackground=soil)
-                except Exception:
-                    pass
-
+        view_menu.add_command(
+            label="Trait Inheritance Explorer…",
+            command=self._open_tie_for_selected
+        )
+        
         view_menu.add_separator()
-        view_menu.add_command(label="Change Grid Background Color…", command=_choose_grid_bg)
+        view_menu.add_command(
+            label="Meteorological Observatory…",
+            command=_open_observatory
+        )
 
         # Attach the View menu
         self.menubar.add_cascade(label=" View", menu=view_menu)
@@ -1745,7 +1832,15 @@ class GardenApp:
 
         # --- NEW: Game Settings menu ---
         game_menu = tk.Menu(self.menubar, tearoff=0)
-        game_menu.add_command(label="Help / Legend", command=self._show_help)
+        
+        # --- Day / Night toggle ---
+        self.daynight_var = tk.BooleanVar(value=self.enable_daynight)
+        game_menu.add_checkbutton(
+            label="Day / Night cycle",
+            variable=self.daynight_var,
+            command=self._toggle_daynight
+        )
+        
         game_menu.add_separator()
         game_menu.add_checkbutton(label="Auto-water",
                                     variable=self.auto_water_normal)
@@ -1753,6 +1848,14 @@ class GardenApp:
                                     variable=self.auto_water_ff)
         game_menu.add_checkbutton(label="Random X on harvest",
                                     variable=self.cross_random)
+        game_menu.add_checkbutton(label="Auto-record temperature",
+                                    variable=self.auto_record_temperature)
+        
+        game_menu.add_separator()
+        game_menu.add_command(
+            label="Garden size wizard…",
+            command=self._on_grid_wizard
+        )
 
         self.menubar.add_cascade(label="Game Settings", menu=game_menu)
 
@@ -1906,6 +2009,17 @@ class GardenApp:
         )
         self._apply_hover(self.speed_btn)
 
+        self.observatory_btn = tk.Button(
+            controls,
+            text="🔭 Observatory",
+            command=lambda: (
+                self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
+                else messagebox.showinfo("Observatory", "Temperature tracker not available")
+            ),
+            **btn_kwargs,
+        )
+        self._apply_hover(self.observatory_btn)
+
         self.pause_btn = tk.Button(
             controls,
             text=("▶ Resume" if not self.running else "⏸ Pause"),
@@ -1931,14 +2045,30 @@ class GardenApp:
             **btn_kwargs,
         )
         self._apply_hover(self.water_all_btn)
+        
+        # Temperature measurement button
+        self.measure_temp_btn = tk.Button(
+            controls,
+            text="°C Measure Temp",
+            command=self._on_measure_temperature,
+            **btn_kwargs,
+        )
+        self._apply_hover(self.measure_temp_btn)
+        # Set initial state
+        try:
+            self._update_temp_button_state()
+        except Exception:
+            pass
 
         # --- pack LEFT in desired order ---
+        self.observatory_btn.pack(side="left", padx=2, pady=2)
         self.pause_btn.pack(side="left", padx=2, pady=2)
         self.fast_btn.pack(side="left", padx=2, pady=2)
         self.speed_btn.pack(side="left", padx=2, pady=2)
         self.next_phase_btn.pack(side="left", padx=2, pady=2)
         self.plant_seeds_btn.pack(side="left", padx=2, pady=2)
         self.water_all_btn.pack(side="left", padx=2, pady=2)
+        self.measure_temp_btn.pack(side="left", padx=2, pady=2)
         self.summary_btn.pack(side="left", padx=2, pady=2)
 
         # ---------- Status row below top bar ----------
@@ -3805,7 +3935,37 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_next_phase(self):
+        old_hour = int(getattr(self.garden, 'clock_hour', 6))
         self.garden.next_phase()
+        new_hour = int(getattr(self.garden, 'clock_hour', 6))
+        
+        # Update temperature button if hour changed
+        if old_hour != new_hour:
+            try:
+                self._update_temp_button_state()
+                self._last_temp_check_hour = new_hour
+            except Exception as e:
+                logging.error(f"Error updating temp button: {e}")
+            
+            # AUTO-RECORD: Take measurement if enabled (separate try-catch for clarity)
+            auto_record_enabled = self.auto_record_temperature.get()
+            has_tracker = self.temp_tracker is not None
+            
+            if auto_record_enabled and has_tracker:
+                try:
+                    can_measure, hour, reason = self.temp_tracker.can_measure_now()
+                    
+                    if can_measure:
+                        success, message = self.temp_tracker.take_measurement()
+                        if success:
+                            logging.info(f"Auto-recorded: {message}")
+                        else:
+                            logging.warning(f"Auto-record failed: {message}")
+                    # else: stay silent when measurement is not allowed
+
+                except Exception as e:
+                    logging.error(f"Error in auto-record: {e}", exc_info=True)
+        
         # Traits rarely change every phase; keep cache so we don't rebuild unless needed.
         self.render_all()
 # Start automated phase progression (slight delay for safety)
@@ -3826,6 +3986,76 @@ class GardenApp:
         except Exception:
             pass
         print(msg)
+
+    def _on_measure_temperature(self):
+        """Quick temperature measurement from button."""
+        try:
+            if self.temp_tracker:
+                success, message = self.temp_tracker.take_measurement()
+                if success:
+                    self._toast(message, level="info")
+                else:
+                    self._toast(message, level="warn")
+            else:
+                self._toast("Temperature tracker not available", level="warn")
+        except Exception as e:
+            logging.error(f"Error taking measurement: {e}")
+            self._toast("Error taking measurement", level="error")
+
+    def _update_temp_button_state(self):
+        """Update temp button: green+clickable only when manual recording is allowed and time is right."""
+        try:
+            btn = getattr(self, "measure_temp_btn", None)
+            if btn is None:
+                return
+
+            # No tracker -> disable
+            if self.temp_tracker is None:
+                btn.config(state="disabled")
+                return
+
+            auto_on = bool(self.auto_record_temperature.get())
+
+            # ✅ If auto-record is ON: disable manual measurement (auto will take it)
+            if auto_on:
+                btn.config(state="disabled")
+                # neutral style (not green)
+                btn.configure(
+                    bg="#F4F4F4",
+                    activebackground="#E4E4E4",
+                    fg="#333333",
+                    activeforeground="#333333"
+                )
+                btn._base_bg = "#F4F4F4"
+                btn._hover_bg = "#E8E8E8"
+                return
+
+            # Auto-record OFF -> manual allowed only at valid hours and if not yet measured
+            can_measure, hour, reason = self.temp_tracker.can_measure_now()
+
+            if can_measure:
+                btn.config(state="normal")
+                btn.configure(
+                    bg="#D4EDDA",            # light green
+                    activebackground="#C3E6CB",
+                    fg="#333333",
+                    activeforeground="#333333"
+                )
+                btn._base_bg = "#D4EDDA"
+                btn._hover_bg = "#C3E6CB"
+            else:
+                btn.config(state="disabled")
+                btn.configure(
+                    bg="#F4F4F4",
+                    activebackground="#E4E4E4",
+                    fg="#333333",
+                    activeforeground="#333333"
+                )
+                btn._base_bg = "#F4F4F4"
+                btn._hover_bg = "#E8E8E8"
+
+        except Exception:
+            pass
 
     def _selected_indices(self):
         """Return list of currently selected tile indices (multi or single)."""
@@ -5116,6 +5346,862 @@ class GardenApp:
             self.root.after(duration, lambda: self.status_var.set(""))
         except Exception:
             pass
+
+    # ============================================================================
+    # Save / Load System
+    # ============================================================================
+    
+    def _on_save_garden(self):
+        """Save the entire garden state to a JSON file with optional naming."""
+        import datetime
+        
+        # Ensure data directory exists
+        data_dir = os.path.join(_PG_BASE_DIR, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        
+        # Show naming dialog
+        garden_name = self._show_save_name_dialog()
+        
+        # Generate timestamp
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create filename based on whether a name was provided
+        if garden_name and garden_name.strip():
+            # Named save: garden_NAME_TIMESTAMP.json
+            safe_name = self._sanitize_filename(garden_name.strip())
+            
+            # Check if a save with this name already exists
+            existing_save = self._find_save_by_name(data_dir, garden_name.strip())
+            
+            if existing_save:
+                # Ask if user wants to replace
+                replace = messagebox.askyesno(
+                    "Replace Existing Save?",
+                    f'A garden named "{garden_name.strip()}" already exists.\n\n'
+                    f"Do you want to replace it with the current garden state?\n\n"
+                    f"Old save: {existing_save['display_date']}\n"
+                    f"New save: {timestamp[:8]}-{timestamp[8]}-{timestamp[9:11]}:{timestamp[11:13]}",
+                    icon='warning'
+                )
+                
+                if replace:
+                    # Delete the old save
+                    try:
+                        os.remove(existing_save['filepath'])
+                        logging.info(f"Replaced old save: {existing_save['filename']}")
+                    except Exception as e:
+                        logging.warning(f"Failed to delete old save: {e}")
+                else:
+                    # User cancelled the replacement
+                    return
+            
+            filename = f"garden_{safe_name}_{timestamp}.json"
+            is_named = True
+        else:
+            # Unnamed save: garden_TIMESTAMP.json
+            filename = f"garden_{timestamp}.json"
+            is_named = False
+        
+        filepath = os.path.join(data_dir, filename)
+        
+        try:
+            save_data = self._serialize_garden_state()
+            
+            # Add garden name to save data if provided
+            if is_named:
+                save_data['garden_name'] = garden_name.strip()
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(save_data, f, indent=2, ensure_ascii=False)
+            
+            # Clean up old unnamed saves (keep only 10 most recent)
+            if not is_named:
+                self._cleanup_unnamed_saves(data_dir)
+            
+            display_name = garden_name.strip() if is_named else f"Unnamed ({timestamp})"
+            self._toast(f"Garden saved: {display_name}", level="info")
+            logging.info(f"Garden saved to {filepath}")
+            
+        except Exception as e:
+            logging.error(f"Failed to save garden: {e}", exc_info=True)
+            messagebox.showerror("Save Failed", f"Could not save garden:\n{str(e)}")
+    
+    def _show_save_name_dialog(self):
+        """Show a simple dialog to enter garden name."""
+        from tkinter import simpledialog
+        
+        # Create dialog without sound
+        name = simpledialog.askstring(
+            "Save Garden",
+            "Enter a name for your garden:\n(leave blank for unnamed save)",
+            parent=self.root
+        )
+        
+        return name if name else ""
+    
+    def _sanitize_filename(self, name):
+        """Sanitize a name for use in filename."""
+        # Remove or replace invalid filename characters
+        import re
+        # Replace spaces with underscores
+        name = name.replace(" ", "_")
+        # Remove any characters that aren't alphanumeric, underscore, or hyphen
+        name = re.sub(r'[^a-zA-Z0-9_-]', '', name)
+        # Limit length to 50 characters
+        name = name[:50]
+        return name
+    
+    def _find_save_by_name(self, data_dir, garden_name):
+        """Find an existing save file with the given garden name.
+        
+        Returns a dict with save info if found, None otherwise.
+        """
+        try:
+            for filename in os.listdir(data_dir):
+                if filename.startswith("garden_") and filename.endswith(".json"):
+                    filepath = os.path.join(data_dir, filename)
+                    
+                    # Try to read the garden name from the file
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            save_data = json.load(f)
+                            stored_name = save_data.get('garden_name')
+                            
+                            # Check if names match (case-insensitive comparison)
+                            if stored_name and stored_name.strip().lower() == garden_name.strip().lower():
+                                # Extract timestamp from filename for display
+                                name_part = filename.replace("garden_", "").replace(".json", "")
+                                timestamp_str = name_part[-15:] if len(name_part) >= 15 else ""
+                                
+                                try:
+                                    if len(timestamp_str) == 15:
+                                        date_part = timestamp_str[:8]
+                                        time_part = timestamp_str[9:]
+                                        display_date = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]} {time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
+                                    else:
+                                        display_date = "Unknown date"
+                                except:
+                                    display_date = "Unknown date"
+                                
+                                return {
+                                    'filename': filename,
+                                    'filepath': filepath,
+                                    'garden_name': stored_name,
+                                    'display_date': display_date
+                                }
+                    except:
+                        # Skip files that can't be read
+                        continue
+            
+            return None
+        except Exception as e:
+            logging.warning(f"Error searching for existing save: {e}")
+            return None
+    
+    def _cleanup_unnamed_saves(self, data_dir):
+        """Keep only the 10 most recent unnamed saves, delete older ones."""
+        try:
+            # Find all unnamed save files (those without a name between garden_ and timestamp)
+            unnamed_saves = []
+            
+            for filename in os.listdir(data_dir):
+                if filename.startswith("garden_") and filename.endswith(".json"):
+                    # Check if it's an unnamed save (garden_TIMESTAMP.json pattern)
+                    # Unnamed: garden_20260131_123456.json (20 chars before .json)
+                    # Named: garden_NAME_20260131_123456.json (more than 20 chars)
+                    name_part = filename.replace("garden_", "").replace(".json", "")
+                    
+                    # If name_part is exactly YYYYMMDD_HHMMSS (15 chars), it's unnamed
+                    if len(name_part) == 15 and name_part[8] == '_':
+                        filepath = os.path.join(data_dir, filename)
+                        mtime = os.path.getmtime(filepath)
+                        unnamed_saves.append((filename, filepath, mtime))
+            
+            # Sort by modification time (oldest first for deletion)
+            unnamed_saves.sort(key=lambda x: x[2])
+            
+            # Keep only the 10 most recent (delete the rest)
+            if len(unnamed_saves) > 10:
+                to_delete = unnamed_saves[:-10]  # All except the last 10
+                for filename, filepath, mtime in to_delete:
+                    try:
+                        os.remove(filepath)
+                        logging.info(f"Deleted old unnamed save: {filename}")
+                    except Exception as e:
+                        logging.warning(f"Failed to delete old save {filename}: {e}")
+        
+        except Exception as e:
+            logging.warning(f"Failed to cleanup unnamed saves: {e}")
+    
+    def _on_delete_saves(self):
+        """Show dialog to delete multiple save files."""
+        data_dir = os.path.join(_PG_BASE_DIR, "data")
+        
+        if not os.path.exists(data_dir):
+            messagebox.showinfo("No Saves", "No save files found.")
+            return
+        
+        # Get all save files
+        save_files = []
+        for filename in os.listdir(data_dir):
+            if filename.startswith("garden_") and filename.endswith(".json"):
+                filepath = os.path.join(data_dir, filename)
+                mtime = os.path.getmtime(filepath)
+                
+                # Try to read garden name
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        save_data = json.load(f)
+                        garden_name = save_data.get('garden_name')
+                except:
+                    garden_name = None
+                
+                save_files.append({
+                    'filename': filename,
+                    'filepath': filepath,
+                    'mtime': mtime,
+                    'garden_name': garden_name
+                })
+        
+        if not save_files:
+            messagebox.showinfo("No Saves", "No save files found.")
+            return
+        
+        # Sort by modification time (newest first)
+        save_files.sort(key=lambda x: x['mtime'], reverse=True)
+        
+        # Create dialog
+        dialog = Toplevel(self.root)
+        dialog.title("Delete Saves")
+        dialog.geometry("500x600")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Title
+        title_frame = tk.Frame(dialog, bg="#2b4d59", pady=10)
+        title_frame.pack(fill="x")
+        tk.Label(
+            title_frame,
+            text="Select saves to delete",
+            font=("Segoe UI", 14, "bold"),
+            bg="#2b4d59",
+            fg="white"
+        ).pack()
+        
+        # Select All checkbox
+        select_all_frame = tk.Frame(dialog, bg="#f0f0f0", pady=8)
+        select_all_frame.pack(fill="x", padx=10, pady=(10, 5))
+        
+        select_all_var = tk.BooleanVar(value=False)
+        checkboxes = []  # Store all checkbox variables
+        
+        def toggle_all():
+            state = select_all_var.get()
+            for var in checkboxes:
+                var.set(state)
+        
+        tk.Checkbutton(
+            select_all_frame,
+            text="Select All",
+            variable=select_all_var,
+            command=toggle_all,
+            font=("Segoe UI", 10, "bold"),
+            bg="#f0f0f0"
+        ).pack(anchor="w", padx=5)
+        
+        # Scrollable list of saves
+        list_frame = tk.Frame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        canvas = tk.Canvas(list_frame, bg="white", highlightthickness=0)
+        scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg="white")
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Add checkboxes for each save
+        for save_info in save_files:
+            var = tk.BooleanVar(value=False)
+            checkboxes.append(var)
+            
+            # Create display name
+            if save_info['garden_name']:
+                # Named save
+                name_part = save_info['filename'].replace("garden_", "").replace(".json", "")
+                timestamp_str = name_part[-15:] if len(name_part) >= 15 else ""
+                
+                try:
+                    if len(timestamp_str) == 15:
+                        date_part = timestamp_str[:8]
+                        time_part = timestamp_str[9:]
+                        display_date = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
+                        display_time = f"{time_part[:2]}:{time_part[2:4]}"
+                        display_name = f"📗 {save_info['garden_name']} ({display_date} {display_time})"
+                    else:
+                        display_name = f"📗 {save_info['garden_name']}"
+                except:
+                    display_name = f"📗 {save_info['garden_name']}"
+            else:
+                # Unnamed save
+                try:
+                    parts = save_info['filename'].replace("garden_", "").replace(".json", "")
+                    date_part = parts[:8]
+                    time_part = parts[9:]
+                    display_date = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
+                    display_time = f"{time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
+                    display_name = f"📄 {display_date} {display_time}"
+                except:
+                    display_name = f"📄 {save_info['filename']}"
+            
+            # Checkbox frame with hover effect
+            cb_frame = tk.Frame(scrollable_frame, bg="white")
+            cb_frame.pack(fill="x", padx=5, pady=2)
+            
+            cb = tk.Checkbutton(
+                cb_frame,
+                text=display_name,
+                variable=var,
+                font=("Segoe UI", 10),
+                bg="white",
+                anchor="w"
+            )
+            cb.pack(fill="x", padx=5, pady=3)
+            
+            # Store filepath in the variable for later access
+            var.filepath = save_info['filepath']
+            var.filename = save_info['filename']
+        
+        # Button frame
+        button_frame = tk.Frame(dialog, bg="#f0f0f0", pady=10)
+        button_frame.pack(fill="x", padx=10, pady=(0, 10))
+        
+        def delete_selected():
+            # Count selected
+            to_delete = [var for var in checkboxes if var.get()]
+            
+            if not to_delete:
+                messagebox.showinfo("No Selection", "No saves selected for deletion.", parent=dialog)
+                return
+            
+            # Confirm
+            count = len(to_delete)
+            if not messagebox.askyesno(
+                "Confirm Deletion",
+                f"Are you sure you want to delete {count} save file{'s' if count != 1 else ''}?\n\nThis action cannot be undone.",
+                parent=dialog
+            ):
+                return
+            
+            # Delete files
+            deleted_count = 0
+            for var in to_delete:
+                try:
+                    os.remove(var.filepath)
+                    logging.info(f"Deleted save: {var.filename}")
+                    deleted_count += 1
+                except Exception as e:
+                    logging.error(f"Failed to delete {var.filename}: {e}")
+            
+            # Show result
+            if deleted_count > 0:
+                messagebox.showinfo(
+                    "Deletion Complete",
+                    f"Successfully deleted {deleted_count} save file{'s' if deleted_count != 1 else ''}.",
+                    parent=dialog
+                )
+            
+            # Close dialog
+            dialog.destroy()
+        
+        def cancel():
+            dialog.destroy()
+        
+        tk.Button(
+            button_frame,
+            text="Delete Selected",
+            command=delete_selected,
+            bg="#d32f2f",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+            padx=20,
+            pady=5
+        ).pack(side="left", padx=5)
+        
+        tk.Button(
+            button_frame,
+            text="Cancel",
+            command=cancel,
+            bg="#757575",
+            fg="white",
+            font=("Segoe UI", 10),
+            padx=20,
+            pady=5
+        ).pack(side="left", padx=5)
+    
+    def _on_load_garden(self):
+        """Show submenu of available save files to load."""
+        # This will be called by the submenu items
+        pass
+    
+    def _build_load_menu(self, parent_menu):
+        """Build dynamic submenu showing available save files."""
+        data_dir = os.path.join(_PG_BASE_DIR, "data")
+        
+        # Find all garden save files
+        named_saves = []
+        unnamed_saves = []
+        
+        if os.path.exists(data_dir):
+            for filename in os.listdir(data_dir):
+                if filename.startswith("garden_") and filename.endswith(".json"):
+                    filepath = os.path.join(data_dir, filename)
+                    mtime = os.path.getmtime(filepath)
+                    
+                    # Parse filename to determine if named or unnamed
+                    name_part = filename.replace("garden_", "").replace(".json", "")
+                    
+                    # Try to read the save file to get the stored name
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            save_data = json.load(f)
+                            stored_name = save_data.get('garden_name')
+                    except:
+                        stored_name = None
+                    
+                    # If it has a stored name, it's a named save
+                    if stored_name:
+                        # Extract timestamp from filename (last 15 chars before .json)
+                        timestamp_str = name_part[-15:] if len(name_part) >= 15 else ""
+                        named_saves.append((stored_name, filename, filepath, mtime, timestamp_str))
+                    else:
+                        # Unnamed save
+                        unnamed_saves.append((filename, filepath, mtime))
+        
+        # Sort both lists by modification time (newest first)
+        named_saves.sort(key=lambda x: x[3], reverse=True)
+        unnamed_saves.sort(key=lambda x: x[2], reverse=True)
+        
+        # Clear existing items
+        parent_menu.delete(0, 'end')
+        
+        if not named_saves and not unnamed_saves:
+            parent_menu.add_command(label="(No save files found)", state="disabled")
+            return
+        
+        # Add named saves first
+        if named_saves:
+            parent_menu.add_command(label="═══ Named Gardens ═══", state="disabled")
+            for garden_name, filename, filepath, mtime, timestamp_str in named_saves:
+                # Format: "Garden Name (2026-01-31 14:23)"
+                try:
+                    import datetime
+                    if len(timestamp_str) == 15:
+                        date_part = timestamp_str[:8]
+                        time_part = timestamp_str[9:]
+                        display_date = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
+                        display_time = f"{time_part[:2]}:{time_part[2:4]}"
+                        display_name = f"{garden_name} ({display_date} {display_time})"
+                    else:
+                        display_name = garden_name
+                except:
+                    display_name = garden_name
+                
+                parent_menu.add_command(
+                    label=display_name,
+                    command=lambda fp=filepath: self._load_garden_from_file(fp)
+                )
+        
+        # Add separator if we have both types
+        if named_saves and unnamed_saves:
+            parent_menu.add_separator()
+        
+        # Add unnamed saves
+        if unnamed_saves:
+            parent_menu.add_command(label="═══ Recent Autosaves ═══", state="disabled")
+            for filename, filepath, mtime in unnamed_saves:
+                # Create display name from filename
+                # garden_20260130_204706.json -> 2026-01-30 20:47:06
+                try:
+                    import datetime
+                    parts = filename.replace("garden_", "").replace(".json", "")
+                    date_part = parts[:8]  # YYYYMMDD
+                    time_part = parts[9:]   # HHMMSS
+                    display_date = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
+                    display_time = f"{time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
+                    display_name = f"{display_date} {display_time}"
+                except:
+                    display_name = filename
+                
+                parent_menu.add_command(
+                    label=display_name,
+                    command=lambda fp=filepath: self._load_garden_from_file(fp)
+                )
+    
+    def _load_garden_from_file(self, filepath):
+        """Load garden state from a specific file."""
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                save_data = json.load(f)
+            
+            # Confirm before loading (this will replace current garden)
+            filename = os.path.basename(filepath)
+            result = messagebox.askyesno(
+                "Load Garden",
+                f"Loading '{filename}' will replace your current garden.\n\nContinue?",
+                icon='warning'
+            )
+            
+            if not result:
+                return
+            
+            self._deserialize_garden_state(save_data)
+            
+            self._toast(f"Garden loaded: {filename}", level="info")
+            logging.info(f"Garden loaded from {filepath}")
+            
+        except Exception as e:
+            logging.error(f"Failed to load garden: {e}", exc_info=True)
+            messagebox.showerror("Load Failed", f"Could not load garden:\n{str(e)}")
+    
+    def _serialize_garden_state(self):
+        """Serialize the entire garden state to a dictionary."""
+        import datetime
+        
+        # Serialize all plants
+        plants_data = []
+        for tile in self.tiles:
+            if tile.plant and tile.plant.alive:
+                plant_data = {
+                    'tile_idx': tile.idx,
+                    'id': tile.plant.id,
+                    'generation': tile.plant.generation,
+                    'stage': tile.plant.stage,
+                    'alive': tile.plant.alive,
+                    'days_since_planting': tile.plant.days_since_planting,
+                    'health': tile.plant.health,
+                    'water': tile.plant.water,
+                    'traits': tile.plant.traits,
+                    'revealed_traits': tile.plant.revealed_traits,
+                    'reveal_order': tile.plant.reveal_order,
+                    'entered_stage5_age': tile.plant.entered_stage5_age,
+                    'max_age_days': tile.plant.max_age_days,
+                    'senescent': tile.plant.senescent,
+                    'germination_delay': tile.plant.germination_delay,
+                    'pending_cross': tile.plant.pending_cross,
+                    'pollinated': tile.plant.pollinated,
+                    'emasculated': tile.plant.emasculated,
+                    'emasc_day': tile.plant.emasc_day,
+                    'emasc_phase': tile.plant.emasc_phase,
+                    'selfing_frac_before_emasc': tile.plant.selfing_frac_before_emasc,
+                    'pods_total': tile.plant.pods_total,
+                    'pods_remaining': tile.plant.pods_remaining,
+                    'ovules_per_pod': tile.plant.ovules_per_pod,
+                    'ovules_left': tile.plant.ovules_left,
+                    'aborted_ovules': tile.plant.aborted_ovules,
+                    'ancestry': tile.plant.ancestry,
+                    'paternal_ancestry': tile.plant.paternal_ancestry,
+                    'last_anther_check_day': tile.plant.last_anther_check_day,
+                    'anthers_available_today': tile.plant.anthers_available_today,
+                    'anthers_collected_day': tile.plant.anthers_collected_day,
+                }
+                plants_data.append(plant_data)
+        
+        # Serialize inventory
+        inventory_data = {
+            'seeds': [
+                {
+                    'name': seed.name,
+                    'id': seed.id,
+                    'source_id': seed.source_id,
+                    'donor_id': seed.donor_id,
+                    'traits': seed.traits,
+                    'generation': seed.generation,
+                    'pod_index': seed.pod_index,
+                    'genotype': seed.genotype,
+                    'ancestry': seed.ancestry,
+                }
+                for seed in self.inventory.get_all('seeds')
+            ],
+            'pollen': [
+                {
+                    'name': pollen.name,
+                    'id': pollen.id,
+                    'source_id': pollen.source_id,
+                    'collected_day': pollen.collected_day,
+                    'expires_day': pollen.expires_day,
+                    'genotype': pollen.genotype,
+                    'traits': pollen.traits,
+                }
+                for pollen in self.inventory.get_all('pollen')
+            ]
+        }
+        
+        # Serialize garden environment state
+        garden_data = {
+            'day': self.garden.day,
+            'phase_index': self.garden.phase_index,
+            'phase': self.garden.phase,
+            'clock_hour': self.garden.clock_hour,
+            'year': self.garden.year,
+            'month': self.garden.month,
+            'day_of_month': self.garden.day_of_month,
+            'weather': self.garden.weather,
+            'temp': self.garden.temp,
+            'target_temps': getattr(self.garden, 'target_temps', {}),
+            'temp_updates_remaining': getattr(self.garden, 'temp_updates_remaining', 3),
+        }
+        
+        # Serialize history (stored on GardenApp or GardenEnvironment)
+        history_data = list(getattr(self.garden, 'history', []))
+        
+        # Serialize next_plant_id (stored on GardenApp)
+        next_plant_id = getattr(self, 'next_plant_id', 1)
+        
+        # Serialize temperature tracker
+        temp_tracker_data = None
+        if hasattr(self, 'temp_tracker') and self.temp_tracker:
+            temp_tracker_data = {
+                'measurements': self.temp_tracker.measurements,
+                'modern_measurements': getattr(self.temp_tracker, 'modern_measurements', []),
+            }
+        
+        # Serialize UI settings
+        ui_settings = {
+            'running': self.running,
+            'enable_daynight': self.enable_daynight,
+            'auto_water_ff': self.auto_water_ff.get(),
+            'auto_water_normal': self.auto_water_normal.get(),
+            'cross_random': self.cross_random.get(),
+            'auto_record_temperature': self.auto_record_temperature.get(),
+            'available_seeds': self.available_seeds,
+            'grid_rows': ROWS,
+            'grid_cols': COLS,
+        }
+        
+        # Serialize archive (for Trait Inheritance Explorer)
+        archive_data = None
+        if hasattr(self, 'archive') and isinstance(self.archive, dict):
+            archive_data = {
+                'plants': dict(self.archive.get('plants', {}))
+            }
+        
+        # Compile everything
+        save_data = {
+            'version': 'v1.0',
+            'save_date': datetime.datetime.now().isoformat(),
+            'plants': plants_data,
+            'inventory': inventory_data,
+            'garden': garden_data,
+            'history': history_data,
+            'archive': archive_data,
+            'next_plant_id': next_plant_id,
+            'temperature_tracker': temp_tracker_data,
+            'ui_settings': ui_settings,
+        }
+        
+        return save_data
+    
+    def _deserialize_garden_state(self, save_data):
+        """Restore garden state from serialized data."""
+        
+        # Clear current garden
+        for tile in self.tiles:
+            tile.plant = None
+        
+        # Restore garden environment
+        garden_data = save_data['garden']
+        self.garden.day = garden_data.get('day', 1)
+        self.garden.phase_index = garden_data.get('phase_index', 0)
+        self.garden.phase = garden_data.get('phase', 'morning')
+        self.garden.clock_hour = garden_data.get('clock_hour', 6)
+        self.garden.year = garden_data.get('year', 1856)
+        self.garden.month = garden_data.get('month', 4)
+        self.garden.day_of_month = garden_data.get('day_of_month', 1)
+        self.garden.weather = garden_data.get('weather', '☀️')
+        self.garden.temp = garden_data.get('temp', 12.0)
+        
+        # Restore optional attributes
+        if 'target_temps' in garden_data:
+            self.garden.target_temps = garden_data['target_temps']
+        if 'temp_updates_remaining' in garden_data:
+            self.garden.temp_updates_remaining = garden_data['temp_updates_remaining']
+        
+        # Restore history
+        if not hasattr(self.garden, 'history'):
+            self.garden.history = []
+        self.garden.history = save_data.get('history', [])
+        
+        # Restore archive (for Trait Inheritance Explorer)
+        if not hasattr(self, 'archive'):
+            self.archive = {}
+        archive_data = save_data.get('archive')
+        if archive_data and isinstance(archive_data, dict):
+            self.archive['plants'] = archive_data.get('plants', {})
+        else:
+            # Initialize empty archive if none in save file
+            self.archive['plants'] = {}
+        
+        # Restore next_plant_id
+        self.next_plant_id = save_data.get('next_plant_id', 1)
+        
+        # Restore temperature tracker
+        if save_data.get('temperature_tracker') and hasattr(self, 'temp_tracker') and self.temp_tracker:
+            temp_data = save_data['temperature_tracker']
+            self.temp_tracker.measurements = temp_data.get('measurements', [])
+            self.temp_tracker.modern_measurements = temp_data.get('modern_measurements', [])
+        
+        # Restore UI settings
+        ui_settings = save_data.get('ui_settings', {})
+        self.running = ui_settings.get('running', False)
+        self.enable_daynight = ui_settings.get('enable_daynight', True)
+        self.auto_water_ff.set(ui_settings.get('auto_water_ff', False))
+        self.auto_water_normal.set(ui_settings.get('auto_water_normal', False))
+        self.cross_random.set(ui_settings.get('cross_random', True))
+        self.auto_record_temperature.set(ui_settings.get('auto_record_temperature', True))
+        self.available_seeds = ui_settings.get('available_seeds', 10)
+        
+        # Check if grid size changed
+        saved_rows = ui_settings.get('grid_rows', ROWS)
+        saved_cols = ui_settings.get('grid_cols', COLS)
+        if saved_rows != ROWS or saved_cols != COLS:
+            messagebox.showwarning(
+                "Grid Size Mismatch",
+                f"Save file has {saved_rows}x{saved_cols} grid, but current is {ROWS}x{COLS}.\n\n"
+                "Plants will be loaded where possible."
+            )
+        
+        # Restore inventory
+        inventory_data = save_data['inventory']
+        
+        # Clear both inventory systems
+        self.inventory._items_seeds.clear()
+        self.harvest_inventory.clear()
+        
+        seeds_to_restore = inventory_data.get('seeds', [])
+        logging.info(f"Restoring {len(seeds_to_restore)} seeds from save file")
+        
+        for seed_data in seeds_to_restore:
+            try:
+                # Seed inherits from InventoryItem(name, id)
+                # Then has: source_id, donor_id, traits, generation, pod_index, genotype, ancestry
+                seed = Seed(
+                    name=seed_data.get('name', f"Seed_{seed_data['id']}"),
+                    id=seed_data['id'],
+                    source_id=seed_data['source_id'],
+                    donor_id=seed_data.get('donor_id'),
+                    traits=seed_data.get('traits', {}),
+                    generation=seed_data.get('generation', 0),
+                    pod_index=seed_data.get('pod_index', 0),
+                    genotype=seed_data.get('genotype', {}),
+                    ancestry=seed_data.get('ancestry', []),
+                )
+                # Add to both inventory systems for compatibility
+                self.inventory._items_seeds.append(seed)
+                self.harvest_inventory.append(seed)
+                logging.info(f"Restored seed: {seed.name} (ID: {seed.id})")
+            except Exception as e:
+                logging.warning(f"Failed to restore seed: {e}")
+        
+        logging.info(f"Total seeds in inventory after restore: {len(self.inventory._items_seeds)}")
+        logging.info(f"Total seeds in harvest_inventory after restore: {len(self.harvest_inventory)}")
+        
+        self.inventory._items_pollen.clear()
+        for pollen_data in inventory_data.get('pollen', []):
+            try:
+                # Pollen inherits from InventoryItem(name, id)
+                # Then requires: source_plant, collection_time
+                # Optional: source_id, collected_day, expires_day, genotype, traits
+                
+                # We can't restore source_plant reference, so we pass None
+                # The __post_init__ will be skipped since we provide the metadata directly
+                pollen = Pollen(
+                    name=pollen_data.get('name', f"Pollen_{pollen_data['id']}"),
+                    id=pollen_data['id'],
+                    source_plant=None,  # Can't restore plant reference
+                    collection_time=0,
+                    source_id=pollen_data.get('source_id', 0),
+                    collected_day=pollen_data.get('collected_day', 0),
+                    expires_day=pollen_data.get('expires_day', 0),
+                    genotype=pollen_data.get('genotype', {}),
+                    traits=pollen_data.get('traits', {}),
+                )
+                self.inventory._items_pollen.append(pollen)
+            except Exception as e:
+                logging.warning(f"Failed to restore pollen: {e}")
+        
+        # Restore plants
+        for plant_data in save_data['plants']:
+            tile_idx = plant_data['tile_idx']
+            
+            # Skip if tile index is out of bounds
+            if tile_idx >= len(self.tiles):
+                continue
+            
+            tile = self.tiles[tile_idx]
+            
+            # Create plant (using Plant constructor with minimal args)
+            plant = Plant(
+                id=plant_data['id'],
+                env=self.garden,
+                generation=plant_data['generation'],
+            )
+            
+            # Restore all plant attributes
+            plant.stage = plant_data['stage']
+            plant.alive = plant_data['alive']
+            plant.days_since_planting = plant_data['days_since_planting']
+            plant.health = plant_data['health']
+            plant.water = plant_data['water']
+            plant.traits = plant_data['traits']
+            plant.revealed_traits = plant_data['revealed_traits']
+            plant.reveal_order = plant_data['reveal_order']
+            plant.entered_stage5_age = plant_data.get('entered_stage5_age')
+            plant.max_age_days = plant_data['max_age_days']
+            plant.senescent = plant_data['senescent']
+            plant.germination_delay = plant_data['germination_delay']
+            plant.pending_cross = plant_data.get('pending_cross')
+            plant.pollinated = plant_data['pollinated']
+            plant.emasculated = plant_data['emasculated']
+            plant.emasc_day = plant_data.get('emasc_day')
+            plant.emasc_phase = plant_data.get('emasc_phase')
+            plant.selfing_frac_before_emasc = plant_data['selfing_frac_before_emasc']
+            plant.pods_total = plant_data['pods_total']
+            plant.pods_remaining = plant_data['pods_remaining']
+            plant.ovules_per_pod = plant_data['ovules_per_pod']
+            plant.ovules_left = plant_data['ovules_left']
+            plant.aborted_ovules = plant_data['aborted_ovules']
+            plant.ancestry = plant_data['ancestry']
+            plant.paternal_ancestry = plant_data['paternal_ancestry']
+            plant.last_anther_check_day = plant_data.get('last_anther_check_day')
+            plant.anthers_available_today = plant_data['anthers_available_today']
+            plant.anthers_collected_day = plant_data.get('anthers_collected_day')
+            
+            tile.plant = plant
+        
+        # Update UI
+        self.render_all()
+        self._update_temp_button_state()
+        
+        # Update seed counter display
+        if hasattr(self, "seed_counter_var"):
+            try:
+                self.seed_counter_var.set(f"Seeds: {len(self.harvest_inventory)}")
+            except Exception:
+                pass
+        
+        # Update pause button text
+        self.pause_btn.configure(
+            text=("⏸ Pause" if self.running else "▶ Resume")
+        )
 
     def _show_help(self):
         # --- Window ---
