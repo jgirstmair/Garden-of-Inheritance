@@ -79,10 +79,11 @@ class TemperatureTracker:
     def _load_averages(self, path):
         """Load Mendel's 15-year averages."""
         if not os.path.exists(path):
-            return {1:{6:-3.9,14:-0.5,22:-2.8},2:{6:-2.5,14:2.5,22:-0.9},3:{6:0.2,14:7.1,22:2.3},
-                   4:{6:5.0,14:14.1,22:7.7},5:{6:9.9,14:19.1,22:12.2},6:{6:14.4,14:23.5,22:16.2},
-                   7:{6:15.3,14:25.1,22:17.7},8:{6:14.9,14:24.0,22:17.3},9:{6:10.6,14:20.2,22:13.2},
-                   10:{6:6.8,14:14.5,22:8.8},11:{6:1.7,14:5.4,22:2.7},12:{6:-2.4,14:0.5,22:-1.9}}
+            # Adjusted values: 6am reduced by ~0.5°C, 14:00 increased by ~0.5°C
+            return {1:{6:-4.4,14:0.0,22:-2.8},2:{6:-3.0,14:3.0,22:-0.9},3:{6:-0.3,14:7.6,22:2.3},
+                   4:{6:4.5,14:14.6,22:7.7},5:{6:9.4,14:19.6,22:12.2},6:{6:13.9,14:24.0,22:16.2},
+                   7:{6:14.8,14:25.6,22:17.7},8:{6:14.4,14:24.5,22:17.3},9:{6:10.1,14:20.7,22:13.2},
+                   10:{6:6.3,14:15.0,22:8.8},11:{6:1.2,14:5.9,22:2.7},12:{6:-2.9,14:1.0,22:-1.9}}
         
         try:
             with open(path, 'r') as f:
@@ -98,10 +99,11 @@ class TemperatureTracker:
                 return {m: {h: sum(monthly_data[m][h])/len(monthly_data[m][h]) for h in [6,14,22]} 
                        for m in monthly_data}
         except:
-            return {1:{6:-3.9,14:-0.5,22:-2.8},2:{6:-2.5,14:2.5,22:-0.9},3:{6:0.2,14:7.1,22:2.3},
-                   4:{6:5.0,14:14.1,22:7.7},5:{6:9.9,14:19.1,22:12.2},6:{6:14.4,14:23.5,22:16.2},
-                   7:{6:15.3,14:25.1,22:17.7},8:{6:14.9,14:24.0,22:17.3},9:{6:10.6,14:20.2,22:13.2},
-                   10:{6:6.8,14:14.5,22:8.8},11:{6:1.7,14:5.4,22:2.7},12:{6:-2.4,14:0.5,22:-1.9}}
+            # Adjusted values: 6am reduced by ~0.5°C, 14:00 increased by ~0.5°C
+            return {1:{6:-4.4,14:0.0,22:-2.8},2:{6:-3.0,14:3.0,22:-0.9},3:{6:-0.3,14:7.6,22:2.3},
+                   4:{6:4.5,14:14.6,22:7.7},5:{6:9.4,14:19.6,22:12.2},6:{6:13.9,14:24.0,22:16.2},
+                   7:{6:14.8,14:25.6,22:17.7},8:{6:14.4,14:24.5,22:17.3},9:{6:10.1,14:20.7,22:13.2},
+                   10:{6:6.3,14:15.0,22:8.8},11:{6:1.2,14:5.9,22:2.7},12:{6:-2.9,14:1.0,22:-1.9}}
     
     def _load_measurements(self):
         """Load simulation measurements with data validation."""
@@ -857,7 +859,41 @@ class TemperatureTracker:
         print(f"[PLOT] Simulation measurements: {len(self.measurements)}")
         print(f"[PLOT] Modern measurements: {len(self.modern_measurements)}")
 
-        if not self.measurements and not self.modern_measurements:
+        # Create control frame for checkbox
+        control_frame = tk.Frame(parent, bg="white")
+        control_frame.pack(fill="x", padx=10, pady=(10, 0))
+        
+        # Checkbox for loading 2025 modern data
+        if not hasattr(self, 'show_2025_data_var'):
+            self.show_2025_data_var = tk.BooleanVar(value=False)
+        
+        # Checkbox for showing 2025 averages
+        if not hasattr(self, 'show_2025_avg_var'):
+            self.show_2025_avg_var = tk.BooleanVar(value=False)
+        
+        checkbox1 = tk.Checkbutton(
+            control_frame,
+            text="Show 2025 Modern Data (Brno)",
+            variable=self.show_2025_data_var,
+            command=lambda: self._tab_plot(parent),
+            font=("Segoe UI", FONT_BODY),
+            bg="white",
+            fg=COLOR_TEXT_PRIMARY
+        )
+        checkbox1.pack(side="left", padx=5)
+        
+        checkbox2 = tk.Checkbutton(
+            control_frame,
+            text="Show 2025 Averages",
+            variable=self.show_2025_avg_var,
+            command=lambda: self._tab_plot(parent),
+            font=("Segoe UI", FONT_BODY),
+            bg="white",
+            fg=COLOR_TEXT_PRIMARY
+        )
+        checkbox2.pack(side="left", padx=5)
+
+        if not self.measurements and not self.modern_measurements and not self.show_2025_data_var.get():
             tk.Label(
                 parent,
                 text="No data to plot yet\n\nTake some measurements first!",
@@ -892,6 +928,9 @@ class TemperatureTracker:
         # Create figure
         fig = Figure(figsize=(8.5, 5.5), dpi=80, facecolor=COLOR_BG_PARCHMENT)
         ax = fig.add_subplot(111, facecolor=COLOR_BG_LIGHT)
+        
+        # Set x-axis limits FIRST to prevent auto-scaling
+        ax.set_xlim(0.5, 12.5)  # Constrain to 12 months with padding
 
         months = list(range(1, 13))
         
@@ -908,10 +947,17 @@ class TemperatureTracker:
         # Smooth curves if scipy available
         if SCIPY_AVAILABLE:
             try:
-                months_smooth = np.linspace(1, 12, 300)
-                spl6 = make_interp_spline(months, a6, k=3)
-                spl14 = make_interp_spline(months, a14, k=3)
-                spl22 = make_interp_spline(months, a22, k=3)
+                # Use more points for extra smooth curves (500 instead of 300)
+                # Add wrap-around points for seamless year cycling
+                months_wrap = [12] + months + [1]  # Dec, Jan-Dec, Jan
+                a6_wrap = [a6[-1]] + a6 + [a6[0]]
+                a14_wrap = [a14[-1]] + a14 + [a14[0]]
+                a22_wrap = [a22[-1]] + a22 + [a22[0]]
+                
+                months_smooth = np.linspace(1, 12, 500)
+                spl6 = make_interp_spline(months_wrap, a6_wrap, k=3)
+                spl14 = make_interp_spline(months_wrap, a14_wrap, k=3)
+                spl22 = make_interp_spline(months_wrap, a22_wrap, k=3)
                 a6_smooth = spl6(months_smooth)
                 a14_smooth = spl14(months_smooth)
                 a22_smooth = spl22(months_smooth)
@@ -940,57 +986,70 @@ class TemperatureTracker:
             ax.plot(months, a22, '-',
                     color=COLOR_EVENING_CB, linewidth=2.5, alpha=0.8, zorder=1)
         
-        # Calculate and plot yearly averages (dotted lines) from simulation data
+        # Calculate and plot daily averages (dashed lines) from simulation data
+        # Only show dashed lines when there are multiple measurements on the SAME DAY
         from collections import defaultdict
-        yearly_averages = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+        daily_measurements = defaultdict(lambda: defaultdict(list))
         
         for m in self.measurements:
-            year = m.get('year')
-            month = m.get('month')
+            date_str = m.get('date')
             hour = m.get('hour')
             temp = m.get('temperature')
             
-            if year and month and hour and temp is not None:
-                yearly_averages[year][month][hour].append(temp)
+            if date_str and hour and temp is not None:
+                daily_measurements[date_str][hour].append(temp)
         
-        # Plot dotted line for each year's monthly averages
-        for year in sorted(yearly_averages.keys()):
-            year_data = yearly_averages[year]
-            
-            # Calculate monthly averages for each hour
-            months_with_data = sorted(year_data.keys())
-            if len(months_with_data) >= 2:  # Only plot if we have data for at least 2 months
+        # Now calculate monthly averages, but ONLY for days with multiple measurements
+        monthly_averages = defaultdict(lambda: defaultdict(list))
+        
+        for date_str, hours_data in daily_measurements.items():
+            try:
+                date_obj = dt.datetime.strptime(date_str, "%Y-%m-%d")
+                month = date_obj.month
+                
+                for hour, temps in hours_data.items():
+                    # Only include if there are 2+ measurements this day at this hour
+                    if len(temps) >= 2:
+                        avg_temp = sum(temps) / len(temps)
+                        monthly_averages[month][hour].append(avg_temp)
+            except:
+                continue
+        
+        # Plot dashed lines for monthly averages (only if we have data from multiple-measurement days)
+        if monthly_averages:
+            months_with_data = sorted(monthly_averages.keys())
+            if len(months_with_data) >= 2:
                 y6_avg, y14_avg, y22_avg = [], [], []
                 valid_months = []
                 
                 for month in months_with_data:
-                    if 6 in year_data[month] and year_data[month][6]:
-                        y6_avg.append(sum(year_data[month][6]) / len(year_data[month][6]))
+                    if 6 in monthly_averages[month] and monthly_averages[month][6]:
+                        y6_avg.append(sum(monthly_averages[month][6]) / len(monthly_averages[month][6]))
                     else:
                         y6_avg.append(None)
                     
-                    if 14 in year_data[month] and year_data[month][14]:
-                        y14_avg.append(sum(year_data[month][14]) / len(year_data[month][14]))
+                    if 14 in monthly_averages[month] and monthly_averages[month][14]:
+                        y14_avg.append(sum(monthly_averages[month][14]) / len(monthly_averages[month][14]))
                     else:
                         y14_avg.append(None)
                     
-                    if 22 in year_data[month] and year_data[month][22]:
-                        y22_avg.append(sum(year_data[month][22]) / len(year_data[month][22]))
+                    if 22 in monthly_averages[month] and monthly_averages[month][22]:
+                        y22_avg.append(sum(monthly_averages[month][22]) / len(monthly_averages[month][22]))
                     else:
                         y22_avg.append(None)
                     
                     valid_months.append(month)
                 
-                # Plot dotted lines (subtle, not dominant)
+                # Plot dashed lines (subtle, for averaged data only)
                 if any(v is not None for v in y6_avg):
-                    ax.plot(valid_months, y6_avg, ':',
-                            color=COLOR_MORNING_CB, linewidth=1.5, alpha=0.4, zorder=2)
+                    ax.plot(valid_months, y6_avg, '--',
+                            color=COLOR_MORNING_CB, linewidth=1.5, alpha=0.5, zorder=2)
                 if any(v is not None for v in y14_avg):
-                    ax.plot(valid_months, y14_avg, ':',
-                            color=COLOR_AFTERNOON_CB, linewidth=1.5, alpha=0.4, zorder=2)
+                    ax.plot(valid_months, y14_avg, '--',
+                            color=COLOR_AFTERNOON_CB, linewidth=1.5, alpha=0.5, zorder=2)
                 if any(v is not None for v in y22_avg):
-                    ax.plot(valid_months, y22_avg, ':',
-                            color=COLOR_EVENING_CB, linewidth=1.5, alpha=0.4, zorder=2)
+                    ax.plot(valid_months, y22_avg, '--',
+                            color=COLOR_EVENING_CB, linewidth=1.5, alpha=0.5, zorder=2)
         
         # SIMULATION measurements (black borders) - plot by day of year
         sim6_days, sim6_temps = [], []
@@ -1049,6 +1108,55 @@ class TemperatureTracker:
         mod14_days, mod14_temps = [], []
         mod22_days, mod22_temps = [], []
         
+        # Load 2025 data from CSV if checkbox is enabled
+        if self.show_2025_data_var.get():
+            csv_path = Path(self.data_dir) / "brno_2025_06_14_22.csv"
+            if csv_path.exists():
+                try:
+                    print(f"[PLOT] Loading 2025 data from {csv_path}")
+                    with open(csv_path, 'r') as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            try:
+                                date_str = row['date']
+                                time_str = row['time_local']
+                                temp = float(row['temperature_2m_C'])
+                                
+                                # Parse hour from time
+                                hour = int(time_str.split(':')[0])
+                                
+                                # Parse date
+                                date_obj = dt.datetime.strptime(date_str, "%Y-%m-%d")
+                                
+                                # Convert to day of year as a fraction of month
+                                if date_obj.month == 12:
+                                    days_in_month = 31
+                                else:
+                                    days_in_month = (dt.date(date_obj.year, date_obj.month + 1, 1) - dt.date(date_obj.year, date_obj.month, 1)).days
+                                day_of_year = date_obj.month + (date_obj.day - 1) / days_in_month
+                                
+                                # Ensure day_of_year is within valid range [1, 13)
+                                # This prevents edge cases from appearing outside the plot bounds
+                                if day_of_year < 1 or day_of_year >= 13:
+                                    print(f"[WARNING] Invalid day_of_year {day_of_year:.3f} for date {date_str}, skipping")
+                                    continue
+                                
+                                if hour == 6:
+                                    mod6_days.append(day_of_year)
+                                    mod6_temps.append(temp)
+                                elif hour == 14:
+                                    mod14_days.append(day_of_year)
+                                    mod14_temps.append(temp)
+                                elif hour == 22:
+                                    mod22_days.append(day_of_year)
+                                    mod22_temps.append(temp)
+                            except Exception as e:
+                                continue
+                    print(f"[PLOT] Loaded {len(mod6_days) + len(mod14_days) + len(mod22_days)} measurements from 2025 CSV")
+                except Exception as e:
+                    print(f"[WARNING] Failed to load 2025 CSV data: {e}")
+        
+        # Also add regular modern measurements from the tracker
         for m in self.modern_measurements:
             hour = m.get('hour')
             temp = m.get('temperature')
@@ -1096,6 +1204,125 @@ class TemperatureTracker:
             ax.scatter(mod22_days, mod22_temps, color=COLOR_EVENING_CB, s=60, 
                       marker='^', edgecolors='red', linewidths=2, zorder=6)
         
+        # Calculate and plot 2025 averages if checkbox is enabled
+        if self.show_2025_avg_var.get():
+            # Load 2025 data from CSV for averaging (independent of scatter plot data)
+            csv_path = Path(self.data_dir) / "brno_2025_06_14_22.csv"
+            if csv_path.exists():
+                try:
+                    from collections import defaultdict
+                    monthly_2025 = defaultdict(lambda: {6: [], 14: [], 22: []})
+                    
+                    # Load and aggregate by month
+                    with open(csv_path, 'r') as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            try:
+                                date_str = row['date']
+                                time_str = row['time_local']
+                                temp = float(row['temperature_2m_C'])
+                                hour = int(time_str.split(':')[0])
+                                date_obj = dt.datetime.strptime(date_str, "%Y-%m-%d")
+                                month = date_obj.month
+                                
+                                if hour in [6, 14, 22]:
+                                    monthly_2025[month][hour].append(temp)
+                            except Exception:
+                                continue
+                    
+                    # Calculate averages
+                    months_2025 = sorted(monthly_2025.keys())
+                    avg6_2025 = [sum(monthly_2025[m][6])/len(monthly_2025[m][6]) if monthly_2025[m][6] else None for m in months_2025]
+                    avg14_2025 = [sum(monthly_2025[m][14])/len(monthly_2025[m][14]) if monthly_2025[m][14] else None for m in months_2025]
+                    avg22_2025 = [sum(monthly_2025[m][22])/len(monthly_2025[m][22]) if monthly_2025[m][22] else None for m in months_2025]
+                    
+                    # Plot with smooth interpolation if scipy available
+                    if SCIPY_AVAILABLE and len(months_2025) >= 3:
+                        print(f"[PLOT] Attempting smooth interpolation for 2025 averages (scipy available)")
+                        try:
+                            # Add wrap-around points for seamless year cycling (like Mendel baseline)
+                            # This ensures smooth connection between December and January
+                            
+                            if len(months_2025) == 12:  # Only if we have all 12 months
+                                print(f"[PLOT] Using wrap-around interpolation for complete year")
+                                # Wrap-around: add December at start and January at end
+                                months_wrap = [0] + list(months_2025) + [13]
+                                avg6_wrap = [avg6_2025[-1]] + avg6_2025 + [avg6_2025[0]]
+                                avg14_wrap = [avg14_2025[-1]] + avg14_2025 + [avg14_2025[0]]
+                                avg22_wrap = [avg22_2025[-1]] + avg22_2025 + [avg22_2025[0]]
+                                
+                                # Extra smooth with 600 points
+                                months_smooth = np.linspace(1, 12, 600)
+                                
+                                # Morning (6am)
+                                if all(v is not None for v in avg6_2025):
+                                    spl6 = make_interp_spline(months_wrap, avg6_wrap, k=3)
+                                    v6_smooth = spl6(months_smooth)
+                                    ax.plot(months_smooth, v6_smooth, '-', color='red', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Morning (6:00)')
+                                    print(f"[PLOT] Plotted smooth 2025 morning average")
+                                
+                                # Afternoon (2pm)
+                                if all(v is not None for v in avg14_2025):
+                                    spl14 = make_interp_spline(months_wrap, avg14_wrap, k=3)
+                                    v14_smooth = spl14(months_smooth)
+                                    ax.plot(months_smooth, v14_smooth, '-', color='darkorange', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Afternoon (14:00)')
+                                    print(f"[PLOT] Plotted smooth 2025 afternoon average")
+                                
+                                # Evening (10pm)
+                                if all(v is not None for v in avg22_2025):
+                                    spl22 = make_interp_spline(months_wrap, avg22_wrap, k=3)
+                                    v22_smooth = spl22(months_smooth)
+                                    ax.plot(months_smooth, v22_smooth, '-', color='darkgreen', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Evening (22:00)')
+                                    print(f"[PLOT] Plotted smooth 2025 evening average")
+                            else:
+                                # Fallback for incomplete data - no wrap-around
+                                print(f"[PLOT] Using non-wrapped interpolation (incomplete data)")
+                                valid_6 = [(m, v) for m, v in zip(months_2025, avg6_2025) if v is not None]
+                                valid_14 = [(m, v) for m, v in zip(months_2025, avg14_2025) if v is not None]
+                                valid_22 = [(m, v) for m, v in zip(months_2025, avg22_2025) if v is not None]
+                                
+                                if len(valid_6) >= 3:
+                                    m6, v6 = zip(*valid_6)
+                                    m6_smooth = np.linspace(min(m6), max(m6), 400)
+                                    spl6 = make_interp_spline(m6, v6, k=min(3, len(m6)-1))
+                                    v6_smooth = spl6(m6_smooth)
+                                    ax.plot(m6_smooth, v6_smooth, '-', color='red', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Morning (6:00)')
+                                
+                                if len(valid_14) >= 3:
+                                    m14, v14 = zip(*valid_14)
+                                    m14_smooth = np.linspace(min(m14), max(m14), 400)
+                                    spl14 = make_interp_spline(m14, v14, k=min(3, len(m14)-1))
+                                    v14_smooth = spl14(m14_smooth)
+                                    ax.plot(m14_smooth, v14_smooth, '-', color='darkorange', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Afternoon (14:00)')
+                                
+                                if len(valid_22) >= 3:
+                                    m22, v22 = zip(*valid_22)
+                                    m22_smooth = np.linspace(min(m22), max(m22), 400)
+                                    spl22 = make_interp_spline(m22, v22, k=min(3, len(m22)-1))
+                                    v22_smooth = spl22(m22_smooth)
+                                    ax.plot(m22_smooth, v22_smooth, '-', color='darkgreen', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Evening (22:00)')
+                        except Exception as e:
+                            print(f"[WARNING] Failed to plot smooth 2025 averages: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            # Fallback to simple lines
+                            if any(v is not None for v in avg6_2025):
+                                ax.plot(months_2025, avg6_2025, '-', color='red', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Morning (6:00)')
+                            if any(v is not None for v in avg14_2025):
+                                ax.plot(months_2025, avg14_2025, '-', color='darkorange', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Afternoon (14:00)')
+                            if any(v is not None for v in avg22_2025):
+                                ax.plot(months_2025, avg22_2025, '-', color='darkgreen', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Evening (22:00)')
+                    else:
+                        # No scipy or too few points - simple lines
+                        if any(v is not None for v in avg6_2025):
+                            ax.plot(months_2025, avg6_2025, '-', color='red', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Morning (6:00)')
+                        if any(v is not None for v in avg14_2025):
+                            ax.plot(months_2025, avg14_2025, '-', color='darkorange', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Afternoon (14:00)')
+                        if any(v is not None for v in avg22_2025):
+                            ax.plot(months_2025, avg22_2025, '-', color='darkgreen', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Evening (22:00)')
+                except Exception as e:
+                    print(f"[WARNING] Failed to load or plot 2025 averages: {e}")
+        
         # Labels and title
         ax.set_xlabel('Month', fontsize=12, fontfamily='serif', fontweight='bold')
         ax.set_ylabel('Temperature (°C)', fontsize=12, fontfamily='serif', fontweight='bold')
@@ -1116,7 +1343,7 @@ class TemperatureTracker:
         ax.set_xticklabels(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'], 
                           fontfamily='serif', fontsize=10)
         ax.tick_params(axis='y', labelsize=10)
-        ax.set_ylim(-15, 35)  # Extended range from -15°C to 35°C
+        ax.set_ylim(-15, 40)  # Extended range to 40°C for buffer above 35°C maximum
         ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, color='#8B7355')
         
         # Custom legend order: baseline (Morning/Afternoon/Evening), then Recorded, then Modern
@@ -1173,10 +1400,10 @@ class TemperatureTracker:
         
         fig.tight_layout(pad=2)
         
-        # Display
+        # Display canvas in parent (after control_frame)
         canvas = FigureCanvasTkAgg(fig, parent)
         canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=(5, 10))
         
         print("[PLOT] Plot rendered successfully\n")
     

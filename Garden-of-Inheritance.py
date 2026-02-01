@@ -3976,7 +3976,7 @@ class GardenApp:
 
     def _on_water_all(self):
         if self.garden.weather in ("🌧", "⛈"):
-            self._toast("It's raining — manual watering not needed.", level="info")
+            self._toast("Rainy day! Gregor leaves the plants to the clouds.", level="info")
             return
         msg = self.garden.water_all()
         self.render_all()
@@ -5929,7 +5929,7 @@ class GardenApp:
                     'genotype': seed.genotype,
                     'ancestry': seed.ancestry,
                 }
-                for seed in self.inventory.get_all('seeds')
+                for seed in self.harvest_inventory
             ],
             'pollen': [
                 {
