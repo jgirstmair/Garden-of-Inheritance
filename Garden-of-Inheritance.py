@@ -1777,15 +1777,15 @@ class GardenApp:
 
     def _build_ui(self):
 
-        # ---- Menubar ----
-        self.menubar = tk.Menu(self.root) if not hasattr(self, "menubar") else self.menubar
+        # ---- Menubar with larger font ----
+        self.menubar = tk.Menu(self.root, font=("Segoe UI", 11)) if not hasattr(self, "menubar") else self.menubar
         
         # ---- File Menu ----
-        file_menu = tk.Menu(self.menubar, tearoff=0)
+        file_menu = tk.Menu(self.menubar, tearoff=0, font=("Segoe UI", 11))
         file_menu.add_command(label="Save Garden", command=self._on_save_garden)
         
         # Load submenu (dynamically populated)
-        self.load_submenu = tk.Menu(file_menu, tearoff=0, postcommand=lambda: self._build_load_menu(self.load_submenu))
+        self.load_submenu = tk.Menu(file_menu, tearoff=0, font=("Segoe UI", 11), postcommand=lambda: self._build_load_menu(self.load_submenu))
         file_menu.add_cascade(label="Load Garden", menu=self.load_submenu)
         
         file_menu.add_separator()
@@ -1796,7 +1796,7 @@ class GardenApp:
         self.menubar.add_cascade(label="File", menu=file_menu)
         
         # ---- View Menu ----
-        view_menu = tk.Menu(self.menubar, tearoff=0)
+        view_menu = tk.Menu(self.menubar, tearoff=0, font=("Segoe UI", 11))
         
         # Meteorological Observatory
         def _open_observatory():
@@ -1831,7 +1831,7 @@ class GardenApp:
         self.root.bind_all("<Control-g>", lambda e: self._on_genetics())
 
         # --- NEW: Game Settings menu ---
-        game_menu = tk.Menu(self.menubar, tearoff=0)
+        game_menu = tk.Menu(self.menubar, tearoff=0, font=("Segoe UI", 11))
         
         # --- Day / Night toggle ---
         self.daynight_var = tk.BooleanVar(value=self.enable_daynight)
@@ -1839,6 +1839,12 @@ class GardenApp:
             label="Day / Night cycle",
             variable=self.daynight_var,
             command=self._toggle_daynight
+        )
+        
+        # --- NEW: Time Speed (moved from top buttons) ---
+        game_menu.add_command(
+            label="Time Speed…",
+            command=self._open_speed_dialog
         )
         
         game_menu.add_separator()
@@ -1915,32 +1921,16 @@ class GardenApp:
 
         self._apply_hover = _apply_hover   # attach method to instance
 
-        # Left: status
+        # Left: status (EMPTY now - everything moved below to grid_header)
         status = tk.Frame(self.topbar)
         status.pack(side="left")
 
-        # Day label
-        #self.day_label = tk.Label(status, text="", font=self.font_day)
-        #self.day_label.pack(side="left")
-
-        # Seed + starter counters (independent font)
+        # Seeds/Starter/Buttons will be created later in grid_header (above the grid)
+        # Just initialize the variables here
         self.seed_counter_var = tk.StringVar(value="Seeds: 0")
-        self.seed_label = tk.Label(
-            status,
-            textvariable=self.seed_counter_var,
-            font=self.font_seed,
-        )
-        self.seed_label.pack(side="left", padx=12)
-
         self.starter_var = tk.StringVar(value=f"Starter: {0}")
-        self.starter_label = tk.Label(
-            status,
-            textvariable=self.starter_var,
-            font=self.font_seed,
-        )
-        self.starter_label.pack(side="left", padx=12)
 
-        # New: Mendelian laws status in top bar
+        # New: Mendelian laws status (will be shown below grid)
         self.law_status_var = tk.StringVar(
             value=(
                 "☐ Law of Dominance     "
@@ -1957,144 +1947,80 @@ class GardenApp:
 
         self._update_law_status_label()
 
-        # Global buttons on the RIGHT
-        controls = tk.Frame(self.topbar)
-        controls.pack(side="right", anchor="w")
-
+        # All buttons will be created in grid_header (not in topbar)
         self.status_var = tk.StringVar(value="")
 
-        # Use shared modern button style
-        btn_kwargs = dict(self.button_style)
-
-        # --- create buttons ---
-        self.plant_seeds_btn = tk.Button(
-            controls,
-            text="Plant 🌱",
-            **btn_kwargs,
-        )
-        self._apply_hover(self.plant_seeds_btn)
-
-        # # Make Plant button GREEN + readable (and keep custom hover colors)
-        # self.plant_seeds_btn.configure(
-        #     bg="#2ecc71",
-        #     activebackground="#27ae60",
-        #     fg="white",
-        #     activeforeground="white",
-        #     command=self._on_plant_seed_quick,   # ensure it triggers the chooser
-        # )
-        # self.plant_seeds_btn._base_bg = "#2ecc71"
-        # self.plant_seeds_btn._hover_bg = "#27ae60"
-
-        self.summary_btn = tk.Button(
-            controls,
-            text="Summary",
-            command=self._open_summary,
-            **btn_kwargs,
-        )
-        self._apply_hover(self.summary_btn)
-
-        self.fast_btn = tk.Button(
-            controls,
-            text="FF ▶▶",
-            command=self._on_fast_forward,
-            **btn_kwargs,
-        )
-        self._apply_hover(self.fast_btn)
-
-        self.speed_btn = tk.Button(
-            controls,
-            text="Speed…",
-            command=self._open_speed_dialog,
-            **btn_kwargs,
-        )
-        self._apply_hover(self.speed_btn)
-
-        self.observatory_btn = tk.Button(
-            controls,
-            text="🔭 Observatory",
-            command=lambda: (
-                self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
-                else messagebox.showinfo("Observatory", "Temperature tracker not available")
-            ),
-            **btn_kwargs,
-        )
-        self._apply_hover(self.observatory_btn)
-
-        self.pause_btn = tk.Button(
-            controls,
-            text=("▶ Resume" if not self.running else "⏸ Pause"),
-            command=self._toggle_run,
-            **btn_kwargs,
-        )
-        self._apply_hover(self.pause_btn)
-
-        self.next_phase_btn = tk.Button(
-            controls,
-            text="Next ⏵1h",
-            command=self._on_next_phase,
-            **btn_kwargs,
-        )
-        self._apply_hover(self.next_phase_btn)
-
-        # Create the menu as before
-        self.plant_seeds_btn.configure(command=self._on_plant_seed_quick)
-        self.water_all_btn = tk.Button(
-            controls,
-            text="Water All 💧",
-            command=self._on_water_all,
-            **btn_kwargs,
-        )
-        self._apply_hover(self.water_all_btn)
-        
-        # Temperature measurement button
-        self.measure_temp_btn = tk.Button(
-            controls,
-            text="°C Measure Temp",
-            command=self._on_measure_temperature,
-            **btn_kwargs,
-        )
-        self._apply_hover(self.measure_temp_btn)
-        # Set initial state
-        try:
-            self._update_temp_button_state()
-        except Exception:
-            pass
-
-        # --- pack LEFT in desired order ---
-        self.observatory_btn.pack(side="left", padx=2, pady=2)
-        self.pause_btn.pack(side="left", padx=2, pady=2)
-        self.fast_btn.pack(side="left", padx=2, pady=2)
-        self.speed_btn.pack(side="left", padx=2, pady=2)
-        self.next_phase_btn.pack(side="left", padx=2, pady=2)
-        self.plant_seeds_btn.pack(side="left", padx=2, pady=2)
-        self.water_all_btn.pack(side="left", padx=2, pady=2)
-        self.measure_temp_btn.pack(side="left", padx=2, pady=2)
-        self.summary_btn.pack(side="left", padx=2, pady=2)
-
-        # ---------- Status row below top bar ----------
-        self.actions_bar = tk.Frame(self.root, padx=8, pady=0, bd=0, relief="groove")
-        self.actions_bar.pack(fill="x")
-
-        self.selection_label = tk.Label(self.actions_bar, text="Select a plant…", font=("Segoe UI", 12, "bold"))
-        self.selection_label.pack(side="left")
-
-        # ---------- Main content area: left sidebar + grid on the right ----------
+        # ---------- Main content area: left and right panels ----------
         self.content = tk.Frame(self.root, padx=8, pady=8)
-
         self.content.pack(fill="both", expand=True)
 
         if not hasattr(self, 'grid_bg'):
             self.grid_bg = '#eeeeee'
 
-        # 1) wider sidebar (adjust to taste) and keep pack_propagate(False)
-        self.left_panel = tk.Frame(self.content, padx=6, pady=8, bg=self.grid_bg, width=180)
-        self.left_panel.pack(side="left", anchor="n", fill="y")
-        self.left_panel.pack_propagate(False)
+        # ========== LEFT PANEL (clean, no borders) ==========
+        self.left_panel = tk.Frame(self.content, padx=6, pady=8, bg=self.grid_bg)
+        self.left_panel.pack(side="left", anchor="n")
 
+        # Mendel portrait at the TOP of left panel
         mendel_img = safe_image(os.path.join(ICONS_DIR, "mendel.png"))
-        self.mendel_label = tk.Label(self.left_panel, image=mendel_img)
+        self.mendel_label = tk.Label(self.left_panel, image=mendel_img, bg=self.grid_bg)
         self.mendel_label.image = mendel_img
-        self.mendel_label.pack(anchor="w")
+        self.mendel_label.pack(anchor="w", pady=(0, 0))  # No bottom padding
+
+        # Container for icon with ID and generation text
+        self.icon_row = tk.Frame(self.left_panel, bg=self.grid_bg)
+        self.icon_row.pack(anchor="center", pady=(0, 2))  # No top padding
+        
+        # ID label (left of icon) - fixed width to prevent shifting
+        self.id_label = tk.Label(
+            self.icon_row,
+            text="",
+            font=("Segoe UI", 10, "bold"),
+            bg=self.grid_bg,
+            fg="#000000",
+            width=4,  # Fixed width for up to 3 digits (e.g., "#999")
+            anchor="e"  # Right-align text
+        )
+        self.id_label.grid(row=0, column=0, padx=(0, 4))
+
+        # Plant icon display (center) - will show empty/dead icons too
+        self.plant_icon_label = tk.Label(self.icon_row, bg=self.grid_bg)
+        self.plant_icon_label.grid(row=0, column=1)
+        
+        # Generation label (right of icon) - fixed width
+        self.gen_label = tk.Label(
+            self.icon_row,
+            text="",
+            font=("Segoe UI", 10, "bold"),
+            bg=self.grid_bg,
+            fg="#000000",
+            width=3,  # Fixed width (e.g., "F99")
+            anchor="w"  # Left-align text
+        )
+        self.gen_label.grid(row=0, column=2, padx=(4, 0))
+        
+        # Stage info label (centered, below icon)
+        self.stage_label = tk.Label(
+            self.left_panel,
+            text="",
+            font=("Segoe UI", 10, "italic"),
+            bg=self.grid_bg,
+            fg="#555555"
+        )
+        self.stage_label.pack(anchor="center", pady=(0, 8))
+        
+        # Load empty and dead icons for display (same as tile.py)
+        try:
+            self.empty_icon = tk.PhotoImage(file="icons/empty.png")
+        except Exception as e:
+            print(f"Failed to load empty icon: {e}")
+            self.empty_icon = None
+        
+        try:
+            self.dead_icon = tk.PhotoImage(file="icons/dead.png")
+        except Exception as e:
+            print(f"Failed to load dead icon: {e}")
+            self.dead_icon = None
 
         # 2) make the actions frame stretch horizontally
         self.left_actions = tk.Frame(self.left_panel)
@@ -2184,17 +2110,17 @@ class GardenApp:
         self.traits_container.pack(side="top", fill="x", pady=(4, 0), anchor="n")
 
 
-        # Grid on the right
-        self.grid_header = tk.Frame(self.content, padx=12, pady=8, bg=self.grid_bg)
-        self.grid_header.pack(fill="x")
+        # ========== RIGHT PANEL (clean, no borders) ==========
+        right_panel = tk.Frame(self.content, bg=self.grid_bg)
+        right_panel.pack(side="left", fill="both", expand=True, padx=(8, 0))
 
-        # Phase title
-        self.phase_label = tk.Label(self.grid_header, text="", font=("Segoe UI", 20, "bold"))
-        self.phase_label.pack(pady=(0, 2))
+        # Date/Time/Weather/Temp at the TOP of right panel (its own line)
+        self.phase_label = tk.Label(right_panel, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
+        self.phase_label.pack(fill="x", pady=(4, 8))
 
-        # Status message directly below the big weather/day/temp line
+        # Status message bar
         self.status_msg = tk.Label(
-            self.grid_header,
+            right_panel,
             textvariable=self.status_var,
             anchor="w",
             fg="#c01818",
@@ -2207,58 +2133,130 @@ class GardenApp:
             padx=6,
             pady=4,
         )
-        self.status_msg.pack(fill="x", pady=(2, 4))
+        self.status_msg.pack(fill="x", pady=(0, 4))
 
-        # ---------- Mendelian laws row ----------
+        # ---------- Seeds/Starter/All Buttons row ----------
+        self.inventory_row = tk.Frame(right_panel, bg=self.grid_bg)
+        self.inventory_row.pack(anchor="w", fill="x", pady=(4, 8))
 
-        self.law_row = tk.Frame(self.grid_header, bg=self.grid_bg)
-        self.law_row.pack(anchor="w", fill="x", pady=(4, 0))
+        # Left-aligned container for Seeds/Starter
+        inventory_left = tk.Frame(self.inventory_row, bg=self.grid_bg)
+        inventory_left.pack(side="left", anchor="w")
 
-        # Left-aligned container (prevents right-push by expanding widgets)
-        law_left = tk.Frame(self.law_row, bg=self.grid_bg)
-        law_left.pack(side="left", anchor="w")
-
-        # Laws label (left)
-        # NOTE: label_style may not exist; fall back safely if needed
-        try:
-            lbl_kwargs = dict(self.label_style)
-        except Exception:
-            lbl_kwargs = {"font": ("Segoe UI", 14), "bg": self.grid_bg}
-
-        # Title label (left)
-        tk.Label(
-            law_left,
-            text="Mendelian laws:",
-            font=("Segoe UI", 14),
+        # Seeds label
+        self.seed_label = tk.Label(
+            inventory_left,
+            textvariable=self.seed_counter_var,
+            font=self.font_seed,
             bg=self.grid_bg
-        ).pack(side="left", anchor="w", padx=(0, 10))
-
-        # The actual laws status text (this is what disappeared)
-        # IMPORTANT: keep the name self.law_status_label because _update_law_status_label() uses it
-        self.law_status_label = tk.Label(
-            law_left,
-            textvariable=self.law_status_var,
-            font=("Segoe UI", 14),
-            bg=self.grid_bg,
-            anchor="w",
-            justify="left"
         )
-        self.law_status_label.pack(side="left", anchor="w", padx=(0, 10))
+        self.seed_label.pack(side="left", padx=(0, 12))
 
-        # Test button (left, next to laws)
-        self.btn_test_laws = tk.Button(
-            law_left,
-            text="Unlock",
-            command=self._test_mendelian_laws_now,
-            **self.button_style
+        # Starter label
+        self.starter_label = tk.Label(
+            inventory_left,
+            textvariable=self.starter_var,
+            font=self.font_seed,
+            bg=self.grid_bg
         )
-        self._apply_hover(self.btn_test_laws)
-        self.btn_test_laws.pack(side="left", padx=(8, 10))
+        self.starter_label.pack(side="left", padx=(0, 20))
 
-        # Date/Time/Weather header above the grid
-        self.header_bar = tk.Frame(self.content, padx=8, pady=6)
-        self.grid_frame = tk.Frame(self.content, padx=8, pady=0, bg=self.grid_bg)
-        self.grid_frame.pack(side="left", anchor="n", pady=5)
+        # ALL BUTTONS (moved from topbar)
+        btn_kwargs = dict(self.button_style)
+        
+        # Observatory button
+        self.observatory_btn = tk.Button(
+            inventory_left,
+            text="🔭 Observatory",
+            command=lambda: (
+                self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
+                else messagebox.showinfo("Observatory", "Temperature tracker not available")
+            ),
+            **btn_kwargs,
+        )
+        self._apply_hover(self.observatory_btn)
+        self.observatory_btn.pack(side="left", padx=2)
+
+        # Pause/Resume button
+        self.pause_btn = tk.Button(
+            inventory_left,
+            text=("▶ Resume" if not self.running else "⏸ Pause"),
+            command=self._toggle_run,
+            **btn_kwargs,
+        )
+        self._apply_hover(self.pause_btn)
+        self.pause_btn.pack(side="left", padx=2)
+
+        # Fast Forward button
+        self.fast_btn = tk.Button(
+            inventory_left,
+            text="FF ▶▶",
+            command=self._on_fast_forward,
+            **btn_kwargs,
+        )
+        self._apply_hover(self.fast_btn)
+        self.fast_btn.pack(side="left", padx=2)
+
+        # Speed button moved to Game Settings menu
+
+        # Next Phase button
+        self.next_phase_btn = tk.Button(
+            inventory_left,
+            text="Next ⏵1h",
+            command=self._on_next_phase,
+            **btn_kwargs,
+        )
+        self._apply_hover(self.next_phase_btn)
+        self.next_phase_btn.pack(side="left", padx=2)
+
+        # Plant Seeds button
+        self.plant_seeds_btn = tk.Button(
+            inventory_left,
+            text="Plant 🌱",
+            command=self._on_plant_seed_quick,
+            **btn_kwargs,
+        )
+        self._apply_hover(self.plant_seeds_btn)
+        self.plant_seeds_btn.pack(side="left", padx=2)
+
+        # Water All button
+        self.water_all_btn = tk.Button(
+            inventory_left,
+            text="Water All 💧",
+            command=self._on_water_all,
+            **btn_kwargs,
+        )
+        self._apply_hover(self.water_all_btn)
+        self.water_all_btn.pack(side="left", padx=2)
+        
+        # Temperature measurement button
+        self.measure_temp_btn = tk.Button(
+            inventory_left,
+            text="°C Measure Temp",
+            command=self._on_measure_temperature,
+            **btn_kwargs,
+        )
+        self._apply_hover(self.measure_temp_btn)
+        self.measure_temp_btn.pack(side="left", padx=2)
+        # Set initial state
+        try:
+            self._update_temp_button_state()
+        except Exception:
+            pass
+
+        # Summary button
+        self.summary_btn = tk.Button(
+            inventory_left,
+            text="Summary",
+            command=self._open_summary,
+            **btn_kwargs,
+        )
+        self._apply_hover(self.summary_btn)
+        self.summary_btn.pack(side="left", padx=2)
+
+        # Grid frame (in right_panel)
+        self.grid_frame = tk.Frame(right_panel, padx=0, pady=0, bg=self.grid_bg)
+        self.grid_frame.pack(anchor="w", pady=(0, 5))
 
         # Create a config dict to pass sizes into the class
         tile_configs = {
@@ -2278,6 +2276,44 @@ class GardenApp:
             tile.grid(row=idx // TILES_PER_ROW, column=idx % TILES_PER_ROW, padx=2, pady=2)
             # Store the single object
             self.tiles.append(tile)
+
+        # ---------- Mendelian laws row (below the grid in right_panel) ----------
+        self.law_row = tk.Frame(right_panel, bg=self.grid_bg, padx=0, pady=8)
+        self.law_row.pack(anchor="w", fill="x", pady=(4, 0))
+
+        # Left-aligned container (prevents right-push by expanding widgets)
+        law_left = tk.Frame(self.law_row, bg=self.grid_bg)
+        law_left.pack(side="left", anchor="w")
+
+        # Title label (left)
+        tk.Label(
+            law_left,
+            text="Mendelian laws:",
+            font=("Segoe UI", 14),
+            bg=self.grid_bg
+        ).pack(side="left", anchor="w", padx=(0, 10))
+
+        # The actual laws status text
+        # IMPORTANT: keep the name self.law_status_label because _update_law_status_label() uses it
+        self.law_status_label = tk.Label(
+            law_left,
+            textvariable=self.law_status_var,
+            font=("Segoe UI", 14),
+            bg=self.grid_bg,
+            anchor="w",
+            justify="left"
+        )
+        self.law_status_label.pack(side="left", anchor="w", padx=(0, 10))
+
+        # Unlock button (left, next to laws)
+        self.btn_test_laws = tk.Button(
+            law_left,
+            text="Unlock",
+            command=self._test_mendelian_laws_now,
+            **self.button_style
+        )
+        self._apply_hover(self.btn_test_laws)
+        self.btn_test_laws.pack(side="left", padx=(8, 10))
 
     # ---------- Rendering ----------
 
@@ -2491,23 +2527,21 @@ class GardenApp:
         except Exception:
             sig = None
 
-        prev_sig = getattr(self, "_sel_traits_sig", None)
-        if prev_sig == sig:
-            # Nothing important changed since last render; keep existing widgets
-            return
-
-        # Cache new signature so we only re-render when something actually changes
-        self._sel_traits_sig = sig
-
-        for w in self.traits_container.winfo_children():
-            w.destroy()
-
-        # Guard: no selection
+        # Guard: no plant (empty tile) - show empty icon and "free"
         if plant is None:
             try:
-                self.selection_label.configure(text="Select a plant…")
+                self.id_label.configure(text="")  # No # for empty plot
+                self.gen_label.configure(text="")  # Clear generation
+                self.stage_label.configure(text='free')  # Show "free"
+                
+                # Show empty icon
+                if hasattr(self, 'empty_icon') and self.empty_icon:
+                    self.plant_icon_label.configure(image=self.empty_icon)
+                    self.plant_icon_label.image = self.empty_icon
+                else:
+                    self.plant_icon_label.configure(image='')
             except Exception as e:
-                print("selection_label.configure failed:", e)
+                print("clear selection failed:", e)
 
             try:
                 self.water_btn.configure(state="disabled")
@@ -2517,10 +2551,84 @@ class GardenApp:
             except Exception as e:
                 print("button disable failed:", e)
 
+            # Clear the cached signature
+            self._sel_traits_sig = None
             return
 
-        if plant is None:
-            self.selection_label.configure(text="Select a plant…")
+        # ALWAYS update selection when we have a plant (moved before cache check)
+        try:
+            # Check if plant is dead
+            is_dead = not getattr(plant, "alive", True)
+            
+            if is_dead:
+                # Show dead plant
+                self.id_label.configure(text="")  # No # for dead plant
+                self.gen_label.configure(text="")  # Clear generation
+                self.stage_label.configure(text='dead')  # Show "dead"
+                
+                # Show dead icon
+                if hasattr(self, 'dead_icon') and self.dead_icon:
+                    self.plant_icon_label.configure(image=self.dead_icon)
+                    self.plant_icon_label.image = self.dead_icon
+                else:
+                    self.plant_icon_label.configure(image='')
+                
+                # Disable most buttons for dead plant
+                self.water_btn.configure(state="disabled")
+                self.inspect_btn.configure(state="disabled")
+                self.harvest_btn.configure(state="disabled")
+                self.pollen_btn.configure(state="disabled")
+                return
+            
+            # Living plant - update normally
+            # Update ID and generation text labels
+            self.id_label.configure(text=f"#{plant.id}")
+            self.gen_label.configure(text=plant.generation)
+            
+            # Debug output
+            print(f"[SELECTION] Updating: #{plant.id} {plant.generation}")
+            
+            # Update plant icon
+            try:
+                # Ensure the icon is loaded
+                self._ensure_tile_icon(plant)
+                
+                if hasattr(plant, 'img_obj') and plant.img_obj:
+                    self.plant_icon_label.configure(image=plant.img_obj)
+                    self.plant_icon_label.image = plant.img_obj  # Keep reference
+                    print(f"[SELECTION] Updated plant icon")
+                else:
+                    # Show placeholder if no icon
+                    if hasattr(self, 'placeholder_label') and self.placeholder_label:
+                        self.plant_icon_label.configure(image='')
+                    print(f"[SELECTION] No plant icon available")
+            except Exception as e:
+                print(f"[WARNING] Failed to update plant icon: {e}")
+            
+            # Update stage label (centered below icon)
+            try:
+                stage_name = STAGE_NAMES.get(plant.stage, plant.stage)
+                self.stage_label.configure(text=stage_name)
+            except Exception as e:
+                print(f"[WARNING] Failed to update stage label: {e}")
+            
+            self.water_btn.configure(state="normal")
+            self.inspect_btn.configure(state="normal")
+            self.harvest_btn.configure(state=("normal" if (plant.stage >= 7 and plant.alive) else "disabled"))
+        except Exception as e:
+            print(f"[ERROR] Failed to update selection: {e}")
+
+        # NOW check cache for traits rendering
+        prev_sig = getattr(self, "_sel_traits_sig", None)
+        if prev_sig == sig:
+            # Nothing important changed since last render; keep existing trait widgets
+            return
+
+        # Cache new signature so we only re-render traits when something actually changes
+        self._sel_traits_sig = sig
+
+        for w in self.traits_container.winfo_children():
+            w.destroy()
 
         # --- badges for emasculation / pollination ---
         try:
@@ -2563,16 +2671,7 @@ class GardenApp:
             return
 
 
-        pollinated_suffix = f"  [pollinated by #{donor_id}]" if donor_id else ""
-        self.selection_label.configure(text=f"Plant #{plant.id} ({plant.generation}) - {STAGE_NAMES.get(plant.stage, plant.stage)}" + pollinated_suffix)
-        self.water_btn.configure(state="normal")
-        self.inspect_btn.configure(state="normal")
-        self.harvest_btn.configure(state=("normal" if (plant.stage >= 7 and plant.alive) else "disabled"))
-        ok, _ = plant.can_collect_pollen()
-        try:
-            self.pollen_btn.configure(state=("normal" if ok else "disabled"))
-        except Exception:
-            pass
+        # Pollen button state (already updated above, but check again for pollen)
         ok, _ = plant.can_collect_pollen()
         try:
             self.pollen_btn.configure(state=("normal" if ok else "disabled"))
