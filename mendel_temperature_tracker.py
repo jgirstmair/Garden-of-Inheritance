@@ -859,20 +859,40 @@ class TemperatureTracker:
         print(f"[PLOT] Simulation measurements: {len(self.measurements)}")
         print(f"[PLOT] Modern measurements: {len(self.modern_measurements)}")
 
-        # Create control frame for checkbox
+        # Create control frame for checkboxes
         control_frame = tk.Frame(parent, bg="white")
         control_frame.pack(fill="x", padx=10, pady=(10, 0))
+        
+        # Create two rows of checkboxes for better organization
+        row1_frame = tk.Frame(control_frame, bg="white")
+        row1_frame.pack(fill="x", pady=2)
+        
+        row2_frame = tk.Frame(control_frame, bg="white")
+        row2_frame.pack(fill="x", pady=2)
+        
+        # ROW 1: Data visibility controls
+        
+        # Checkbox for showing recorded simulator data points (NEW - default ON)
+        if not hasattr(self, 'show_recorded_points_var'):
+            self.show_recorded_points_var = tk.BooleanVar(value=True)
+        
+        checkbox_recorded = tk.Checkbutton(
+            row1_frame,
+            text="Show Recorded Data Points",
+            variable=self.show_recorded_points_var,
+            command=lambda: self._tab_plot(parent),
+            font=("Segoe UI", FONT_BODY),
+            bg="white",
+            fg=COLOR_TEXT_PRIMARY
+        )
+        checkbox_recorded.pack(side="left", padx=5)
         
         # Checkbox for loading 2025 modern data
         if not hasattr(self, 'show_2025_data_var'):
             self.show_2025_data_var = tk.BooleanVar(value=False)
         
-        # Checkbox for showing 2025 averages
-        if not hasattr(self, 'show_2025_avg_var'):
-            self.show_2025_avg_var = tk.BooleanVar(value=False)
-        
         checkbox1 = tk.Checkbutton(
-            control_frame,
+            row1_frame,
             text="Show 2025 Modern Data (Brno)",
             variable=self.show_2025_data_var,
             command=lambda: self._tab_plot(parent),
@@ -882,8 +902,59 @@ class TemperatureTracker:
         )
         checkbox1.pack(side="left", padx=5)
         
+        # ROW 2: Average lines controls
+        
+        # Checkbox for showing simulation monthly averages (per time)
+        if not hasattr(self, 'show_sim_monthly_avg_var'):
+            self.show_sim_monthly_avg_var = tk.BooleanVar(value=False)
+        
+        checkbox3 = tk.Checkbutton(
+            row2_frame,
+            text="Show Recorded Monthly Avg (per time)",
+            variable=self.show_sim_monthly_avg_var,
+            command=lambda: self._tab_plot(parent),
+            font=("Segoe UI", FONT_BODY),
+            bg="white",
+            fg=COLOR_TEXT_PRIMARY
+        )
+        checkbox3.pack(side="left", padx=5)
+        
+        # Checkbox for showing simulation yearly average (all times combined)
+        if not hasattr(self, 'show_sim_yearly_avg_var'):
+            self.show_sim_yearly_avg_var = tk.BooleanVar(value=False)
+        
+        checkbox4 = tk.Checkbutton(
+            row2_frame,
+            text="Show Recorded Yearly Avg (all times)",
+            variable=self.show_sim_yearly_avg_var,
+            command=lambda: self._tab_plot(parent),
+            font=("Segoe UI", FONT_BODY),
+            bg="white",
+            fg=COLOR_TEXT_PRIMARY
+        )
+        checkbox4.pack(side="left", padx=5)
+        
+        # Checkbox for showing Mendel's yearly average (all times combined)
+        if not hasattr(self, 'show_mendel_yearly_avg_var'):
+            self.show_mendel_yearly_avg_var = tk.BooleanVar(value=False)
+        
+        checkbox5 = tk.Checkbutton(
+            row2_frame,
+            text="Show Mendel's Yearly Avg (all times)",
+            variable=self.show_mendel_yearly_avg_var,
+            command=lambda: self._tab_plot(parent),
+            font=("Segoe UI", FONT_BODY),
+            bg="white",
+            fg=COLOR_TEXT_PRIMARY
+        )
+        checkbox5.pack(side="left", padx=5)
+        
+        # Checkbox for showing 2025 averages
+        if not hasattr(self, 'show_2025_avg_var'):
+            self.show_2025_avg_var = tk.BooleanVar(value=False)
+        
         checkbox2 = tk.Checkbutton(
-            control_frame,
+            row2_frame,
             text="Show 2025 Averages",
             variable=self.show_2025_avg_var,
             command=lambda: self._tab_plot(parent),
@@ -944,12 +1015,12 @@ class TemperatureTracker:
         a14 = [self.mendel_averages[m][14] for m in months]
         a22 = [self.mendel_averages[m][22] for m in months]
         
-        # Smooth curves if scipy available
+        # Use EXACT same method as Mendel's yearly average (which works!)
         if SCIPY_AVAILABLE:
             try:
-                # Use more points for extra smooth curves (500 instead of 300)
-                # Add wrap-around points for seamless year cycling
-                months_wrap = [12] + months + [1]  # Dec, Jan-Dec, Jan
+                print("[PLOT] Scipy is available, creating smooth Mendel baseline curves")
+                # EXACT same wraparound technique as Mendel's yearly average
+                months_wrap = [0] + list(range(1, 13)) + [13]  # Month 0 = Dec, Month 13 = Jan
                 a6_wrap = [a6[-1]] + a6 + [a6[0]]
                 a14_wrap = [a14[-1]] + a14 + [a14[0]]
                 a22_wrap = [a22[-1]] + a22 + [a22[0]]
@@ -969,8 +1040,12 @@ class TemperatureTracker:
                         color=COLOR_AFTERNOON_CB, linewidth=2.5, alpha=0.8, zorder=1)
                 ax.plot(months_smooth, a22_smooth, '-',
                         color=COLOR_EVENING_CB, linewidth=2.5, alpha=0.8, zorder=1)
-            except:
+                print("[PLOT] Successfully plotted smooth Mendel baseline curves")
+            except Exception as e:
                 # Fallback if spline fails
+                print(f"[WARNING] Failed to create smooth Mendel baseline curves: {e}")
+                import traceback
+                traceback.print_exc()
                 ax.plot(months, a6, '-',
                         color=COLOR_MORNING_CB, linewidth=2.5, alpha=0.8, zorder=1)
                 ax.plot(months, a14, '-',
@@ -979,6 +1054,7 @@ class TemperatureTracker:
                         color=COLOR_EVENING_CB, linewidth=2.5, alpha=0.8, zorder=1)
         else:
             # No scipy - just lines without markers or labels
+            print("[PLOT] Scipy not available, using simple lines for Mendel baseline")
             ax.plot(months, a6, '-',
                     color=COLOR_MORNING_CB, linewidth=2.5, alpha=0.8, zorder=1)
             ax.plot(months, a14, '-',
@@ -986,70 +1062,251 @@ class TemperatureTracker:
             ax.plot(months, a22, '-',
                     color=COLOR_EVENING_CB, linewidth=2.5, alpha=0.8, zorder=1)
         
-        # Calculate and plot daily averages (dashed lines) from simulation data
-        # Only show dashed lines when there are multiple measurements on the SAME DAY
+        # NEW: Calculate monthly averages from ALL simulation measurements (not just multi-measurement days)
+        # This allows showing interpolated average lines when checkbox is enabled
         from collections import defaultdict
-        daily_measurements = defaultdict(lambda: defaultdict(list))
+        monthly_sim_temps = defaultdict(lambda: defaultdict(list))
         
         for m in self.measurements:
-            date_str = m.get('date')
+            month = m.get('month')
             hour = m.get('hour')
             temp = m.get('temperature')
             
-            if date_str and hour and temp is not None:
-                daily_measurements[date_str][hour].append(temp)
+            if month and hour and temp is not None:
+                monthly_sim_temps[month][hour].append(temp)
         
-        # Now calculate monthly averages, but ONLY for days with multiple measurements
-        monthly_averages = defaultdict(lambda: defaultdict(list))
+        # Calculate monthly averages for each time
+        sim_monthly_avg_6 = []
+        sim_monthly_avg_14 = []
+        sim_monthly_avg_22 = []
+        sim_months_with_data = []
         
-        for date_str, hours_data in daily_measurements.items():
-            try:
-                date_obj = dt.datetime.strptime(date_str, "%Y-%m-%d")
-                month = date_obj.month
-                
-                for hour, temps in hours_data.items():
-                    # Only include if there are 2+ measurements this day at this hour
-                    if len(temps) >= 2:
-                        avg_temp = sum(temps) / len(temps)
-                        monthly_averages[month][hour].append(avg_temp)
-            except:
-                continue
+        for month in range(1, 13):
+            sim_months_with_data.append(month)
+            
+            if 6 in monthly_sim_temps[month] and len(monthly_sim_temps[month][6]) > 0:
+                sim_monthly_avg_6.append(sum(monthly_sim_temps[month][6]) / len(monthly_sim_temps[month][6]))
+            else:
+                sim_monthly_avg_6.append(None)
+            
+            if 14 in monthly_sim_temps[month] and len(monthly_sim_temps[month][14]) > 0:
+                sim_monthly_avg_14.append(sum(monthly_sim_temps[month][14]) / len(monthly_sim_temps[month][14]))
+            else:
+                sim_monthly_avg_14.append(None)
+            
+            if 22 in monthly_sim_temps[month] and len(monthly_sim_temps[month][22]) > 0:
+                sim_monthly_avg_22.append(sum(monthly_sim_temps[month][22]) / len(monthly_sim_temps[month][22]))
+            else:
+                sim_monthly_avg_22.append(None)
         
-        # Plot dashed lines for monthly averages (only if we have data from multiple-measurement days)
-        if monthly_averages:
-            months_with_data = sorted(monthly_averages.keys())
-            if len(months_with_data) >= 2:
-                y6_avg, y14_avg, y22_avg = [], [], []
-                valid_months = []
+        # Plot monthly averages (dashed lines, same color as time) if checkbox enabled
+        if self.show_sim_monthly_avg_var and self.show_sim_monthly_avg_var.get():
+            print("[PLOT] Plotting simulation monthly averages (per time)")
+            
+            # Plot with interpolation if scipy available
+            if SCIPY_AVAILABLE and any(v is not None for v in sim_monthly_avg_6 + sim_monthly_avg_14 + sim_monthly_avg_22):
+                try:
+                    # For each time, plot smooth interpolated dashed line
+                    # Use same technique as Mendel's baseline - interpolate across full year
+                    
+                    if any(v is not None for v in sim_monthly_avg_6):
+                        # Filter out None values for interpolation
+                        valid_data_6 = [(m, v) for m, v in zip(sim_months_with_data, sim_monthly_avg_6) if v is not None]
+                        if len(valid_data_6) >= 3:  # Need at least 3 points for good cubic spline
+                            months_6, vals_6 = zip(*valid_data_6)
+                            months_6 = list(months_6)
+                            vals_6 = list(vals_6)
+                            
+                            # Add wraparound for seamless cycling (same technique as Mendel baseline)
+                            # Use actual month 0 and 13 positions for proper wraparound
+                            months_wrap_6 = [months_6[-1] - 12] + months_6 + [months_6[0] + 12]
+                            vals_wrap_6 = [vals_6[-1]] + vals_6 + [vals_6[0]]
+                            
+                            # CRITICAL FIX: Interpolate across FULL YEAR (1-12), not just available data range
+                            months_smooth_6 = np.linspace(1, 12, 500)  # Full year, 500 points
+                            spl_6 = make_interp_spline(months_wrap_6, vals_wrap_6, k=3)
+                            vals_smooth_6 = spl_6(months_smooth_6)
+                            ax.plot(months_smooth_6, vals_smooth_6, '--',
+                                   color=COLOR_MORNING_CB, linewidth=2, alpha=0.7, zorder=3)
+                            print(f"[PLOT] Plotted smooth 6am monthly avg with {len(valid_data_6)} data points")
+                        elif len(valid_data_6) == 2:
+                            # Only 2 points - use linear interpolation
+                            months_6, vals_6 = zip(*valid_data_6)
+                            ax.plot(months_6, vals_6, '--',
+                                   color=COLOR_MORNING_CB, linewidth=2, alpha=0.7, zorder=3)
+                    
+                    if any(v is not None for v in sim_monthly_avg_14):
+                        valid_data_14 = [(m, v) for m, v in zip(sim_months_with_data, sim_monthly_avg_14) if v is not None]
+                        if len(valid_data_14) >= 3:
+                            months_14, vals_14 = zip(*valid_data_14)
+                            months_14 = list(months_14)
+                            vals_14 = list(vals_14)
+                            
+                            months_wrap_14 = [months_14[-1] - 12] + months_14 + [months_14[0] + 12]
+                            vals_wrap_14 = [vals_14[-1]] + vals_14 + [vals_14[0]]
+                            
+                            # CRITICAL FIX: Full year interpolation
+                            months_smooth_14 = np.linspace(1, 12, 500)
+                            spl_14 = make_interp_spline(months_wrap_14, vals_wrap_14, k=3)
+                            vals_smooth_14 = spl_14(months_smooth_14)
+                            ax.plot(months_smooth_14, vals_smooth_14, '--',
+                                   color=COLOR_AFTERNOON_CB, linewidth=2, alpha=0.7, zorder=3)
+                            print(f"[PLOT] Plotted smooth 2pm monthly avg with {len(valid_data_14)} data points")
+                        elif len(valid_data_14) == 2:
+                            months_14, vals_14 = zip(*valid_data_14)
+                            ax.plot(months_14, vals_14, '--',
+                                   color=COLOR_AFTERNOON_CB, linewidth=2, alpha=0.7, zorder=3)
+                    
+                    if any(v is not None for v in sim_monthly_avg_22):
+                        valid_data_22 = [(m, v) for m, v in zip(sim_months_with_data, sim_monthly_avg_22) if v is not None]
+                        if len(valid_data_22) >= 3:
+                            months_22, vals_22 = zip(*valid_data_22)
+                            months_22 = list(months_22)
+                            vals_22 = list(vals_22)
+                            
+                            months_wrap_22 = [months_22[-1] - 12] + months_22 + [months_22[0] + 12]
+                            vals_wrap_22 = [vals_22[-1]] + vals_22 + [vals_22[0]]
+                            
+                            # CRITICAL FIX: Full year interpolation
+                            months_smooth_22 = np.linspace(1, 12, 500)
+                            spl_22 = make_interp_spline(months_wrap_22, vals_wrap_22, k=3)
+                            vals_smooth_22 = spl_22(months_smooth_22)
+                            ax.plot(months_smooth_22, vals_smooth_22, '--',
+                                   color=COLOR_EVENING_CB, linewidth=2, alpha=0.7, zorder=3)
+                            print(f"[PLOT] Plotted smooth 10pm monthly avg with {len(valid_data_22)} data points")
+                        elif len(valid_data_22) == 2:
+                            months_22, vals_22 = zip(*valid_data_22)
+                            ax.plot(months_22, vals_22, '--',
+                                   color=COLOR_EVENING_CB, linewidth=2, alpha=0.7, zorder=3)
+                except Exception as e:
+                    print(f"[WARNING] Failed to plot smooth monthly averages, falling back to simple lines: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Fallback to simple dashed lines
+                    if any(v is not None for v in sim_monthly_avg_6):
+                        ax.plot(sim_months_with_data, sim_monthly_avg_6, '--',
+                               color=COLOR_MORNING_CB, linewidth=2, alpha=0.7, zorder=3)
+                    if any(v is not None for v in sim_monthly_avg_14):
+                        ax.plot(sim_months_with_data, sim_monthly_avg_14, '--',
+                               color=COLOR_AFTERNOON_CB, linewidth=2, alpha=0.7, zorder=3)
+                    if any(v is not None for v in sim_monthly_avg_22):
+                        ax.plot(sim_months_with_data, sim_monthly_avg_22, '--',
+                               color=COLOR_EVENING_CB, linewidth=2, alpha=0.7, zorder=3)
+            else:
+                # No scipy - simple dashed lines
+                if any(v is not None for v in sim_monthly_avg_6):
+                    ax.plot(sim_months_with_data, sim_monthly_avg_6, '--',
+                           color=COLOR_MORNING_CB, linewidth=2, alpha=0.7, zorder=3)
+                if any(v is not None for v in sim_monthly_avg_14):
+                    ax.plot(sim_months_with_data, sim_monthly_avg_14, '--',
+                           color=COLOR_AFTERNOON_CB, linewidth=2, alpha=0.7, zorder=3)
+                if any(v is not None for v in sim_monthly_avg_22):
+                    ax.plot(sim_months_with_data, sim_monthly_avg_22, '--',
+                           color=COLOR_EVENING_CB, linewidth=2, alpha=0.7, zorder=3)
+        
+        # NEW: Calculate and plot yearly average (all three times combined) for simulation
+        if self.show_sim_yearly_avg_var and self.show_sim_yearly_avg_var.get():
+            print("[PLOT] Plotting simulation yearly average (all times combined)")
+            sim_yearly_avg = []
+            
+            # FIXED: Average the three monthly averages (not all raw data points)
+            # This gives equal weight to each time period (6am, 2pm, 10pm)
+            for month_idx, month in enumerate(range(1, 13)):
+                monthly_avgs = []
                 
-                for month in months_with_data:
-                    if 6 in monthly_averages[month] and monthly_averages[month][6]:
-                        y6_avg.append(sum(monthly_averages[month][6]) / len(monthly_averages[month][6]))
-                    else:
-                        y6_avg.append(None)
-                    
-                    if 14 in monthly_averages[month] and monthly_averages[month][14]:
-                        y14_avg.append(sum(monthly_averages[month][14]) / len(monthly_averages[month][14]))
-                    else:
-                        y14_avg.append(None)
-                    
-                    if 22 in monthly_averages[month] and monthly_averages[month][22]:
-                        y22_avg.append(sum(monthly_averages[month][22]) / len(monthly_averages[month][22]))
-                    else:
-                        y22_avg.append(None)
-                    
-                    valid_months.append(month)
+                # Get the monthly average for each time (if available)
+                if sim_monthly_avg_6[month_idx] is not None:
+                    monthly_avgs.append(sim_monthly_avg_6[month_idx])
+                if sim_monthly_avg_14[month_idx] is not None:
+                    monthly_avgs.append(sim_monthly_avg_14[month_idx])
+                if sim_monthly_avg_22[month_idx] is not None:
+                    monthly_avgs.append(sim_monthly_avg_22[month_idx])
                 
-                # Plot dashed lines (subtle, for averaged data only)
-                if any(v is not None for v in y6_avg):
-                    ax.plot(valid_months, y6_avg, '--',
-                            color=COLOR_MORNING_CB, linewidth=1.5, alpha=0.5, zorder=2)
-                if any(v is not None for v in y14_avg):
-                    ax.plot(valid_months, y14_avg, '--',
-                            color=COLOR_AFTERNOON_CB, linewidth=1.5, alpha=0.5, zorder=2)
-                if any(v is not None for v in y22_avg):
-                    ax.plot(valid_months, y22_avg, '--',
-                            color=COLOR_EVENING_CB, linewidth=1.5, alpha=0.5, zorder=2)
+                # Average the monthly averages (equal weight to each time)
+                if len(monthly_avgs) > 0:
+                    sim_yearly_avg.append(sum(monthly_avgs) / len(monthly_avgs))
+                else:
+                    sim_yearly_avg.append(None)
+            
+            # Plot with interpolation if scipy available
+            if SCIPY_AVAILABLE and any(v is not None for v in sim_yearly_avg):
+                try:
+                    valid_data = [(m+1, v) for m, v in enumerate(sim_yearly_avg) if v is not None]
+                    if len(valid_data) >= 3:  # Need at least 3 points for good cubic spline
+                        months_valid, vals_valid = zip(*valid_data)
+                        months_valid = list(months_valid)
+                        vals_valid = list(vals_valid)
+                        
+                        # Add wraparound for seamless cycling
+                        months_wrap = [months_valid[-1] - 12] + months_valid + [months_valid[0] + 12]
+                        vals_wrap = [vals_valid[-1]] + vals_valid + [vals_valid[0]]
+                        
+                        # CRITICAL FIX: Interpolate across FULL YEAR (1-12)
+                        months_smooth = np.linspace(1, 12, 500)
+                        spl = make_interp_spline(months_wrap, vals_wrap, k=3)
+                        vals_smooth = spl(months_smooth)
+                        ax.plot(months_smooth, vals_smooth, '-',
+                               color='purple', linewidth=2.5, alpha=0.8, zorder=3,
+                               label='Recorded Yearly Avg (all times)')
+                        print(f"[PLOT] Plotted smooth simulation yearly avg with {len(valid_data)} data points")
+                    elif len(valid_data) == 2:
+                        # Only 2 points - use linear interpolation
+                        months_valid, vals_valid = zip(*valid_data)
+                        ax.plot(months_valid, vals_valid, '-',
+                               color='purple', linewidth=2.5, alpha=0.8, zorder=3,
+                               label='Recorded Yearly Avg (all times)')
+                except Exception as e:
+                    print(f"[WARNING] Failed to interpolate simulation yearly avg: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Fallback - plot only valid points
+                    valid_data = [(m+1, v) for m, v in enumerate(sim_yearly_avg) if v is not None]
+                    if valid_data:
+                        months_valid, vals_valid = zip(*valid_data)
+                        ax.plot(months_valid, vals_valid, '-',
+                               color='purple', linewidth=2.5, alpha=0.8, zorder=3,
+                               label='Recorded Yearly Avg (all times)')
+                except:
+                    ax.plot(range(1, 13), sim_yearly_avg, '-',
+                           color='purple', linewidth=2.5, alpha=0.8, zorder=3,
+                           label='Recorded Yearly Avg (all times)')
+            else:
+                ax.plot(range(1, 13), sim_yearly_avg, '-',
+                       color='purple', linewidth=2.5, alpha=0.8, zorder=3,
+                       label='Recorded Yearly Avg (all times)')
+        
+        # NEW: Calculate and plot Mendel's yearly average (all three times combined)
+        if self.show_mendel_yearly_avg_var and self.show_mendel_yearly_avg_var.get():
+            print("[PLOT] Plotting Mendel's yearly average (all times combined)")
+            mendel_yearly_avg = []
+            
+            for month in range(1, 13):
+                temps = [self.mendel_averages[month][6],
+                        self.mendel_averages[month][14],
+                        self.mendel_averages[month][22]]
+                mendel_yearly_avg.append(sum(temps) / len(temps))
+            
+            # Plot with interpolation if scipy available
+            if SCIPY_AVAILABLE:
+                try:
+                    # Add wraparound for seamless cycling (same technique as baseline)
+                    months_wrap = [0] + list(range(1, 13)) + [13]  # Month 0 = Dec, Month 13 = Jan
+                    vals_wrap = [mendel_yearly_avg[-1]] + mendel_yearly_avg + [mendel_yearly_avg[0]]
+                    months_smooth = np.linspace(1, 12, 500)  # Use 500 points like baseline
+                    spl = make_interp_spline(months_wrap, vals_wrap, k=3)
+                    vals_smooth = spl(months_smooth)
+                    ax.plot(months_smooth, vals_smooth, '-',
+                           color='brown', linewidth=2.5, alpha=0.8, zorder=3,
+                           label="Mendel's Yearly Avg (all times)")
+                except Exception as e:
+                    print(f"[WARNING] Failed to interpolate Mendel's yearly avg: {e}")
+                    ax.plot(range(1, 13), mendel_yearly_avg, '-',
+                           color='brown', linewidth=2.5, alpha=0.8, zorder=3,
+                           label="Mendel's Yearly Avg (all times)")
+            else:
+                ax.plot(range(1, 13), mendel_yearly_avg, '-',
+                       color='brown', linewidth=2.5, alpha=0.8, zorder=3,
+                       label="Mendel's Yearly Avg (all times)")
         
         # SIMULATION measurements (black borders) - plot by day of year
         sim6_days, sim6_temps = [], []
@@ -1093,15 +1350,17 @@ class TemperatureTracker:
             sim_count = len(sim6_days) + len(sim14_days) + len(sim22_days)
             print(f"[PLOT] Plotting {sim_count} simulation measurements")
         
-        if sim6_days:
-            ax.scatter(sim6_days, sim6_temps, color=COLOR_MORNING_CB, s=50, 
-                      marker='o', edgecolors='black', linewidths=1.5, zorder=5)
-        if sim14_days:
-            ax.scatter(sim14_days, sim14_temps, color=COLOR_AFTERNOON_CB, s=50, 
-                      marker='s', edgecolors='black', linewidths=1.5, zorder=5)
-        if sim22_days:
-            ax.scatter(sim22_days, sim22_temps, color=COLOR_EVENING_CB, s=50, 
-                      marker='^', edgecolors='black', linewidths=1.5, zorder=5)
+        # Only plot recorded data points if checkbox is enabled (default: ON)
+        if self.show_recorded_points_var and self.show_recorded_points_var.get():
+            if sim6_days:
+                ax.scatter(sim6_days, sim6_temps, color=COLOR_MORNING_CB, s=50, 
+                          marker='o', edgecolors='black', linewidths=1.5, zorder=5)
+            if sim14_days:
+                ax.scatter(sim14_days, sim14_temps, color=COLOR_AFTERNOON_CB, s=50, 
+                          marker='s', edgecolors='black', linewidths=1.5, zorder=5)
+            if sim22_days:
+                ax.scatter(sim22_days, sim22_temps, color=COLOR_EVENING_CB, s=50, 
+                          marker='^', edgecolors='black', linewidths=1.5, zorder=5)
         
         # MODERN measurements (red borders) - plot by day of year
         mod6_days, mod6_temps = [], []
@@ -1357,8 +1616,8 @@ class TemperatureTracker:
             Line2D([0], [0], color=COLOR_EVENING_CB, linewidth=2.5, label='Evening (22:00) — Mendel 1848-1863'),
         ]
         
-        # Add Recorded data if present (only times that have data)
-        if has_simulation:
+        # Add Recorded data if present AND checkbox is enabled (only times that have data)
+        if has_simulation and self.show_recorded_points_var and self.show_recorded_points_var.get():
             if len(sim6_days) > 0:
                 legend_elements.append(Line2D([0], [0], marker='o', color='w', 
                                              markerfacecolor=COLOR_MORNING_CB, markeredgecolor='black',
@@ -1386,6 +1645,20 @@ class TemperatureTracker:
                 legend_elements.append(Line2D([0], [0], marker='^', color='w',
                                              markerfacecolor=COLOR_EVENING_CB, markeredgecolor='red',
                                              markeredgewidth=2, markersize=8, label='Evening (22:00) — Modern'))
+        
+        # Add legend entries for monthly averages if checkbox is enabled
+        if self.show_sim_monthly_avg_var and self.show_sim_monthly_avg_var.get():
+            if any(v is not None for v in sim_monthly_avg_6):
+                legend_elements.append(Line2D([0], [0], linestyle='--', color=COLOR_MORNING_CB,
+                                             linewidth=2, alpha=0.7, label='Morning (6:00) — Recorded Monthly Avg'))
+            if any(v is not None for v in sim_monthly_avg_14):
+                legend_elements.append(Line2D([0], [0], linestyle='--', color=COLOR_AFTERNOON_CB,
+                                             linewidth=2, alpha=0.7, label='Afternoon (14:00) — Recorded Monthly Avg'))
+            if any(v is not None for v in sim_monthly_avg_22):
+                legend_elements.append(Line2D([0], [0], linestyle='--', color=COLOR_EVENING_CB,
+                                             linewidth=2, alpha=0.7, label='Evening (22:00) — Recorded Monthly Avg'))
+        
+        # Legend entries for yearly averages are already added via labels in the plot calls
         
         legend = ax.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, -0.08), 
                           ncol=3, fontsize=9, framealpha=0.98, 
