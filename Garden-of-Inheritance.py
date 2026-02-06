@@ -90,6 +90,7 @@ from mendelclimate import MendelClimate
 from icon_loader import *
 from inventory import Inventory, InventoryPopup, Seed, Pollen
 from mendel_temperature_tracker import TemperatureTracker
+from emasculation_dialog import EmasculationDialog
 
 
 # ============================================================================
@@ -1039,22 +1040,37 @@ class GardenApp:
         if not ok:
             self._toast(f"Cannot emasculate: {reason}")
             return
-        frac = self._estimate_selfing_fraction(plant)
+        
+        # Show interactive emasculation dialog
+        def on_emasculation_complete(success):
+            if success:
+                frac = self._estimate_selfing_fraction(plant)
+                try:
+                    plant.selfing_frac_before_emasc = max(float(getattr(plant, "selfing_frac_before_emasc", 0.0)), float(frac))
+                except Exception:
+                    plant.selfing_frac_before_emasc = float(frac)
+                plant.emasculated = True
+                plant.emasc_day = int(getattr(self.garden, "day", 0))
+                plant.emasc_phase = getattr(self.garden, "phase", "morning")
+
+                # Emasculation removes anthers -> clear any pollen/anther state immediately
+                plant.anthers_available_today = False
+                plant.last_anther_check_day = None
+                plant.anthers_collected_day = None
+
+                self._toast(f"Emasculated - selfing ~{int(100*plant.selfing_frac_before_emasc)}%")
+                self.render_all()
+            else:
+                self._toast("Emasculation cancelled")
+        
         try:
-            plant.selfing_frac_before_emasc = max(float(getattr(plant, "selfing_frac_before_emasc", 0.0)), float(frac))
-        except Exception:
-            plant.selfing_frac_before_emasc = float(frac)
-        plant.emasculated = True
-        plant.emasc_day = int(getattr(self.garden, "day", 0))
-        plant.emasc_phase = getattr(self.garden, "phase", "morning")
-
-        # Emasculation removes anthers -> clear any pollen/anther state immediately
-        plant.anthers_available_today = False
-        plant.last_anther_check_day = None
-        plant.anthers_collected_day = None
-
-        self._toast(f"Emasculated - selfing ~{int(100*plant.selfing_frac_before_emasc)}%")
-        self.render_all()
+            # Get flower color from plant traits
+            flower_color = plant.traits.get("flower_color", "purple")
+            dialog = EmasculationDialog(self.root, flower_color, on_emasculation_complete)
+        except Exception as e:
+            # Fallback to immediate emasculation if dialog fails
+            print(f"Error opening emasculation dialog: {e}")
+            on_emasculation_complete(True)
 
     def _open_speed_dialog(self):
         """Popup to adjust simulation speed: seconds of real time per simulated HOUR."""
