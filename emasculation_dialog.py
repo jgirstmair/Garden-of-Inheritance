@@ -213,11 +213,14 @@ class EmasculationDialog(tk.Toplevel):
         self.cancel_btn.pack(side="right", padx=5)
     
     def _create_anthers(self):
-        """Create the 10 anthers using precise coordinates."""
+        """Create the 10 anthers using precise coordinates with slight randomization."""
         self.anthers = []
         
         # Original 5 anther coordinates from the reference image (original size)
-        original_anther_coords = [
+        # Add slight jitter (±2-3 pixels) to make each flower unique
+        import random
+        
+        base_anther_coords = [
             (437, 387),      # Anther 0
             (494.5, 395.5),  # Anther 1
             (510.5, 462.5),  # Anther 2
@@ -225,16 +228,24 @@ class EmasculationDialog(tk.Toplevel):
             (420.5, 486.5),  # Anther 4
         ]
         
-        # Add 5 more anthers near the originals with slight random offsets
-        import random
-        random.seed(42)  # Consistent randomness
+        # Apply slight random jitter to base positions (2-3 pixels)
+        original_anther_coords = []
+        for x, y in base_anther_coords:
+            jitter_x = random.uniform(-3, 3)
+            jitter_y = random.uniform(-3, 3)
+            original_anther_coords.append((x + jitter_x, y + jitter_y))
+        
+        # Add 5 more anthers near the originals with random offsets
         additional_anthers = []
         for x, y in original_anther_coords:
             # Random offset: 10-25 pixels in random direction
             offset_distance = random.uniform(10, 25)
             offset_angle = random.uniform(0, 2 * math.pi)
-            new_x = x + offset_distance * math.cos(offset_angle)
-            new_y = y + offset_distance * math.sin(offset_angle)
+            # Add slight jitter to the offset too
+            jitter_x = random.uniform(-2, 2)
+            jitter_y = random.uniform(-2, 2)
+            new_x = x + offset_distance * math.cos(offset_angle) + jitter_x
+            new_y = y + offset_distance * math.sin(offset_angle) + jitter_y
             additional_anthers.append((new_x, new_y))
         
         # Combine all 10 anthers
@@ -461,7 +472,7 @@ class EmasculationDialog(tk.Toplevel):
         self.cancel_btn.config(text="Close", command=self._on_complete)
         
         # Auto-close after 2 seconds
-        self.after(2000, self._on_complete)
+        self.after(500, self._on_complete)
     
     def _on_complete(self):
         """Handle successful completion."""

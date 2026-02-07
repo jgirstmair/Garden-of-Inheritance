@@ -211,26 +211,54 @@ class GardenEnvironment:
                 # Check senescence and lifespan
                 try:
                     max_age = int(plant.max_age_days)
+                    age = int(plant.days_since_planting)
                     
                     # Senescence starts 10 days before max age
-                    if int(plant.days_since_planting) >= max(0, max_age - 10):
+                    if age >= max(0, max_age - 10):
                         plant.senescent = True
-                        plant.health = max(0, int(plant.health) - 2)
-                    
-                    # Death at max age
-                    if int(plant.days_since_planting) >= max_age:
-                        plant.alive = False
-                        plant.health = 0
+                        
+                        # Only apply garden.py senescence decline in casual mode
+                        # (overlay/enforce modes use pea_season_model.py for senescence)
                         try:
-                            plant.stage = max(int(plant.stage), 7)
-                        except Exception:
-                            pass
+                            app = getattr(self, '_app', None)
+                            season_mode = str(getattr(app, '_season_mode', 'off')) if app else 'off'
+                        except:
+                            season_mode = 'off'
+                        
+                        if season_mode == 'off':
+                            # Gradual health decline with some variation (±10%)
+                            import random
+                            base_decline = 2
+                            variation = random.uniform(0.9, 1.1)
+                            decline = int(base_decline * variation)
+                            plant.health = max(0, int(plant.health) - decline)
+                    
+                    # At max age, accelerate health decline instead of instant death
+                    if age >= max_age:
+                        # Severe health decline for plants that lived too long
+                        import random
+                        severe_decline = random.randint(8, 15)
+                        plant.health = max(0, int(plant.health) - severe_decline)
+                        
+                        # Only die when health reaches 0 (natural death)
+                        if plant.health <= 0:
+                            plant.alive = False
+                            try:
+                                plant.stage = max(int(plant.stage), 7)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
                 
-                # Advance growth stage
+                # Advance growth stage (may advance multiple stages if far enough)
                 try:
-                    plant.advance_growth()
+                    # Keep advancing while possible (handles skipped days/fast forward)
+                    max_iterations = 10  # Safety limit to prevent infinite loops
+                    for _ in range(max_iterations):
+                        old_stage = plant.stage
+                        plant.advance_growth()
+                        if plant.stage == old_stage or plant.stage >= 7:
+                            break  # No advancement or reached maturity
                 except Exception:
                     pass
             else:

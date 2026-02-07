@@ -91,6 +91,7 @@ from icon_loader import *
 from inventory import Inventory, InventoryPopup, Seed, Pollen
 from mendel_temperature_tracker import TemperatureTracker
 from emasculation_dialog import EmasculationDialog
+from pollination_dialog import PollinationDialog
 
 
 # ============================================================================
@@ -788,6 +789,7 @@ class GardenApp:
         self.root.title("Garden of Inheritance")
         self.enable_daynight = True 
         self.garden = GardenEnvironment(size=GRID_SIZE)
+        self.garden._app = self  # Give garden access to app for difficulty settings
         self.inventory = Inventory()
         self._eager_seed_and_backfill()
         self._img_cache = {}  # cache for composited tile images
@@ -878,7 +880,7 @@ class GardenApp:
                 self._toast("Season model unavailable (missing file).", level="info")
                 return False
 
-        self._season_mode = self.SEASON_MODES[1]
+        self._season_mode = self.SEASON_MODES[0]  # Start in "off" (casual) mode
         self._season_last_date = None
         climate = getattr(self, "_climate_v2", None)
         if climate is None:
@@ -934,7 +936,15 @@ class GardenApp:
         #     (getattr(app, "_toast", lambda *a, **k: None)(f"Season model: {getattr(app, '_season_mode', 'off')}"))
         # )
         self.root.bind("<F9>", self._season_cycle_mode)
-        self._toast(f"Season model loaded (Mode: {self._season_mode}). Press F9 to cycle.")
+        
+        # User-friendly initial message
+        mode_names = {
+            "off": "Casual",
+            "overlay": "Moderate", 
+            "enforce": "Realistic"
+        }
+        friendly_name = mode_names.get(self._season_mode, self._season_mode)
+        self._toast(f"Season model loaded (Difficulty: {friendly_name}). Press F9 to cycle or use Game Settings menu.")
         
         # Periodic season polling to apply lethal/stress without day change
         def _season_poll_loop():
@@ -1271,10 +1281,8 @@ class GardenApp:
                 ).get():
                     if self.garden.phase in ('morning', 'evening') and self.garden.weather not in ('🌧', '⛈'):
                         msg = getattr(self.garden, "water_all_smart", self.garden.water_all_safe)()
-                        try:
-                            self._toast(f"Auto-water: {msg}")
-                        except Exception:
-                            pass
+                        # Toast message removed to reduce notification spam
+                        # Players can see water levels in the UI without constant messages
             except Exception:
                 pass
             try:
@@ -1856,6 +1864,36 @@ class GardenApp:
             variable=self.daynight_var,
             command=self._toggle_daynight
         )
+        
+        # --- Difficulty (Season Model) submenu ---
+        difficulty_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
+        
+        # Initialize difficulty variable if not exists
+        if not hasattr(self, '_difficulty_var'):
+            current_mode = getattr(self, '_season_mode', 'off')
+            self._difficulty_var = tk.StringVar(value=current_mode)
+        
+        difficulty_menu.add_radiobutton(
+            label="Casual — No environmental stress",
+            variable=self._difficulty_var,
+            value="off",
+            command=self._on_difficulty_change
+        )
+        difficulty_menu.add_radiobutton(
+            label="Moderate — Environmental effects (advisory)",
+            variable=self._difficulty_var,
+            value="overlay",
+            command=self._on_difficulty_change
+        )
+        difficulty_menu.add_radiobutton(
+            label="Realistic — Full Mendel-era conditions",
+            variable=self._difficulty_var,
+            value="enforce",
+            command=self._on_difficulty_change
+        )
+        
+        game_menu.add_cascade(label="Difficulty", menu=difficulty_menu)
+        game_menu.add_separator()
         
         # --- NEW: Time Speed (moved from top buttons) ---
         game_menu.add_command(
@@ -2908,7 +2946,7 @@ class GardenApp:
             pass
 
     def _apply_pollen(self, packet):
-        """Apply selected pollen to the currently selected plant."""
+        """Apply selected pollen to the currently selected plant (with interactive dialog)."""
 
         if packet is None:
             self._toast("No pollen selected.")
@@ -2955,59 +2993,92 @@ class GardenApp:
             self._toast("This pollen is no longer viable.")
             return
 
-        # --- genotypes ---
-        maternal_geno = getattr(plant, "genotype", None)
-        if not maternal_geno:
-            maternal_geno = infer_genotype_from_traits(getattr(plant, "traits", {}), random)
+        # --- All checks passed, now show interactive pollination dialog ---
+        
+        # Get flower color
+        flower_color = plant.traits.get('flower_color', 'purple')
+        
+        # Check if emasculated
+        is_emasculated = getattr(plant, 'emasculated', False)
+        
+        # Pollen source name
+        pollen_source_id = packet.get('source_id', '?')
+        pollen_source_name = f"Plant #{pollen_source_id}"
+        
+        def on_pollination_complete(success):
+            """Callback when pollination dialog completes."""
+            if not success:
+                # User cancelled - don't consume pollen
+                self._toast("Pollination cancelled", level="info")
+                return
+            
+            # User successfully clicked stigma - apply pollination
+            
+            # --- genotypes ---
+            maternal_geno = getattr(plant, "genotype", None)
+            if not maternal_geno:
+                maternal_geno = infer_genotype_from_traits(getattr(plant, "traits", {}), random)
 
-        donor_geno = packet.get("genotype")
-        if not donor_geno:
-            donor_geno = infer_genotype_from_traits(packet.get("traits", {}), random)
+            donor_geno = packet.get("genotype")
+            if not donor_geno:
+                donor_geno = infer_genotype_from_traits(packet.get("traits", {}), random)
 
-        # pollen_gam = random_gamete(donor_geno, random)  # delete if unused, or store it
+            # --- record pending cross ---
+            pc = getattr(plant, "pending_cross", {}) or {}
+            donors = pc.setdefault("donors", [])
+            donors.append({
+                "donor_id": packet.get("source_id", "?"),
+                "donor_genotype": dict(donor_geno),
+                "day": getattr(self.garden, "day", None),
+            })
+            plant.pending_cross = pc
+            plant.pollinated = True
 
-        # --- record pending cross ---
-        pc = getattr(plant, "pending_cross", {}) or {}
-        donors = pc.setdefault("donors", [])
-        donors.append({
-            "donor_id": packet.get("source_id", "?"),
-            "donor_genotype": dict(donor_geno),
-            "day": getattr(self.garden, "day", None),
-        })
-        plant.pending_cross = pc
-        plant.pollinated = True
+            # Pods for emasculated plants only after successful pollination
+            if getattr(plant, "emasculated", False) and int(getattr(plant, "pods_remaining", 0) or 0) <= 0:
+                plant.pods_remaining = int(getattr(plant, "pods_total", 0) or 0)
+                plant.ovules_left = int(getattr(plant, "ovules_per_pod", 0) or 0)
 
-        # Pods for emasculated plants only after successful pollination
-        if getattr(plant, "emasculated", False) and int(getattr(plant, "pods_remaining", 0) or 0) <= 0:
-            plant.pods_remaining = int(getattr(plant, "pods_total", 0) or 0)
-            plant.ovules_left = int(getattr(plant, "ovules_per_pod", 0) or 0)
-
-        # --- NOW consume pollen (single-use) ---
-        consumed = False
-        try:
-            if hasattr(self.inventory, "remove"):
-                self.inventory.remove(packet_obj)
-                consumed = True
-        except Exception:
+            # --- NOW consume pollen (single-use) ---
             consumed = False
-
-        if not consumed:
-            pid = packet.get("id", None)
             try:
-                if pid is not None and hasattr(self.inventory, "items"):
-                    self.inventory.items = [x for x in self.inventory.items if getattr(x, "id", None) != pid]
+                if hasattr(self.inventory, "remove"):
+                    self.inventory.remove(packet_obj)
+                    consumed = True
+            except Exception:
+                consumed = False
+
+            if not consumed:
+                pid = packet.get("id", None)
+                try:
+                    if pid is not None and hasattr(self.inventory, "items"):
+                        self.inventory.items = [x for x in self.inventory.items if getattr(x, "id", None) != pid]
+                except Exception:
+                    pass
+
+            # Refresh summary popup if open
+            try:
+                if getattr(self, "summary_popup", None) is not None and self.summary_popup.winfo_exists():
+                    self.summary_popup.refresh_current_tab()
             except Exception:
                 pass
 
-        # Refresh summary popup if open
+            self._toast(f"Pollinated ♀#{plant.id} with ♂#{packet.get('source_id')}")
+            self.render_all()
+        
+        # Show the interactive pollination dialog
         try:
-            if getattr(self, "summary_popup", None) is not None and self.summary_popup.winfo_exists():
-                self.summary_popup.refresh_current_tab()
-        except Exception:
-            pass
-
-        self._toast(f"Pollinated ♀#{plant.id} with ♂#{packet.get('source_id')}")
-        self.render_all()
+            dialog = PollinationDialog(
+                self.root,
+                flower_color=flower_color,
+                is_emasculated=is_emasculated,
+                pollen_source=pollen_source_name,
+                callback=on_pollination_complete
+            )
+        except Exception as e:
+            # Fallback if dialog fails - apply directly
+            print(f"Pollination dialog failed: {e}, applying directly")
+            on_pollination_complete(True)
    
     # ---------- Events ----------
     def _open_tie_for_selected(self, event=None):
@@ -6663,44 +6734,73 @@ class GardenApp:
                 except Exception:
                     pass
                 pid = ev.get("plant_id")
-                plant = self._find_plant(self, pid)
+                plant = self._find_plant(pid)
                 if plant is None:
                     continue
+                
+                # Skip processing for already dead plants
+                if not getattr(plant, "alive", False):
+                    continue
+                
                 try:
                     delta = int(ev.get("suggested_health_delta", 12) or 0)
                 except Exception:
                     delta = 0
+                
+                # Apply health delta with variation already built into season model
                 if delta < 0:
                     try:
                         cur = int(getattr(plant, "health", 100))
-                        setattr(plant, "health", max(0, cur + delta))
+                        new_health = max(0, cur + delta)
+                        setattr(plant, "health", new_health)
+                        
+                        # Natural death when health reaches 0 (only if was alive)
+                        if new_health <= 0 and getattr(plant, "alive", True):
+                            plant.alive = False
+                            try:
+                                etype = str(ev.get("type", "")).lower()
+                                # Determine death message based on cause
+                                if "critical_stress" in etype or "chronic" in etype:
+                                    death_msg = f"Plant #{pid} died from prolonged stress"
+                                elif "senescent" in etype:
+                                    death_msg = f"Plant #{pid} died of old age"
+                                elif "lethal" in etype or "freeze" in etype:
+                                    death_msg = f"Plant #{pid} killed by freeze"
+                                else:
+                                    death_msg = f"Plant #{pid} died from health failure"
+                                
+                                self._toast(death_msg, level="warning")
+                            except Exception:
+                                pass
                     except Exception:
                         pass
+                
+                # Only handle true lethal events (instant death regardless of health)
                 deathish = False
                 try:
                     t = str(ev.get("type", "")).lower()
                     m = str(ev.get("message", "")).lower()
                     sd = ev.get("suggested_health_delta", 12) or 0
-                    # Death if: lethal_freeze/wither types, messages with killed/wither/lethal, or huge negative deltas
+                    # ONLY instant death for: lethal_freeze or massive instant damage
+                    # Removed: wither, accumulated stress (those now drain health gradually)
                     deathish = (
-                        t in ("lethal_freeze", "wither", "senescence_timeout")
-                        or "wither" in m
-                        or "killed" in m
-                        or "lethal" in m
-                        or (isinstance(sd, (int, float)) and sd <= -9000)
+                        t in ("lethal_freeze",)  # Only lethal freeze causes instant death
+                        or (isinstance(sd, (int, float)) and sd <= -9000)  # Or massive instant damage
                     )
                 except Exception:
                     deathish = False
+                
                 if deathish and (mode == "enforce" or t == "lethal_freeze"):
-
                     try:
-                        plant.alive = False
-                        if hasattr(plant, "health"):
-                            plant.health = 0
-                        try:
-                            self._toast(f"Season death: plant #{pid} — {ev.get('message','')}", level="warning")
-                        except Exception:
-                            pass
+                        # Check again if plant is still alive before killing
+                        if getattr(plant, "alive", False):
+                            plant.alive = False
+                            if hasattr(plant, "health"):
+                                plant.health = 0
+                            try:
+                                self._toast(f"Plant #{pid} killed by freeze — {ev.get('message','')}", level="warning")
+                            except Exception:
+                                pass
                     except Exception:
                         pass
         except Exception:
@@ -6715,7 +6815,7 @@ class GardenApp:
         if sim_date is not None and sim_date != last:
             self._season_last_date = sim_date
             try:
-                self._season_daily_update(self, sim_date)
+                self._season_daily_update(sim_date)
             except Exception:
                 pass
         elif sim_date is not None:
@@ -6728,9 +6828,9 @@ class GardenApp:
             try:
                 if (not ok) and ("lethal" in str(why).lower()):
                     
-                    self._season_daily_update(self, sim_date)
-                    self._season_apply_hourly_lethal(self, -20)
-                    self._season_daily_update(self, sim_date)
+                    self._season_daily_update(sim_date)
+                    self._season_apply_hourly_lethal(-20)
+                    self._season_daily_update(sim_date)
             except Exception:
                 pass
         try:
@@ -6771,16 +6871,121 @@ class GardenApp:
                 pass
 
         
+    def _update_plants_for_difficulty_change(self):
+        """
+        Updates all existing plants to match the new difficulty setting.
+        
+        Adjusts:
+        - plant.difficulty (for growth thresholds)
+        - plant.max_age_days (proportionally scaled to new difficulty range)
+        
+        This ensures fair gameplay when switching difficulty mid-game.
+        """
+        from plant import get_lifecycle_settings
+        
+        try:
+            new_mode = self._season_mode
+            
+            # Get all living plants
+            plants = []
+            for tile in self.tiles:
+                if tile.plant and getattr(tile.plant, 'alive', False):
+                    plants.append(tile.plant)
+            
+            if not plants:
+                return  # No plants to update
+            
+            # Update each plant
+            for plant in plants:
+                old_difficulty = getattr(plant, 'difficulty', 'off')
+                
+                # Update difficulty setting
+                plant.difficulty = new_mode
+                
+                # Proportionally scale max_age to new difficulty range
+                old_settings = get_lifecycle_settings(old_difficulty)
+                new_settings = get_lifecycle_settings(new_mode)
+                
+                old_min, old_max = old_settings["max_age_range"]
+                new_min, new_max = new_settings["max_age_range"]
+                
+                current_max_age = getattr(plant, 'max_age_days', old_min)
+                
+                # Calculate relative position in old range (0.0 to 1.0)
+                if old_max > old_min:
+                    position = (current_max_age - old_min) / (old_max - old_min)
+                    position = max(0.0, min(1.0, position))  # Clamp to 0-1
+                else:
+                    position = 0.5  # Default to middle if range invalid
+                
+                # Apply same relative position to new range
+                new_max_age = int(new_min + position * (new_max - new_min))
+                plant.max_age_days = new_max_age
+                
+                # If plant is already senescent, make sure it stays consistent
+                current_age = getattr(plant, 'days_since_planting', 0)
+                if getattr(plant, 'senescent', False):
+                    # Already senescent, ensure max_age is still ahead
+                    plant.max_age_days = max(new_max_age, current_age + 5)
+            
+            # Log the update
+            print(f"[DIFFICULTY] Updated {len(plants)} plants to {new_mode} mode")
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to update plants for difficulty change: {e}")
+
     def _season_cycle_mode(self, event=None):
         """
-        Cycles the season mode.
-        Displays a toast notification with the new status.
+        Cycles the season mode (F9 key binding).
+        Syncs with menu and displays toast notification.
+        Updates existing plants to match new difficulty.
         """
         idx = self.SEASON_MODES.index(getattr(self, "_season_mode", "off"))
         next_idx = (idx + 1) % len(self.SEASON_MODES)
         self._season_mode = self.SEASON_MODES[next_idx]
         
-        self._toast(f"Season model: {self._season_mode}")
+        # Update existing plants to match new difficulty
+        self._update_plants_for_difficulty_change()
+        
+        # Sync with menu radio buttons
+        if hasattr(self, '_difficulty_var'):
+            self._difficulty_var.set(self._season_mode)
+        
+        # User-friendly messages
+        messages = {
+            "off": "Difficulty: Casual (F9)",
+            "overlay": "Difficulty: Moderate (F9)",
+            "enforce": "Difficulty: Realistic (F9)"
+        }
+        
+        msg = messages.get(self._season_mode, f"Season model: {self._season_mode}")
+        self._toast(msg)
+
+    def _on_difficulty_change(self):
+        """
+        Called when user changes difficulty setting from the menu.
+        Updates the season mode and displays appropriate notification.
+        Updates existing plants to match new difficulty.
+        """
+        new_mode = self._difficulty_var.get()
+        self._season_mode = new_mode
+        
+        # Update existing plants to match new difficulty
+        self._update_plants_for_difficulty_change()
+        
+        # Update difficulty variable to stay in sync
+        if hasattr(self, '_difficulty_var'):
+            self._difficulty_var.set(new_mode)
+        
+        # User-friendly messages
+        messages = {
+            "off": "Difficulty: Casual — Plants only affected by water/health",
+            "overlay": "Difficulty: Moderate — Temperature effects shown (no deaths)",
+            "enforce": "Difficulty: Realistic — Full environmental simulation (Mendel-era)"
+        }
+        
+        msg = messages.get(new_mode, f"Difficulty: {new_mode}")
+        self._toast(msg)
 
     def _season_gate_sowing(self):
         """

@@ -34,6 +34,37 @@ TRAITS = {
     "seed_color": 7,
 }
 
+# Difficulty-based lifecycle settings
+LIFECYCLE_SETTINGS = {
+    "off": {  # Casual - Fast growth, short lifespan
+        "base_thresholds": [0, 0, 4, 8, 13, 18, 25, 30],
+        "max_age_range": (60, 90),
+        "description": "Casual: Fast growth for genetics experimentation"
+    },
+    "overlay": {  # Moderate - Medium growth, medium lifespan
+        "base_thresholds": [0, 0, 5, 10, 20, 30, 42, 55],
+        "max_age_range": (75, 105),
+        "description": "Moderate: Balanced growth speed"
+    },
+    "enforce": {  # Realistic - Slow growth, long lifespan (Mendel-era timing)
+        "base_thresholds": [0, 0, 7, 14, 28, 42, 60, 85],
+        "max_age_range": (90, 120),
+        "description": "Realistic: Historical pea plant lifecycle"
+    }
+}
+
+def get_lifecycle_settings(difficulty="off"):
+    """
+    Get lifecycle settings for the given difficulty.
+    
+    Args:
+        difficulty: One of "off" (casual), "overlay" (moderate), "enforce" (realistic)
+        
+    Returns:
+        Dict with base_thresholds and max_age_range
+    """
+    return LIFECYCLE_SETTINGS.get(difficulty, LIFECYCLE_SETTINGS["off"])
+
 
 @dataclass
 class Plant:
@@ -65,9 +96,10 @@ class Plant:
     
     # Growth timing
     entered_stage5_age: Optional[int] = None
-    max_age_days: int = field(default_factory=lambda: random.randint(60, 90))
+    max_age_days: int = 0  # Will be set in __post_init__ based on difficulty
     senescent: bool = False
     germination_delay: int = 0
+    difficulty: str = "off"  # Track difficulty for this plant
     
     # Reproduction state
     pending_cross: Optional[dict] = None
@@ -100,6 +132,23 @@ class Plant:
         """Initialize plant after dataclass creation."""
         # Register with environment
         env.register_plant(self)
+        
+        # Get difficulty from environment (with fallback)
+        try:
+            # Try to get difficulty from the app via the garden environment
+            if hasattr(env, '_app'):
+                app = env._app
+                self.difficulty = str(getattr(app, '_season_mode', 'off'))
+            else:
+                self.difficulty = "off"
+        except Exception:
+            self.difficulty = "off"
+        
+        # Set max_age based on difficulty
+        if self.max_age_days == 0:  # Only set if not already set
+            settings = get_lifecycle_settings(self.difficulty)
+            min_age, max_age = settings["max_age_range"]
+            self.max_age_days = random.randint(min_age, max_age)
         
         # Set up F0 lineage
         try:
@@ -170,6 +219,7 @@ class Plant:
     def advance_growth(self):
         """
         Advance plant growth stage based on age and health.
+        Growth speed varies by difficulty setting.
         """
         if not self.alive or self.stage >= 7:
             return
@@ -184,39 +234,50 @@ class Plant:
             # Pollination restores pod development
             self.pods_remaining = int(self.pods_total)
 
-        # Base thresholds for each stage (in days)
-        base_thresholds = [0, 0, 4, 8, 13, 18, 25, 30]
-        
-        # Health affects growth speed
-        health_factor = 0 if self.health > 70 else (1 if self.health > 40 else 2)
-        required_days = base_thresholds[self.stage + 1] + health_factor
+        # Get difficulty-appropriate thresholds
+        settings = get_lifecycle_settings(getattr(self, 'difficulty', 'off'))
+        base_thresholds = settings["base_thresholds"]
         
         # Handle germination delay for seeds
         delay = getattr(self, "germination_delay", 0)
-        if self.stage == 1 and self.days_since_planting < delay:
+        effective_age = self.days_since_planting - delay
+        
+        if self.stage == 1 and effective_age < 0:
             return  # Still underground, not germinated
         
-        # Check if ready to advance
-        if (self.days_since_planting - delay) >= required_days:
-            self.stage += 1
+        # Check all stages we can advance to
+        # Keep advancing while we meet the requirements
+        while self.stage < 7:
+            next_stage = self.stage + 1
             
-            # Mark entry to flowering stage
-            try:
-                if self.stage == 5 and getattr(self, 'entered_stage5_age', None) is None:
-                    self.entered_stage5_age = self.days_since_planting
-            except Exception:
-                pass
+            # Health affects growth speed (penalty days added to threshold)
+            health_factor = 0 if self.health > 70 else (1 if self.health > 40 else 2)
+            required_days = base_thresholds[next_stage] + health_factor
             
-            # Reveal traits appropriate to new stage
-            self.reveal_trait()
-            self.reveal_all_available()
-            
-            # Legacy staged reveal support
-            stage_to_index = {3: 0, 4: 1, 5: 2}
-            if self.stage in stage_to_index:
-                idx = stage_to_index[self.stage]
-                while len(self.revealed_traits) <= idx and len(self.revealed_traits) < len(self.reveal_order):
-                    self.discover_next_trait()
+            # Check if ready to advance to next stage
+            if effective_age >= required_days:
+                self.stage = next_stage
+                
+                # Mark entry to flowering stage
+                try:
+                    if self.stage == 5 and getattr(self, 'entered_stage5_age', None) is None:
+                        self.entered_stage5_age = self.days_since_planting
+                except Exception:
+                    pass
+                
+                # Reveal traits appropriate to new stage
+                self.reveal_trait()
+                self.reveal_all_available()
+                
+                # Legacy staged reveal support
+                stage_to_index = {3: 0, 4: 1, 5: 2}
+                if self.stage in stage_to_index:
+                    idx = stage_to_index[self.stage]
+                    while len(self.revealed_traits) <= idx and len(self.revealed_traits) < len(self.reveal_order):
+                        self.discover_next_trait()
+            else:
+                # Can't advance further, stop checking
+                break
         
         # Ensure full revelation at maturity
         if self.stage >= 7:
@@ -369,7 +430,9 @@ class Plant:
         elif self.water > 85:
             self.health = max(0, self.health - 1)
         elif 40 <= self.water <= 70:
-            self.health = min(100, self.health + 1)
+            # Senescent plants cannot recover health
+            if not getattr(self, 'senescent', False):
+                self.health = min(100, self.health + 1)
         elif 30 <= self.water < 40 or 70 < self.water <= 85:
             pass  # Neutral bands
         else:

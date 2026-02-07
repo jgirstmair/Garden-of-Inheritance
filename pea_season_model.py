@@ -165,6 +165,20 @@ class PeaSeasonModelV1F4:
     }
     
     # ========================================================================
+    # Stage-Based Lethal Freeze Temperatures
+    # ========================================================================
+    # Based on real pea plant cold tolerance
+    # Most garden peas (Pisum sativum) die between -4°C and -9°C
+    
+    LETHAL_FREEZE_TEMPS = {
+        "vegetative": -7.0,          # Hardy established seedlings
+        "flowering": -4.0,           # Vulnerable flowers/reproductive tissue
+        "podding": -4.0,             # Vulnerable developing pods
+        "senescent": -5.0,           # Weakened aging plants
+    }
+    LETHAL_FREEZE_GLOBAL = -7.0      # Fallback for unknown stages
+    
+    # ========================================================================
     # Lifespan and Senescence Limits
     # ========================================================================
     
@@ -354,7 +368,10 @@ class PeaSeasonModelV1F4:
         air_mean, air_min, air_max, _ = self._air_means(date)
         
         # Use daily extrema to catch overnight frost and hot spikes
-        if air_min < -15.0:
+        # Realistic lethal freeze threshold for pea plants:
+        # Most established peas die around -7°C to -9°C
+        # Flowering/podding stages are even more vulnerable
+        if air_min < -7.0:
             return (False, "Severe freezing – lethal")
         if air_min < 0.0:
             return (True, "Frost damage")
@@ -559,7 +576,23 @@ class PeaSeasonModelV1F4:
             # Stress, Lethal Events, and Cumulative Mortality
             # ================================================================
             
-            # Lethal freeze
+            # Stage-aware lethal freeze check (realistic pea cold tolerance)
+            air_mean_today, air_min_today, air_max_today, _ = self._air_means(date)
+            stage_key = "senescent" if plant.senescent else plant.stage
+            lethal_temp = self.LETHAL_FREEZE_TEMPS.get(stage_key, self.LETHAL_FREEZE_GLOBAL)
+            
+            if air_min_today < lethal_temp:
+                plant.dead = True
+                events.append({
+                    "date": date,
+                    "plant_id": pid,
+                    "type": "lethal_freeze",
+                    "message": f"Plant killed by severe freeze ({air_min_today:.1f}°C, {plant.stage} stage lethal at {lethal_temp:.1f}°C)",
+                    "suggested_health_delta": -9999,
+                })
+                continue
+            
+            # Legacy global lethal freeze (kept for compatibility)
             if delta <= -9999:
                 plant.dead = True
                 events.append({
@@ -572,6 +605,11 @@ class PeaSeasonModelV1F4:
             
             # Stress events
             if note != "Normal":
+                # Add ±10% variation to health delta for natural variation
+                if delta != 0:
+                    variation = 1.0 + (self.rng.random() * 0.2 - 0.1)  # 0.9 to 1.1
+                    delta = int(delta * variation)
+                
                 # Immediate stress event
                 events.append({
                     "date": date,
@@ -590,21 +628,31 @@ class PeaSeasonModelV1F4:
                 plant.stress_index += w
                 plant.stress_streak += 1
                 
-                # Mortality checks
-                if (plant.stress_index >= self.STRESS_MORTALITY
-                    or plant.stress_streak >= self.STREAK_MORTALITY):
-                    plant.dead = True
+                # Instead of instant death, apply severe health drain based on stress
+                # Plants die naturally when health reaches 0
+                if plant.stress_index >= self.STRESS_MORTALITY:
+                    # Critical stress: severe health drain per day
+                    stress_damage = -int(self.rng.randint(15, 25) * (1.0 + (self.rng.random() * 0.2 - 0.1)))
                     events.append({
                         "date": date,
                         "plant_id": pid,
-                        "type": "wither",
-                        "message": "Plant succumbed to accumulated stress",
-                        "suggested_health_delta": -9999,
+                        "type": "critical_stress",
+                        "message": f"Critical stress - plant failing (stress index: {plant.stress_index:.1f})",
+                        "suggested_health_delta": stress_damage,
                     })
-                    continue
+                elif plant.stress_streak >= self.STREAK_MORTALITY:
+                    # Long stress streak: severe health drain
+                    streak_damage = -int(self.rng.randint(12, 20) * (1.0 + (self.rng.random() * 0.2 - 0.1)))
+                    events.append({
+                        "date": date,
+                        "plant_id": pid,
+                        "type": "chronic_stress",
+                        "message": f"Prolonged stress - plant deteriorating ({plant.stress_streak} days)",
+                        "suggested_health_delta": streak_damage,
+                    })
                 elif plant.stress_index >= self.CHRONIC_ZONE:
-                    # Chronic weakening
-                    slow = -self.rng.randint(2, 4)
+                    # Chronic weakening (with variation)
+                    slow = -int(self.rng.randint(2, 4) * (1.0 + (self.rng.random() * 0.2 - 0.1)))
                     events.append({
                         "date": date,
                         "plant_id": pid,
@@ -613,19 +661,37 @@ class PeaSeasonModelV1F4:
                         "suggested_health_delta": slow,
                     })
             else:
-                # No stress: relieve streak and decay load
+                # No active stress (no frost, no heat)
+                # Decay stress over time
                 plant.stress_streak = max(
                     0,
                     plant.stress_streak - self.STREAK_RELIEF_PER_DAY
                 )
                 plant.stress_index *= self.STRESS_DECAY_PER_DAY
                 
-                # Optional recovery message
+                # Recovery only under truly favorable conditions
                 loM, hiM = self.RECOVER_MOIST_RANGE
                 loT, hiT = self.RECOVER_AIR_MEAN_C
-                if (loM <= self.soil_moisture <= hiM
-                    and loT <= air_mean <= hiT
-                    and not plant.senescent):
+                
+                # Check all conditions for recovery:
+                # 1. Optimal soil moisture (not too dry, not too wet)
+                # 2. Optimal temperature range (not cold, not hot)
+                # 3. Not senescent (old plants can't recover)
+                # 4. Low stress index (below chronic threshold)
+                moisture_ok = loM <= self.soil_moisture <= hiM
+                temp_ok = loT <= air_mean <= hiT
+                not_senescent = not plant.senescent
+                stress_low = plant.stress_index < self.CHRONIC_ZONE
+                
+                # Additional checks for marginal conditions
+                # Temperatures close to freezing (0-5°C) = too cold to recover
+                too_cold = air_mean < 5.0
+                # Soil too dry (< 0.3) or too wet (> 0.9) = stress persists
+                soil_stress = self.soil_moisture < 0.3 or self.soil_moisture > 0.9
+                
+                # Recovery only if ALL conditions are good
+                if (moisture_ok and temp_ok and not_senescent and stress_low 
+                    and not too_cold and not soil_stress):
                     events.append({
                         "date": date,
                         "plant_id": pid,
@@ -634,9 +700,11 @@ class PeaSeasonModelV1F4:
                         "suggested_health_delta": 0,
                     })
             
-            # Senescence daily decay
+            # Senescence daily decay (with ±10% variation for natural feel)
             if plant.senescent and not plant.dead:
-                sen_decay = -self.rng.randint(*self.SENESCENCE_DECAY)
+                base_decay = -self.rng.randint(*self.SENESCENCE_DECAY)
+                variation = 1.0 + (self.rng.random() * 0.2 - 0.1)  # 0.9 to 1.1
+                sen_decay = int(base_decay * variation)
                 events.append({
                     "date": date,
                     "plant_id": pid,
