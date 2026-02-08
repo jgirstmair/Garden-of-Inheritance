@@ -92,7 +92,7 @@ from inventory import Inventory, InventoryPopup, Seed, Pollen
 from mendel_temperature_tracker import TemperatureTracker
 from emasculation_dialog import EmasculationDialog
 from gameticker import GameTicker
-from datetime_panel import DatetimePanel
+from meteorology import MeteorologyPanel
 from pollination_dialog import PollinationDialog
 
 
@@ -855,6 +855,8 @@ class GardenApp:
         self.fast_forward = False
         self.day_length_s = 0.25
         self._recalc_timers()
+        self.gameticker.set_target_tps(1000/self.phase_ms)
+
         self.subphase_counter = 0
 
         self.grid_bg = "#eeeeee"
@@ -2173,7 +2175,7 @@ class GardenApp:
         right_panel.pack(side="left", fill="both", expand=True, padx=(8, 0))
 
         # Date/Time/Weather/Temp at the TOP of right panel (its own line)
-        self.datetime_panel = DatetimePanel(right_panel, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
+        self.datetime_panel = MeteorologyPanel(right_panel, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
         self.gameticker.register(self.datetime_panel)
 
 
@@ -5316,12 +5318,11 @@ class GardenApp:
 
     def _toggle_run(self):
         self.running = not getattr(self, "running", True)
-        try:
-            # Update button label
-            if hasattr(self, "pause_btn"):
-                self.pause_btn.configure(text=("⏸ Pause" if self.running else "⏵ Resume"))
-        except Exception:
-            pass
+        self.gameticker.wants_running = not self.gameticker.wants_running
+
+        # Update button label
+        self.pause_btn.configure(text=("⏸ Pause" if self.running else "⏵ Resume"))
+
         # Keep loop consistent
         if self.running:
             self._ensure_auto_loop(delay_ms=50)
@@ -7108,28 +7109,19 @@ class GardenApp:
         HistoryArchiveBrowser(parent_window, self, default_pid=default_pid)
 
     def _set_day_length(self, secs, reschedule=True):
-        """Compatibility wrapper: old UI calls _set_day_length(), v2 uses _set_day_length_patched()."""
-        return self._set_day_length_patched(secs, reschedule=reschedule)
+        secs = float(secs)
 
-    def _set_day_length_patched(self, secs, reschedule=True):
-        try:
-            secs = float(secs)
+        # Allow very fast speeds but avoid UI lockups
+        if secs < 0.1:
+            secs = 0.1
 
-            # Allow very fast speeds but avoid UI lockups
-            if secs < 0.1:
-                secs = 0.1
-
-            # seconds of real time per simulated HOUR
-            self.day_length_s = secs
-
-        except Exception:
-            return
+        # seconds of real time per simulated HOUR
+        self.day_length_s = secs
 
         # Recompute derived timers (phase_ms, sub_ms, etc.)
-        try:
-            self._recalc_timers()
-        except Exception:
-            pass
+        self._recalc_timers()
+        self.gameticker.set_target_tps(1000/self.phase_ms)
+
 
         # Reschedule the auto-loop so the change takes effect immediately
         try:

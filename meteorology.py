@@ -1,3 +1,18 @@
+"""
+Some thoughts:
+
+Need 2 things: 
+    - A clock that keeps track of time, which is basically only for the user to have a 
+    nice display, and maybe for the logs. Basically done already in MeteorologyPanel.
+    - A meteorology station, that returns current weather, temperature, precipitation etc for the 
+    current tick (maybe also hour, idk). Possibly used to update water level in the soil,
+    and also plant growth. PERFORMANCE CRITICAL!
+
+Weather needs to be updated either once per hour, or every tick. Preferrably use the existing
+MendelClimate, allthough its unclear to me atm what this class actually does...
+"""
+
+
 from datetime import datetime, timedelta
 import tkinter as tk
 from gameticker import Entity
@@ -5,7 +20,16 @@ from gameticker import Entity
 GAME_START_DATE = datetime(1856, 4, 1, 6, 0)
 TICK_MINUTES = 15
 
-class DatetimePanel(tk.Label, Entity):
+class Weather:
+    pass
+
+class Meteorology:
+    pass
+
+    def get_current_weather(self, time: datetime):
+        pass
+
+class MeteorologyPanel(tk.Label, Entity):
 
     def __init__(self, *args, **kwargs):
         self.label = tk.Label(*args, **kwargs)
@@ -32,7 +56,7 @@ class DatetimePanel(tk.Label, Entity):
     def update(self, tick_count: int):
         t = self.get_game_time(tick_count)
 
-        self.label.configure(text=f'{t.day} {t.month} {t.year} — {t.time().hour}:{t.time().minute} — Wheater - Temperature')
+        self.label.configure(text=f'{t.day} {t.month} {t.year} — {t.time().hour}:{t.time().minute} — Weather - Temperature')
 
     def get_game_time(self, current_ticks) -> datetime:
         """
