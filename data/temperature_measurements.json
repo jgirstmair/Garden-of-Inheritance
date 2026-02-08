@@ -97,5 +97,32 @@
     "month": 6,
     "year": 1856,
     "is_simulation": true
+  },
+  {
+    "date": "1856-04-01",
+    "datetime": "1856-04-01 14:00",
+    "hour": 14,
+    "temperature": 15.0,
+    "month": 4,
+    "year": 1856,
+    "is_simulation": true
+  },
+  {
+    "date": "1856-04-01",
+    "datetime": "1856-04-01 22:00",
+    "hour": 22,
+    "temperature": 9.6,
+    "month": 4,
+    "year": 1856,
+    "is_simulation": true
+  },
+  {
+    "date": "1856-04-02",
+    "datetime": "1856-04-02 06:00",
+    "hour": 6,
+    "temperature": 8.0,
+    "month": 4,
+    "year": 1856,
+    "is_simulation": true
   }
 ]
