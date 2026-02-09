@@ -1,15 +1,15 @@
 import tkinter as tk
-import time
 from abc import ABC, abstractmethod
-from typing import List
+from collections import defaultdict
 
-
-TICKS_PER_HOUR = 4
-TICKS_PER_DAY = TICKS_PER_HOUR * 24
 
 class Entity(ABC):
     @abstractmethod
     def update(self, tick_counter: int):
+        pass
+    
+    @abstractmethod
+    def __hash__(self):
         pass
 
 
@@ -22,25 +22,19 @@ class GameTicker:
         self._is_running = False
 
         self.tick_delay_ms = 17
-        self.loop_id = None
 
         self.tick_counter: int = 0
 
-        self.daily_entities: List[Entity] = []
-        self.hourly_entities: List[Entity] = []
-        self.granular_entities: List[Entity] = []
+        # A map of {frequency_in_ticks: set(entities)}
+        # e.g., {1: {granular}, 4: {hourly}, 96: {daily}}
+        self._registry: dict[int, set[Entity]] = defaultdict(set)
 
 
     def _loop(self):
-        #do loop update
-        if self.tick_counter%TICKS_PER_HOUR == 0:
-            for entity in self.hourly_entities:
-                entity.update(self.tick_counter)
-        if self.tick_counter%TICKS_PER_DAY == 0:
-            for entity in self.daily_entities:
-                entity.update(self.tick_counter)
-        for entity in self.granular_entities:
-            entity.update(self.tick_counter)
+        for frequency, entities in self._registry.items():
+            if self.tick_counter % frequency == 0:
+                for entity in entities:
+                    entity.update(self.tick_counter)
 
         self.tick_counter += 1
 
@@ -68,7 +62,14 @@ class GameTicker:
             self._is_running = True
             self._loop()
 
-       
+    def register(self, entity: Entity, frequency: int=1):
+        self._registry[frequency].add(entity)
+        entity.update(self.tick_counter)
+
+    def unregister(self, entity: Entity, frequency: int=1):
+        self._registry[frequency].remove(entity)
+
+        
 if __name__ == '__main__':
 
     root = tk.Tk()
