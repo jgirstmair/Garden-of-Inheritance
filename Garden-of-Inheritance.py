@@ -1200,6 +1200,66 @@ class GardenApp:
         except Exception:
             pass
 
+    def _get_current_day_number(self):
+        """Calculate unique day number from game calendar."""
+        import datetime
+        try:
+            current_date = datetime.date(self.garden.year, self.garden.month, self.garden.day_of_month)
+            start_date = datetime.date(1856, 4, 1)  # Game starts April 1, 1856
+            return (current_date - start_date).days
+        except Exception as e:
+            # Fallback: simple approximation
+            return self.garden.day_of_month + (self.garden.month - 1) * 30 + (self.garden.year - 1856) * 365
+
+    def _cleanup_old_dead_plants(self):
+        """Remove dead plants that have been dead for 2-3 days."""
+        import random
+        
+        current_day = self._get_current_day_number()
+        removed_count = 0
+        
+        for i, tile in enumerate(self.tiles):
+            plant = tile.plant
+            
+            # Skip empty tiles
+            if plant is None:
+                continue
+            
+            # Skip living plants
+            if plant.alive:
+                continue
+            
+            # Track death day if not already tracked
+            if not hasattr(plant, 'death_day') or plant.death_day is None:
+                plant.death_day = current_day
+                continue
+            
+            # Calculate days since death
+            days_dead = current_day - plant.death_day
+            
+            # Remove after 2-3 days
+            if days_dead >= 2:
+                # 50% chance on day 2, 100% chance on day 3+
+                should_remove = (days_dead >= 3) or (random.random() < 0.5)
+                
+                if should_remove:
+                    # Clear the tile
+                    tile.plant = None
+                    removed_count += 1
+                    # Unregister from garden
+                    try:
+                        if plant in self.garden.plants:
+                            self.garden.plants.remove(plant)
+                    except Exception:
+                        pass
+        
+        # Force a re-render if we removed any plants
+        if removed_count > 0:
+            try:
+                self.render_all()
+            except Exception:
+                pass
+
     def _ensure_auto_loop(self, delay_ms=500):
         """Ensure exactly one auto-advance loop is scheduled."""
         try:
@@ -1243,6 +1303,12 @@ class GardenApp:
 
             # Advance phase and optionally render
             self.garden.next_phase()
+            
+            # Clean up old dead plants (check every hour)
+            try:
+                self._cleanup_old_dead_plants()
+            except Exception:
+                pass
             
             # Update temperature button state when hour changes (+ auto-record if enabled)
             try:
@@ -4166,6 +4232,12 @@ class GardenApp:
         self.garden.next_phase()
         new_hour = int(getattr(self.garden, 'clock_hour', 6))
         
+        # Clean up old dead plants
+        try:
+            self._cleanup_old_dead_plants()
+        except Exception:
+            pass
+        
         # Update temperature button if hour changed
         if old_hour != new_hour:
             try:
@@ -5506,6 +5578,12 @@ class GardenApp:
                 self.garden.next_phase()
             except Exception:
                 pass
+            
+            # Clean up old dead plants
+            try:
+                self._cleanup_old_dead_plants()
+            except Exception:
+                pass
 
             # ---------------- UI refresh logic ----------------
             try:
@@ -6798,6 +6876,7 @@ class GardenApp:
                         # Natural death when health reaches 0 (only if was alive)
                         if new_health <= 0 and getattr(plant, "alive", True):
                             plant.alive = False
+                            plant.death_day = self._get_current_day_number()  # Track when plant died
                             try:
                                 etype = str(ev.get("type", "")).lower()
                                 # Determine death message based on cause
@@ -6836,6 +6915,7 @@ class GardenApp:
                         # Check again if plant is still alive before killing
                         if getattr(plant, "alive", False):
                             plant.alive = False
+                            plant.death_day = self._get_current_day_number()  # Track when plant died
                             if hasattr(plant, "health"):
                                 plant.health = 0
                             try:
@@ -6904,6 +6984,7 @@ class GardenApp:
                 if newh <= 0:
                     try:
                         plant.alive = False
+                        plant.death_day = self._get_current_day_number()  # Track when plant died
                     except Exception:
                         pass
             try:
