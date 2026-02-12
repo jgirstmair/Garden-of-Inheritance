@@ -91,8 +91,6 @@ from icon_loader import *
 from inventory import Inventory, InventoryPopup, Seed, Pollen
 from mendel_temperature_tracker import TemperatureTracker
 from emasculation_dialog import EmasculationDialog
-from gameticker import GameTicker
-from meteorology import MeteorologyPanel
 from pollination_dialog import PollinationDialog
 
 
@@ -796,8 +794,6 @@ class GardenApp:
         self._eager_seed_and_backfill()
         self._img_cache = {}  # cache for composited tile images
         self.next_plant_id = 1
-
-        self.gameticker = GameTicker(self.root)
         # === Unique Plant ID System ===
         self.used_ids = set()
         try:
@@ -855,8 +851,6 @@ class GardenApp:
         self.fast_forward = False
         self.day_length_s = 0.25
         self._recalc_timers()
-        self.gameticker.set_target_tps(1000/self.phase_ms)
-
         self.subphase_counter = 0
 
         self.grid_bg = "#eeeeee"
@@ -2175,9 +2169,8 @@ class GardenApp:
         right_panel.pack(side="left", fill="both", expand=True, padx=(8, 0))
 
         # Date/Time/Weather/Temp at the TOP of right panel (its own line)
-        self.datetime_panel = MeteorologyPanel(right_panel, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
-        self.gameticker.register(self.datetime_panel)
-
+        self.phase_label = tk.Label(right_panel, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
+        self.phase_label.pack(fill="x", pady=(4, 8))
 
         # Status message bar
         self.status_msg = tk.Label(
@@ -2433,29 +2426,29 @@ class GardenApp:
 
 
 
-    # def _update_header(self):
-    #     def _mon_name(m):
-    #         names = ['January','February','March','April','May','June','July','August','September','October','November','December']
-    #         try:
-    #             return names[int(m)-1]
-    #         except Exception:
-    #             return str(m)
-    #     def _fmt_clock(h, mi):
-    #         try:
-    #             return f"{int(h):02d}:{int(mi):02d}"
-    #         except Exception:
-    #             return '06:00'
-    #     try:
-    #         mon = _mon_name(getattr(self.garden, 'month', 4))
-    #         yr = getattr(self.garden, 'year', 1856)
-    #         dom = getattr(self.garden, 'day_of_month', getattr(self.garden, 'day', 1))
-    #         wx = getattr(self.garden, 'weather', '')
-    #         hh = getattr(self.garden, 'clock_hour', 6)
-    #         mm = getattr(self.garden, 'clock_minute', 0)
-    #         tmp = f"{getattr(self.garden, 'temp', 0.0):.1f}°C" if hasattr(self.garden, 'temp') else ''
-    #         self.header_label.configure(text=f"📅 {mon} {yr} — Day {dom} — { _fmt_clock(hh,mm) } — {wx}  {tmp}")
-    #     except Exception:
-    #         pass
+    def _update_header(self):
+        def _mon_name(m):
+            names = ['January','February','March','April','May','June','July','August','September','October','November','December']
+            try:
+                return names[int(m)-1]
+            except Exception:
+                return str(m)
+        def _fmt_clock(h, mi):
+            try:
+                return f"{int(h):02d}:{int(mi):02d}"
+            except Exception:
+                return '06:00'
+        try:
+            mon = _mon_name(getattr(self.garden, 'month', 4))
+            yr = getattr(self.garden, 'year', 1856)
+            dom = getattr(self.garden, 'day_of_month', getattr(self.garden, 'day', 1))
+            wx = getattr(self.garden, 'weather', '')
+            hh = getattr(self.garden, 'clock_hour', 6)
+            mm = getattr(self.garden, 'clock_minute', 0)
+            tmp = f"{getattr(self.garden, 'temp', 0.0):.1f}°C" if hasattr(self.garden, 'temp') else ''
+            self.header_label.configure(text=f"📅 {mon} {yr} — Day {dom} — { _fmt_clock(hh,mm) } — {wx}  {tmp}")
+        except Exception:
+            pass
 
 
 # ============================================================================
@@ -2510,6 +2503,27 @@ class GardenApp:
 
             tile.render()
 
+        # Update centered header (Day / Phase / Weather)
+        try:
+            mon_names = ['January','February','March','April','May','June','July','August','September','October','November','December']
+            mon = mon_names[getattr(self.garden, 'month', 4)-1] if 1 <= getattr(self.garden, 'month', 4) <= 12 else str(getattr(self.garden, 'month', 4))
+            dom = getattr(self.garden, 'day_of_month', getattr(self.garden, 'day', 1))
+            yr  = getattr(self.garden, 'year', 1856)
+            hh  = getattr(self.garden, 'clock_hour', 6)
+            mm  = getattr(self.garden, 'clock_minute', 0)
+            wx  = getattr(self.garden, 'weather', '')
+            tmp = f"{getattr(self.garden, 'temp', 0.0):.1f}°C" if hasattr(self.garden, 'temp') else ''
+            clock = f"{int(hh):02d}:{int(mm):02d}"
+            self.phase_label.configure(text=f"{dom} {mon} {yr} — {clock} — {wx} {tmp}")
+            try:
+                # Season overlay info suppressed from status bar to avoid permanent message
+                # (kept available via self._season_mode for other UI components if needed)
+                mode = getattr(self, '_season_mode', 'off')
+                # intentionally not writing to self.status_var here
+            except Exception:
+                pass
+        except Exception:
+            pass
         self._render_selection_panel()
         
     def _label_with_bold_gender(self, parent, text, base_font=("Segoe UI", 12), bold_font=("Segoe UI", 12, "bold")):
@@ -3977,11 +3991,11 @@ class GardenApp:
         except Exception:
             pass
 
-        # # ---- Build menu (keep your existing code below) ----
-        # try:
-        #     self._ensure_auto_loop(delay_ms=50)
-        # except Exception:
-        #     pass
+        # ---- Build menu (keep your existing code below) ----
+        try:
+            self._ensure_auto_loop(delay_ms=50)
+        except Exception:
+            pass
 
         plantable_tiles = [t for t in self.selected_tiles 
                            if t.plant is None or not getattr(t.plant, 'alive', True)]
@@ -4140,7 +4154,7 @@ class GardenApp:
         
         # Traits rarely change every phase; keep cache so we don't rebuild unless needed.
         self.render_all()
-        # Start automated phase progression (slight delay for safety)
+# Start automated phase progression (slight delay for safety)
         try:
             self._ensure_auto_loop(delay_ms=50)
         except Exception:
@@ -5318,11 +5332,12 @@ class GardenApp:
 
     def _toggle_run(self):
         self.running = not getattr(self, "running", True)
-        self.gameticker.wants_running = not self.gameticker.wants_running
-
-        # Update button label
-        self.pause_btn.configure(text=("⏸ Pause" if self.running else "⏵ Resume"))
-
+        try:
+            # Update button label
+            if hasattr(self, "pause_btn"):
+                self.pause_btn.configure(text=("⏸ Pause" if self.running else "⏵ Resume"))
+        except Exception:
+            pass
         # Keep loop consistent
         if self.running:
             self._ensure_auto_loop(delay_ms=50)
@@ -5524,6 +5539,7 @@ class GardenApp:
     
     def _on_save_garden(self):
         """Save the entire garden state to a JSON file with optional naming."""
+        import datetime
         
         # Ensure data directory exists
         data_dir = os.path.join(_PG_BASE_DIR, "data")
@@ -5533,7 +5549,7 @@ class GardenApp:
         garden_name = self._show_save_name_dialog()
         
         # Generate timestamp
-        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Create filename based on whether a name was provided
         if garden_name and garden_name.strip():
@@ -7109,19 +7125,28 @@ class GardenApp:
         HistoryArchiveBrowser(parent_window, self, default_pid=default_pid)
 
     def _set_day_length(self, secs, reschedule=True):
-        secs = float(secs)
+        """Compatibility wrapper: old UI calls _set_day_length(), v2 uses _set_day_length_patched()."""
+        return self._set_day_length_patched(secs, reschedule=reschedule)
 
-        # Allow very fast speeds but avoid UI lockups
-        if secs < 0.1:
-            secs = 0.1
+    def _set_day_length_patched(self, secs, reschedule=True):
+        try:
+            secs = float(secs)
 
-        # seconds of real time per simulated HOUR
-        self.day_length_s = secs
+            # Allow very fast speeds but avoid UI lockups
+            if secs < 0.1:
+                secs = 0.1
+
+            # seconds of real time per simulated HOUR
+            self.day_length_s = secs
+
+        except Exception:
+            return
 
         # Recompute derived timers (phase_ms, sub_ms, etc.)
-        self._recalc_timers()
-        self.gameticker.set_target_tps(1000/self.phase_ms)
-
+        try:
+            self._recalc_timers()
+        except Exception:
+            pass
 
         # Reschedule the auto-loop so the change takes effect immediately
         try:
@@ -7445,7 +7470,7 @@ def _ask_grid_size(root, existing_config=None):
 def main():
     root = tk.Tk()
     handler = CrashHandler()
-    handler.install()   
+    handler.install()
     # Load last used settings (if any)
     cfg = None
     try:
