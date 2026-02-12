@@ -2003,7 +2003,9 @@ class GardenApp:
             "activebackground": "#E4E4E4",
             "relief": "flat",
             "bd": 0,
+            "borderwidth": 0,  # Explicitly set borderwidth to 0 for macOS
             "highlightthickness": 0,
+            "overrelief": "flat",  # Keep flat appearance even when pressed on macOS
             "padx": 12,
             "pady": 6,
         }
@@ -2019,6 +2021,11 @@ class GardenApp:
                 w.configure(bg=hover)
             else:
                 w.configure(bg="#E8E8E8")
+            # Ensure relief stays flat on macOS during hover
+            try:
+                w.configure(relief="flat")
+            except Exception:
+                pass
 
         def _hover_off(event):
             w = event.widget
@@ -2027,12 +2034,22 @@ class GardenApp:
                 w.configure(bg=base)
             else:
                 w.configure(bg="#F4F4F4")
+            # Ensure relief stays flat on macOS after hover
+            try:
+                w.configure(relief="flat")
+            except Exception:
+                pass
 
         def _apply_hover(btn):
             # Record original bg as the "base" color if not already set
             try:
                 if not hasattr(btn, "_base_bg"):
                     btn._base_bg = btn.cget("bg")
+            except Exception:
+                pass
+            # Ensure button starts with flat relief
+            try:
+                btn.configure(relief="flat", overrelief="flat", borderwidth=0)
             except Exception:
                 pass
             btn.bind("<Enter>", _hover_on)
@@ -2712,8 +2729,10 @@ class GardenApp:
             except Exception as e:
                 print("button disable failed:", e)
 
-            # Clear the cached signature
+            # Clear the cached signature and traits container
             self._sel_traits_sig = None
+            for w in self.traits_container.winfo_children():
+                w.destroy()
             return
 
         # ALWAYS update selection when we have a plant (moved before cache check)
@@ -2739,6 +2758,11 @@ class GardenApp:
                 self.inspect_btn.configure(state="disabled")
                 self.harvest_btn.configure(state="disabled")
                 self.pollen_btn.configure(state="disabled")
+                
+                # Clear the cached signature and traits container
+                self._sel_traits_sig = None
+                for w in self.traits_container.winfo_children():
+                    w.destroy()
                 return
             
             # Living plant - update normally
