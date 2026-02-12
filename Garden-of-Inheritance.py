@@ -2111,7 +2111,7 @@ class GardenApp:
             btn.pack(anchor="nw", pady=2, fill="x")
             return btn
 
-        self.water_btn     = make_icon_button(self.left_actions, "Water",         "water.png",     self._on_water_selected)
+        self.water_btn     = make_icon_button(self.left_actions, "Water",         "can.png",       self._on_water_selected)
         self.inspect_btn = make_icon_button(
             self.left_actions,
             "Inspect",
@@ -2217,16 +2217,32 @@ class GardenApp:
         # ALL BUTTONS (moved from topbar)
         btn_kwargs = dict(self.button_style)
         
-        # Observatory button
-        self.observatory_btn = tk.Button(
-            inventory_left,
-            text="🔭 Observatory",
-            command=lambda: (
-                self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
-                else messagebox.showinfo("Observatory", "Temperature tracker not available")
-            ),
-            **btn_kwargs,
-        )
+        # Observatory button with custom icon
+        try:
+            observatory_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "observatory.png"))
+            self.observatory_btn = tk.Button(
+                inventory_left,
+                text=" Observatory",
+                image=observatory_icon,
+                compound="left",
+                command=lambda: (
+                    self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
+                    else messagebox.showinfo("Observatory", "Temperature tracker not available")
+                ),
+                **btn_kwargs,
+            )
+            self.observatory_btn.image = observatory_icon  # Keep reference
+        except Exception as e:
+            print(f"⚠ Could not load observatory icon: {e}")
+            self.observatory_btn = tk.Button(
+                inventory_left,
+                text="🔭 Observatory",
+                command=lambda: (
+                    self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
+                    else messagebox.showinfo("Observatory", "Temperature tracker not available")
+                ),
+                **btn_kwargs,
+            )
         self._apply_hover(self.observatory_btn)
         self.observatory_btn.pack(side="left", padx=2)
 
@@ -2262,23 +2278,49 @@ class GardenApp:
         self._apply_hover(self.next_phase_btn)
         self.next_phase_btn.pack(side="left", padx=2)
 
-        # Plant Seeds button
-        self.plant_seeds_btn = tk.Button(
-            inventory_left,
-            text="Plant 🌱",
-            command=self._on_plant_seed_quick,
-            **btn_kwargs,
-        )
+        # Plant Seeds button with shovel icon
+        try:
+            plant_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "shovel.png"))
+            self.plant_seeds_btn = tk.Button(
+                inventory_left,
+                text=" Plant",
+                image=plant_icon,
+                compound="left",
+                command=self._on_plant_seed_quick,
+                **btn_kwargs,
+            )
+            self.plant_seeds_btn.image = plant_icon  # Keep reference
+        except Exception as e:
+            print(f"⚠ Could not load shovel icon: {e}")
+            self.plant_seeds_btn = tk.Button(
+                inventory_left,
+                text="Plant 🌱",
+                command=self._on_plant_seed_quick,
+                **btn_kwargs,
+            )
         self._apply_hover(self.plant_seeds_btn)
         self.plant_seeds_btn.pack(side="left", padx=2)
 
-        # Water All button
-        self.water_all_btn = tk.Button(
-            inventory_left,
-            text="Water All 💧",
-            command=self._on_water_all,
-            **btn_kwargs,
-        )
+        # Water All button with watering can icon
+        try:
+            water_all_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "can.png"))
+            self.water_all_btn = tk.Button(
+                inventory_left,
+                text=" Water All",
+                image=water_all_icon,
+                compound="left",
+                command=self._on_water_all,
+                **btn_kwargs,
+            )
+            self.water_all_btn.image = water_all_icon  # Keep reference
+        except Exception as e:
+            print(f"⚠ Could not load can icon: {e}")
+            self.water_all_btn = tk.Button(
+                inventory_left,
+                text="Water All 💧",
+                command=self._on_water_all,
+                **btn_kwargs,
+            )
         self._apply_hover(self.water_all_btn)
         self.water_all_btn.pack(side="left", padx=2)
         
