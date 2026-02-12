@@ -821,7 +821,7 @@ class GardenApp:
         # Auto-water toggles (defaults as in screenshot)
         self.auto_water_ff = tk.BooleanVar(value=True)      # ✅
         self.auto_water_normal = tk.BooleanVar(value=False) # ☐
-        self.cross_random = tk.BooleanVar(self.root, value=True)  # ✅ "Random X on harvest"
+        # cross_random removed - was non-functional legacy setting
         self.auto_record_temperature = tk.BooleanVar(value=True)  # ✅ "Auto-record temperature"
         self.auto_record_temperature.trace_add(
             "write", lambda *_: self._update_temp_button_state()
@@ -1342,10 +1342,9 @@ class GardenApp:
         self.root.bind('<H>', lambda e: self._show_help())
         self.root.bind('<f>', lambda e: self._on_fast_forward())
         self.root.bind('<F>', lambda e: self._on_fast_forward())
-        self.root.bind('<p>', lambda e: self._toggle_run())
-        self.root.bind('<P>', lambda e: self._toggle_run())
-        self.root.bind('<o>', lambda e: self._on_pollinate())
-        self.root.bind('<O>', lambda e: self._on_pollinate())
+        # P key now used for pollination (pause remains on Spacebar only)
+        self.root.bind('<p>', lambda e: self._on_pollinate())
+        self.root.bind('<P>', lambda e: self._on_pollinate())
         self.root.bind('<s>', lambda e: self._on_harvest_selected())
         # Shift+S → harvest ALL pods on selected plant
         self.root.bind('<S>', lambda e: self._on_harvest_all_selected())
@@ -1906,8 +1905,8 @@ class GardenApp:
                                     variable=self.auto_water_normal)
         game_menu.add_checkbutton(label="Auto-water in FF",
                                     variable=self.auto_water_ff)
-        game_menu.add_checkbutton(label="Random X on harvest",
-                                    variable=self.cross_random)
+        # game_menu.add_checkbutton(label="Random X on harvest",  # Removed - non-functional
+        #                             variable=self.cross_random)
         game_menu.add_checkbutton(label="Auto-record temperature",
                                     variable=self.auto_record_temperature)
         
@@ -2551,9 +2550,9 @@ class GardenApp:
         plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
 
 
-        # If mature, ensure all eligible traits are revealed so UI isn't missing any
+        # Ensure all eligible traits are revealed for any living plant
         try:
-            if plant and getattr(plant, 'stage', 0) >= 7:
+            if plant and getattr(plant, 'alive', True):
                 plant.reveal_all_available()
         except Exception:
             pass
@@ -2572,7 +2571,7 @@ class GardenApp:
                     revealed = {}
 
                 sig = (
-                    self.display_index,
+                    getattr(self, "selected_index", None),  # Use selected_index (display_index doesn't exist in this version)
                     getattr(plant, "id", None),
                     getattr(plant, "stage", None),
                     tuple(sorted(getattr(revealed, "items", lambda: [])())),
@@ -6166,7 +6165,7 @@ class GardenApp:
             'enable_daynight': self.enable_daynight,
             'auto_water_ff': self.auto_water_ff.get(),
             'auto_water_normal': self.auto_water_normal.get(),
-            'cross_random': self.cross_random.get(),
+            # 'cross_random': removed (non-functional legacy setting)
             'auto_record_temperature': self.auto_record_temperature.get(),
             'available_seeds': self.available_seeds,
             'grid_rows': ROWS,
@@ -6251,7 +6250,7 @@ class GardenApp:
         self.enable_daynight = ui_settings.get('enable_daynight', True)
         self.auto_water_ff.set(ui_settings.get('auto_water_ff', False))
         self.auto_water_normal.set(ui_settings.get('auto_water_normal', False))
-        self.cross_random.set(ui_settings.get('cross_random', True))
+        # self.cross_random removed (non-functional legacy setting)
         self.auto_record_temperature.set(ui_settings.get('auto_record_temperature', True))
         self.available_seeds = ui_settings.get('available_seeds', 10)
         
