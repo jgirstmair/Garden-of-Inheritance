@@ -1826,6 +1826,46 @@ class GardenApp:
         self._toast(f"Planted {planted} seed(s) in area.", level="info")
         self.render_all()
 
+    def _on_plant_n_from_group(self, kind, match_fn, max_count):
+        """Plant up to max_count seeds in a contiguous area, automatically replacing dead plants."""
+        idx = self.selected_index
+        if idx is None:
+            self._toast("Select a tile first.", level="warn"); return
+        
+        # Check if starting tile is available (empty or dead plant)
+        pl = self.tiles[idx].plant
+        if pl is not None and getattr(pl, 'alive', True):
+            self._toast("Select an empty tile or dead plant to start planting.", level="warn")
+            return
+        
+        # Get region including dead plants
+        region = self._contiguous_empty_region(idx) or [idx]
+        
+        if kind == 'S':
+            avail = int(getattr(self, "available_seeds", 0) or 0)
+        else:
+            avail = sum(1 for s in self.harvest_inventory if match_fn(s))
+        if avail <= 0:
+            self._toast("No seeds available in this group.", level="warn"); return
+        
+        # Limit to the smaller of: max_count, available seeds, or region size
+        to_plant = min(max_count, avail, len(region))
+        
+        planted = 0
+        for slot in region:
+            if planted >= to_plant: break
+            # Clear dead plant if present, then plant
+            slot_plant = self.tiles[slot].plant
+            if slot_plant is not None and not getattr(slot_plant, 'alive', True):
+                self.tiles[slot].plant = None
+            # Now plant if tile is empty
+            if self.tiles[slot].plant is None:
+                if self._plant_one_from_group(slot, kind, match_fn):
+                    planted += 1
+        
+        self._toast(f"Planted {planted} seed(s).", level="info")
+        self.render_all()
+
     def _on_plant_seed_from_group(self, kind, match_fn):
         """Plant a single seed from a group, automatically replacing dead plants."""
         idx = self.selected_index
@@ -5218,7 +5258,8 @@ class GardenApp:
         def _get_sample_traits_for_group(kind, src, donor, match_fn):
             """Return a dict of traits for preview (from first matching harvested seed)."""
             if kind == "S":
-                return {}  # starters are randomized founders; no single preview
+                # Starters are randomized founders - return placeholder traits for icon display
+                return {"seed_color": "yellow"}  # Show yellow as default for starters
             try:
                 for s in self.harvest_inventory:
                     if match_fn(s):
@@ -5262,6 +5303,17 @@ class GardenApp:
             """Plant seeds from a group into the contiguous empty region starting at selected tile."""
             try:
                 self._on_plant_area_from_group(kind, match_fn)
+            except Exception:
+                pass
+            try:
+                picker.destroy()
+            except Exception:
+                pass
+
+        def _plant_n_seeds(kind, match_fn, max_count):
+            """Plant up to max_count seeds from a group into the contiguous empty region."""
+            try:
+                self._on_plant_n_from_group(kind, match_fn, max_count)
             except Exception:
                 pass
             try:
@@ -5385,25 +5437,34 @@ class GardenApp:
                 if not hasattr(card, "_img_refs"):
                     card._img_refs = []
 
-                def _add_trait_icon(trait_key, value):
-                    if not value:
-                        return False
+                shown_any = False
+                
+                # Show seed color icon directly
+                seed_color = traits.get("seed_color")
+                if seed_color:
                     try:
-                        p = trait_icon_path(trait_key, value)  # should map to your existing icons
-                        if p:
-                            img = safe_image(p)
+                        # Map seed color to icon filename
+                        icon_filename = f"seed_color_{seed_color}.png"
+                        icon_path = os.path.join(ICONS_DIR, icon_filename)
+                        
+                        if os.path.exists(icon_path):
+                            img = safe_image(icon_path)
                             lbl = tk.Label(icon_row, image=img)
                             lbl.image = img
                             lbl.pack(side="left", padx=(0, 6))
                             card._img_refs.append(img)
-                            return True
-                    except Exception:
+                            shown_any = True
+                            
+                            # Add plant-seeds.png icon next to seed color
+                            plant_seeds_path = os.path.join(ICONS_DIR, "plant-seeds.png")
+                            if os.path.exists(plant_seeds_path):
+                                img2 = safe_image(plant_seeds_path)
+                                lbl2 = tk.Label(icon_row, image=img2)
+                                lbl2.image = img2
+                                lbl2.pack(side="left", padx=(0, 4))
+                                card._img_refs.append(img2)
+                    except Exception as e:
                         pass
-                    return False
-
-                shown_any = False
-                shown_any |= _add_trait_icon("seed_shape", traits.get("seed_shape"))
-                shown_any |= _add_trait_icon("seed_color", traits.get("seed_color"))
 
                 if not shown_any:
                     # Fallback text if this group doesn't have seed traits yet
@@ -5417,28 +5478,47 @@ class GardenApp:
                 btn_row = tk.Frame(card)
                 btn_row.pack(side="bottom", fill="x", pady=(8, 0))
 
-                # Plant one (green text)
-                b_plant = tk.Button(
-                    btn_row,
-                    text="Plant (1)",
+                # Create a frame to hold the entry and button together (always show)
+                plant_n_frame = tk.Frame(btn_row)
+                plant_n_frame.pack(side="left", padx=(0, 4))
+                
+                # Entry field for custom number - default to max available count
+                entry_n = tk.Entry(plant_n_frame, width=4, font=("Segoe UI", 9))
+                entry_n.pack(side="left", padx=(0, 2))
+                entry_n.insert(0, str(count))  # Default to maximum available count
+                
+                # Plant (n) button
+                def _plant_custom_n(k=kind, mf=match_fn, entry=entry_n):
+                    try:
+                        n = int(entry.get().strip())
+                        if n <= 0:
+                            raise ValueError
+                        _plant_n_seeds(k, mf, n)
+                    except ValueError:
+                        self._toast("Please enter a valid positive number.", level="warn")
+                
+                b_plant_n = tk.Button(
+                    plant_n_frame,
+                    text="Plant (n)",
                     fg="green",
                     state=("normal" if count > 0 else "disabled"),
-                    command=lambda t = tiles, k=kind, mf=match_fn: _plant_one(t, k, mf),
+                    command=_plant_custom_n,
                     **self.button_style,
                 )
-                self._apply_hover(b_plant)
-                b_plant.pack(side="left", padx=(0, 6))
+                self._apply_hover(b_plant_n)
+                b_plant_n.pack(side="left")
 
-                # Plant area (optional power feature)
-                b_area = tk.Button(
+                # Plant ALL button
+                b_all = tk.Button(
                     btn_row,
-                    text="Plant area",
+                    text="Plant ALL",
+                    fg="green",
                     state=("normal" if count > 0 else "disabled"),
                     command=lambda k=kind, mf=match_fn: _plant_area(k, mf),
                     **self.button_style,
                 )
-                self._apply_hover(b_area)
-                b_area.pack(side="left")
+                self._apply_hover(b_all)
+                b_all.pack(side="left", padx=(0, 4))
 
                 # Discard group (red)
                 b_del = tk.Button(
