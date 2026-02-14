@@ -1722,7 +1722,7 @@ In this simulation, you follow in Mendel's footsteps by taking measurements at t
 Modern Measurements:
 The "Record" tab allows you to record today's actual temperatures. You can compare them directly with Mendel's 19th century observations, revealing how climate has changed over the past 160+ years.
 
-Careful measurements may reveal patterns in the simulated climate!"""
+Will your measurements match the historical averages, or will you observe unusual weather patterns? Just as Mendel's patient observation revealed the laws of heredity, your careful measurements may reveal patterns in the simulated climate!"""
         
         tk.Label(s, text=txt, font=("Segoe UI",FONT_BODY), bg="white", fg=COLOR_TEXT_PRIMARY, 
                 justify="left", wraplength=660).pack(anchor="w", padx=20, pady=(0,20))
