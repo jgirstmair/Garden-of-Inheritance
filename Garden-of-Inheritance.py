@@ -92,7 +92,7 @@ from inventory import Inventory, InventoryPopup, Seed, Pollen
 from mendel_temperature_tracker import TemperatureTracker
 from emasculation_dialog import EmasculationDialog
 from gameticker import GameTicker
-from meteorology import MeteorologyPanel
+from meteorology import Meteorology, MeteorologyPanel
 from pollination_dialog import PollinationDialog
 
 
@@ -857,26 +857,6 @@ class GardenApp:
         self._recalc_timers()
         self.gameticker.set_target_tps(1000/self.phase_ms)
 
-        self.subphase_counter = 0
-
-        self.grid_bg = "#eeeeee"
-        self.grid_bg = getattr(self, "grid_bg", "#eeeeee")
-        self._build_ui()
-        self._update_temp_button_state()
-
-
-        # ✅ add this so day/night shading always starts from the true base color
-        for t in self.tiles:
-            t.base_soil = t.soil
-
-        self._bind_hotkeys()
-        self.render_all()
-
-        # Start automated phase progression (slight delay for safety)
-        try:
-            self._ensure_auto_loop(delay_ms=50)
-        except Exception:
-            pass
 
         # ==== Season overlay (non-invasive; optional) ====
 
@@ -900,26 +880,32 @@ class GardenApp:
         # Initialize climate on garden for temperature tracker
         if climate:
             self.garden.climate = climate
-        
-        # Add datetime property helper to garden for temperature tracker
-        def _get_datetime(garden_self):
-            """Property to get current simulation datetime."""
-            import datetime as dt
-            try:
-                return dt.datetime(
-                    year=garden_self.year,
-                    month=garden_self.month,
-                    day=garden_self.day_of_month,
-                    hour=int(garden_self.clock_hour),
-                    minute=int((garden_self.clock_hour % 1) * 60)
-                )
-            except Exception:
-                return dt.datetime(1856, 4, 1, 6, 0)
-        
-        # Attach as a property-like attribute
-        self.garden.datetime = property(lambda self: _get_datetime(self))
-        # Also store the function for direct access
-        self.garden._get_datetime = lambda: _get_datetime(self.garden)
+
+        self.meteorology = Meteorology(climate)
+        self.gameticker.register(self.meteorology)
+
+        self.subphase_counter = 0
+
+        self.grid_bg = "#eeeeee"
+        self.grid_bg = getattr(self, "grid_bg", "#eeeeee")
+        self._build_ui()
+        self._update_temp_button_state()
+
+
+        # ✅ add this so day/night shading always starts from the true base color
+        for t in self.tiles:
+            t.base_soil = t.soil
+
+        self._bind_hotkeys()
+        self.render_all()
+
+        # Start automated phase progression (slight delay for safety)
+        try:
+            self._ensure_auto_loop(delay_ms=50)
+        except Exception:
+            pass
+
+
         
         # Initialize temperature tracker
         try:
@@ -2297,7 +2283,8 @@ class GardenApp:
         right_panel.pack(side="left", fill="both", expand=True, padx=(8, 0))
 
         # Date/Time/Weather/Temp at the TOP of right panel (its own line)
-        self.datetime_panel = MeteorologyPanel(right_panel, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
+        self.datetime_panel = MeteorologyPanel(self.meteorology,
+                                               right_panel, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
         self.gameticker.register(self.datetime_panel)
 
 

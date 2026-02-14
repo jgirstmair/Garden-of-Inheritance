@@ -14,28 +14,59 @@ MendelClimate, allthough its unclear to me atm what this class actually does...
 
 
 from datetime import datetime, timedelta
+from dataclasses import dataclass
 import tkinter as tk
 from gameticker import Entity
 
 GAME_START_DATE = datetime(1856, 4, 1, 6, 0)
 TICK_MINUTES = 15
 
+@dataclass
 class Weather:
-    pass
 
-class Meteorology:
-    pass
+    temperature: float
+    precipitation: float
+    clouds: float
 
-    def get_current_weather(self, time: datetime):
-        pass
+class Meteorology(Entity):
+
+    def __init__(self, mendelclimate):
+        self.datetime = GAME_START_DATE
+        self.mendelclimate = mendelclimate
+
+        self.weather = self._get_current_weather()
+        
+
+    def _get_current_weather(self):
+        temps = self.mendelclimate.hourly_targets(self.datetime.date())
+
+        return Weather(temps[self.datetime.hour], 420, 0)
+
+    def update(self, tick_count: int):
+        self.datetime = GAME_START_DATE + timedelta(minutes=tick_count * TICK_MINUTES)
+        self.weather = self._get_current_weather()
+
+    def __hash__(self):
+        return hash('Meteorology_Entity')
 
 class MeteorologyPanel(tk.Label, Entity):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, meteorology: Meteorology, *args, **kwargs):
+
         self.label = tk.Label(*args, **kwargs)
         self.label.pack(fill="x", pady=(4, 8))
+        self.meteorology = meteorology
 
     
+    def update(self, tick_count: int):
+        # self._update_header()
+        t = self.meteorology.datetime
+        weather = self.meteorology.weather
+        temp = weather.temperature
+        self.label.configure(text=f'{t.day:02d}.{t.month:02d}.{t.year:04d}' + 
+                             f' — {t.time().hour:02d}:{t.time().minute:02d} — Weather - {temp:.1f}°C')
+
+
     def _update_header(self):
 
         mon_names = ['January','February','March','April','May','June','July','August','September','October','November','December']
@@ -53,18 +84,5 @@ class MeteorologyPanel(tk.Label, Entity):
         mode = getattr(self, '_season_mode', 'off')
         # intentionally not writing to self.status_var here
 
-    def update(self, tick_count: int):
-        t = self.get_game_time(tick_count)
-
-        self.label.configure(text=f'{t.day} {t.month} {t.year} — {t.time().hour}:{t.time().minute} — Weather - Temperature')
-
-    def get_game_time(self, current_ticks) -> datetime:
-        """
-        Converts the total ticks into a readable datetime object.
-        Python's timedelta handles leap years and variable month lengths automatically.
-        """
-        return GAME_START_DATE + timedelta(minutes=current_ticks * TICK_MINUTES)
-
-
     def __hash__(self):
-        return 69
+        return hash('MeteorologyPanel_Entity')

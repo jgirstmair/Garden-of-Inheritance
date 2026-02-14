@@ -182,4 +182,4 @@ cython_debug/
 
 # Game save files ...
 mendel_garden_config.json
-temperature_measurement.json
+temperature_measurements.json
