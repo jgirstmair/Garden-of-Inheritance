@@ -862,107 +862,100 @@ class TemperatureTracker:
         # Create control frame for checkboxes
         control_frame = tk.Frame(parent, bg="white")
         control_frame.pack(fill="x", padx=10, pady=(10, 0))
-        
-        # Create two rows of checkboxes for better organization
+
+        def _cb(frame, text, var):
+            tk.Checkbutton(frame, text=text, variable=var,
+                           command=lambda: self._tab_plot(parent),
+                           font=("Segoe UI", FONT_BODY),
+                           bg="white", fg=COLOR_TEXT_PRIMARY).pack(side="left", padx=5)
+
+        # ── ROW 1: Mendel (15-year avg) ──────────────────────────────────────
         row1_frame = tk.Frame(control_frame, bg="white")
         row1_frame.pack(fill="x", pady=2)
-        
-        row2_frame = tk.Frame(control_frame, bg="white")
-        row2_frame.pack(fill="x", pady=2)
-        
-        # ROW 1: Data visibility controls
-        
-        # Checkbox for showing recorded simulator data points (NEW - default ON)
-        if not hasattr(self, 'show_recorded_points_var'):
-            self.show_recorded_points_var = tk.BooleanVar(value=True)
-        
-        checkbox_recorded = tk.Checkbutton(
-            row1_frame,
-            text="Show Recorded Data Points",
-            variable=self.show_recorded_points_var,
-            command=lambda: self._tab_plot(parent),
-            font=("Segoe UI", FONT_BODY),
-            bg="white",
-            fg=COLOR_TEXT_PRIMARY
-        )
-        checkbox_recorded.pack(side="left", padx=5)
-        
-        # Checkbox for loading 2025 modern data
-        if not hasattr(self, 'show_2025_data_var'):
-            self.show_2025_data_var = tk.BooleanVar(value=False)
-        
-        checkbox1 = tk.Checkbutton(
-            row1_frame,
-            text="Show 2025 Modern Data (Brno)",
-            variable=self.show_2025_data_var,
-            command=lambda: self._tab_plot(parent),
-            font=("Segoe UI", FONT_BODY),
-            bg="white",
-            fg=COLOR_TEXT_PRIMARY
-        )
-        checkbox1.pack(side="left", padx=5)
-        
-        # ROW 2: Average lines controls
-        
-        # Checkbox for showing simulation monthly averages (per time)
-        if not hasattr(self, 'show_sim_monthly_avg_var'):
-            self.show_sim_monthly_avg_var = tk.BooleanVar(value=False)
-        
-        checkbox3 = tk.Checkbutton(
-            row2_frame,
-            text="Show Recorded Monthly Avg (per time)",
-            variable=self.show_sim_monthly_avg_var,
-            command=lambda: self._tab_plot(parent),
-            font=("Segoe UI", FONT_BODY),
-            bg="white",
-            fg=COLOR_TEXT_PRIMARY
-        )
-        checkbox3.pack(side="left", padx=5)
-        
-        # Checkbox for showing simulation yearly average (all times combined)
-        if not hasattr(self, 'show_sim_yearly_avg_var'):
-            self.show_sim_yearly_avg_var = tk.BooleanVar(value=False)
-        
-        checkbox4 = tk.Checkbutton(
-            row2_frame,
-            text="Show Recorded Yearly Avg (all times)",
-            variable=self.show_sim_yearly_avg_var,
-            command=lambda: self._tab_plot(parent),
-            font=("Segoe UI", FONT_BODY),
-            bg="white",
-            fg=COLOR_TEXT_PRIMARY
-        )
-        checkbox4.pack(side="left", padx=5)
-        
-        # Checkbox for showing Mendel's yearly average (all times combined)
+        tk.Label(row1_frame, text="Mendel (15-year Avg):", font=("Segoe UI", FONT_BODY, "bold"),
+                 bg="white", fg=COLOR_TEXT_PRIMARY).pack(side="left", padx=(5, 2))
+
+        if not hasattr(self, 'show_mendel_baseline_var'):
+            self.show_mendel_baseline_var = tk.BooleanVar(value=True)
+        _cb(row1_frame, "6:00, 14:00, 22:00", self.show_mendel_baseline_var)
+
         if not hasattr(self, 'show_mendel_yearly_avg_var'):
             self.show_mendel_yearly_avg_var = tk.BooleanVar(value=False)
-        
-        checkbox5 = tk.Checkbutton(
-            row2_frame,
-            text="Show Mendel's Yearly Avg (all times)",
-            variable=self.show_mendel_yearly_avg_var,
-            command=lambda: self._tab_plot(parent),
-            font=("Segoe UI", FONT_BODY),
-            bg="white",
-            fg=COLOR_TEXT_PRIMARY
-        )
-        checkbox5.pack(side="left", padx=5)
-        
-        # Checkbox for showing 2025 averages
+        _cb(row1_frame, "15-year Average", self.show_mendel_yearly_avg_var)
+
+        # ── ROW 2: Recorded data ─────────────────────────────────────────────
+        row2_frame = tk.Frame(control_frame, bg="white")
+        row2_frame.pack(fill="x", pady=2)
+        tk.Label(row2_frame, text="Recorded:", font=("Segoe UI", FONT_BODY, "bold"),
+                 bg="white", fg=COLOR_TEXT_PRIMARY).pack(side="left", padx=(5, 2))
+
+        if not hasattr(self, 'show_recorded_points_var'):
+            self.show_recorded_points_var = tk.BooleanVar(value=True)
+        _cb(row2_frame, "Show Data Points", self.show_recorded_points_var)
+
+        if not hasattr(self, 'show_sim_monthly_avg_var'):
+            self.show_sim_monthly_avg_var = tk.BooleanVar(value=False)
+        _cb(row2_frame, "Monthly Avg", self.show_sim_monthly_avg_var)
+
+        if not hasattr(self, 'show_sim_yearly_avg_var'):
+            self.show_sim_yearly_avg_var = tk.BooleanVar(value=False)
+        _cb(row2_frame, "Yearly Avg (all times)", self.show_sim_yearly_avg_var)
+
+        # ── ROW 3: Brno 2025 ────────────────────────────────────────────────
+        row3_frame = tk.Frame(control_frame, bg="white")
+        row3_frame.pack(fill="x", pady=2)
+        tk.Label(row3_frame, text="Brno (2025):", font=("Segoe UI", FONT_BODY, "bold"),
+                 bg="white", fg=COLOR_TEXT_PRIMARY).pack(side="left", padx=(5, 2))
+
+        if not hasattr(self, 'show_2025_data_var'):
+            self.show_2025_data_var = tk.BooleanVar(value=False)
+        _cb(row3_frame, "Show Data Points", self.show_2025_data_var)
+
         if not hasattr(self, 'show_2025_avg_var'):
             self.show_2025_avg_var = tk.BooleanVar(value=False)
-        
-        checkbox2 = tk.Checkbutton(
-            row2_frame,
-            text="Show 2025 Averages",
-            variable=self.show_2025_avg_var,
-            command=lambda: self._tab_plot(parent),
-            font=("Segoe UI", FONT_BODY),
-            bg="white",
-            fg=COLOR_TEXT_PRIMARY
-        )
-        checkbox2.pack(side="left", padx=5)
+        _cb(row3_frame, "Monthly Avg", self.show_2025_avg_var)
+
+        if not hasattr(self, 'show_2025_yearly_avg_var'):
+            self.show_2025_yearly_avg_var = tk.BooleanVar(value=False)
+        _cb(row3_frame, "Yearly Avg", self.show_2025_yearly_avg_var)
+
+        # ── ROW 4: point size multiplier ─────────────────────────────────────
+        row4_frame = tk.Frame(control_frame, bg="white")
+        row4_frame.pack(fill="x", pady=2)
+        tk.Label(row4_frame, text="Point size:", font=("Segoe UI", FONT_BODY, "bold"),
+                 bg="white", fg=COLOR_TEXT_PRIMARY).pack(side="left", padx=(5, 4))
+
+        if not hasattr(self, 'interp_var'):
+            self.interp_var = tk.BooleanVar(value=True)
+        _cb(row4_frame, "Smooth interpolation", self.interp_var)
+
+        if not hasattr(self, 'point_size_var'):
+            self.point_size_var = tk.IntVar(value=1)
+
+        def _make_size_btn(mult):
+            btn = tk.Button(
+                row4_frame, text=f"×{mult}",
+                font=("Segoe UI", FONT_SMALL),
+                relief="flat", bd=1, padx=8, pady=2,
+                bg="#E0E0E0", activebackground="#C8C8C8",
+            )
+            def _click(m=mult, b=btn):
+                self.point_size_var.set(m)
+                # reset all buttons then highlight active
+                for _b, _m in _size_btns:
+                    _b.configure(bg="#E0E0E0", fg=COLOR_TEXT_PRIMARY, relief="flat")
+                b.configure(bg=COLOR_BORDER, fg="white", relief="flat")
+                self._tab_plot(parent)
+            btn.configure(command=_click)
+            btn.pack(side="left", padx=2)
+            return btn
+
+        _size_btns = [(None, None)] * 4  # placeholder
+        _size_btns = [(_make_size_btn(m), m) for m in (1, 2, 3, 4)]
+        # highlight current selection on build
+        for _b, _m in _size_btns:
+            if _m == self.point_size_var.get():
+                _b.configure(bg=COLOR_BORDER, fg="white")
 
         if not self.measurements and not self.modern_measurements and not self.show_2025_data_var.get():
             tk.Label(
@@ -1000,67 +993,83 @@ class TemperatureTracker:
         fig = Figure(figsize=(8.5, 5.5), dpi=80, facecolor=COLOR_BG_PARCHMENT)
         ax = fig.add_subplot(111, facecolor=COLOR_BG_LIGHT)
         
-        # Set x-axis limits FIRST to prevent auto-scaling
-        ax.set_xlim(0.5, 12.5)  # Constrain to 12 months with padding
+        # Set x-axis limits FIRST to prevent auto-scaling.
+        # Right limit must reach 13.0: Dec 31 plots at 12 + 30/31 ≈ 12.97,
+        # so 12.5 was cutting off the second half of December entirely.
+        ax.set_xlim(0.5, 13.5)
 
         months = list(range(1, 13))
         
         # Colorblind-friendly colors (Wong palette)
-        COLOR_MORNING_CB = '#0173B2'    # Blue
-        COLOR_AFTERNOON_CB = '#DE8F05'  # Orange  
-        COLOR_EVENING_CB = '#029E73'    # Teal
+        # ── Per-dataset color families (all colorblind-safe, Wong palette) ──────
+        # Mendel baseline — blue family
+        C_M6  = '#0072B2'   # blue
+        C_M14 = '#56B4E9'   # sky blue
+        C_M22 = '#1A3A6B'   # deep navy
+        # Recorded simulator — orange / warm family
+        C_R6  = '#E69F00'   # amber
+        C_R14 = '#D55E00'   # vermilion
+        C_R22 = '#CC79A7'   # reddish purple
+        # Brno 2025 — green family
+        C_B6  = '#009E73'   # teal green
+        C_B14 = '#5DBF8E'   # mid green
+        C_B22 = '#004F3A'   # dark green
+        # Keep shorthands for Mendel so existing CB references still resolve
+        COLOR_MORNING_CB   = C_M6
+        COLOR_AFTERNOON_CB = C_M14
+        COLOR_EVENING_CB   = C_M22
         
-        # Plot Mendel's historical averages WITHOUT LABELS (no legend entries)
-        a6  = [self.mendel_averages[m][6]  for m in months]
-        a14 = [self.mendel_averages[m][14] for m in months]
-        a22 = [self.mendel_averages[m][22] for m in months]
-        
-        # Use EXACT same method as Mendel's yearly average (which works!)
-        if SCIPY_AVAILABLE:
-            try:
-                print("[PLOT] Scipy is available, creating smooth Mendel baseline curves")
-                # EXACT same wraparound technique as Mendel's yearly average
-                months_wrap = [0] + list(range(1, 13)) + [13]  # Month 0 = Dec, Month 13 = Jan
-                a6_wrap = [a6[-1]] + a6 + [a6[0]]
-                a14_wrap = [a14[-1]] + a14 + [a14[0]]
-                a22_wrap = [a22[-1]] + a22 + [a22[0]]
-                
-                months_smooth = np.linspace(1, 12, 500)
-                spl6 = make_interp_spline(months_wrap, a6_wrap, k=3)
-                spl14 = make_interp_spline(months_wrap, a14_wrap, k=3)
-                spl22 = make_interp_spline(months_wrap, a22_wrap, k=3)
-                a6_smooth = spl6(months_smooth)
-                a14_smooth = spl14(months_smooth)
-                a22_smooth = spl22(months_smooth)
-                
-                # NO LABELS - baseline curves don't appear in legend
-                ax.plot(months_smooth, a6_smooth, '-',
-                        color=COLOR_MORNING_CB, linewidth=2.5, alpha=0.8, zorder=1)
-                ax.plot(months_smooth, a14_smooth, '-',
-                        color=COLOR_AFTERNOON_CB, linewidth=2.5, alpha=0.8, zorder=1)
-                ax.plot(months_smooth, a22_smooth, '-',
-                        color=COLOR_EVENING_CB, linewidth=2.5, alpha=0.8, zorder=1)
-                print("[PLOT] Successfully plotted smooth Mendel baseline curves")
-            except Exception as e:
-                # Fallback if spline fails
-                print(f"[WARNING] Failed to create smooth Mendel baseline curves: {e}")
-                import traceback
-                traceback.print_exc()
-                ax.plot(months, a6, '-',
-                        color=COLOR_MORNING_CB, linewidth=2.5, alpha=0.8, zorder=1)
-                ax.plot(months, a14, '-',
-                        color=COLOR_AFTERNOON_CB, linewidth=2.5, alpha=0.8, zorder=1)
-                ax.plot(months, a22, '-',
-                        color=COLOR_EVENING_CB, linewidth=2.5, alpha=0.8, zorder=1)
-        else:
-            # No scipy - just lines without markers or labels
-            print("[PLOT] Scipy not available, using simple lines for Mendel baseline")
-            ax.plot(months, a6, '-',
-                    color=COLOR_MORNING_CB, linewidth=2.5, alpha=0.8, zorder=1)
-            ax.plot(months, a14, '-',
-                    color=COLOR_AFTERNOON_CB, linewidth=2.5, alpha=0.8, zorder=1)
-            ax.plot(months, a22, '-',
-                    color=COLOR_EVENING_CB, linewidth=2.5, alpha=0.8, zorder=1)
+        # Resolve point size multiplier and interpolation toggle
+        pt_scale = getattr(self, 'point_size_var', None)
+        pt_scale = (pt_scale.get() ** 2) if pt_scale else 1
+        use_interp = SCIPY_AVAILABLE and (not hasattr(self, 'interp_var') or self.interp_var.get())
+
+        # Plot Mendel's historical averages (only when checkbox is on)
+        if not hasattr(self, 'show_mendel_baseline_var') or self.show_mendel_baseline_var.get():
+          a6  = [self.mendel_averages[m][6]  for m in months]
+          a14 = [self.mendel_averages[m][14] for m in months]
+          a22 = [self.mendel_averages[m][22] for m in months]
+
+          # Use EXACT same method as Mendel's yearly average (which works!)
+          if use_interp:
+              try:
+                  print("[PLOT] Scipy is available, creating smooth Mendel baseline curves")
+                  months_wrap = [0.5] + [m + 0.5 for m in range(1, 13)] + [13.5]
+                  a6_wrap = [a6[-1]] + a6 + [a6[0]]
+                  a14_wrap = [a14[-1]] + a14 + [a14[0]]
+                  a22_wrap = [a22[-1]] + a22 + [a22[0]]
+                  months_smooth = np.linspace(1, 13, 500)
+                  spl6 = make_interp_spline(months_wrap, a6_wrap, k=3)
+                  spl14 = make_interp_spline(months_wrap, a14_wrap, k=3)
+                  spl22 = make_interp_spline(months_wrap, a22_wrap, k=3)
+                  a6_smooth = spl6(months_smooth)
+                  a14_smooth = spl14(months_smooth)
+                  a22_smooth = spl22(months_smooth)
+                  ax.plot(months_smooth, a6_smooth, '-',
+                          color=COLOR_MORNING_CB, linewidth=2.5, alpha=0.8, zorder=1)
+                  ax.plot(months_smooth, a14_smooth, '-',
+                          color=COLOR_AFTERNOON_CB, linewidth=2.5, alpha=0.8, zorder=1)
+                  ax.plot(months_smooth, a22_smooth, '-',
+                          color=COLOR_EVENING_CB, linewidth=2.5, alpha=0.8, zorder=1)
+                  print("[PLOT] Successfully plotted smooth Mendel baseline curves")
+              except Exception as e:
+                  print(f"[WARNING] Failed to create smooth Mendel baseline curves: {e}")
+                  import traceback
+                  traceback.print_exc()
+                  ax.plot([m + 0.5 for m in months], a6, '-',
+                          color=COLOR_MORNING_CB, linewidth=2.5, alpha=0.8, zorder=1)
+                  ax.plot([m + 0.5 for m in months], a14, '-',
+                          color=COLOR_AFTERNOON_CB, linewidth=2.5, alpha=0.8, zorder=1)
+                  ax.plot([m + 0.5 for m in months], a22, '-',
+                          color=COLOR_EVENING_CB, linewidth=2.5, alpha=0.8, zorder=1)
+          else:
+              print("[PLOT] Scipy not available, using simple lines for Mendel baseline")
+              ax.plot([m + 0.5 for m in months], a6, '-',
+                      color=COLOR_MORNING_CB, linewidth=2.5, alpha=0.8, zorder=1)
+              ax.plot([m + 0.5 for m in months], a14, '-',
+                      color=COLOR_AFTERNOON_CB, linewidth=2.5, alpha=0.8, zorder=1)
+              ax.plot([m + 0.5 for m in months], a22, '-',
+                      color=COLOR_EVENING_CB, linewidth=2.5, alpha=0.8, zorder=1)
         
         # NEW: Calculate monthly averages from ALL simulation measurements (not just multi-measurement days)
         # This allows showing interpolated average lines when checkbox is enabled
@@ -1082,7 +1091,7 @@ class TemperatureTracker:
         sim_months_with_data = []
         
         for month in range(1, 13):
-            sim_months_with_data.append(month)
+            sim_months_with_data.append(month + 0.5)
             
             if 6 in monthly_sim_temps[month] and len(monthly_sim_temps[month][6]) > 0:
                 sim_monthly_avg_6.append(sum(monthly_sim_temps[month][6]) / len(monthly_sim_temps[month][6]))
@@ -1104,7 +1113,7 @@ class TemperatureTracker:
             print("[PLOT] Plotting simulation monthly averages (per time)")
             
             # Plot with interpolation if scipy available
-            if SCIPY_AVAILABLE and any(v is not None for v in sim_monthly_avg_6 + sim_monthly_avg_14 + sim_monthly_avg_22):
+            if use_interp and any(v is not None for v in sim_monthly_avg_6 + sim_monthly_avg_14 + sim_monthly_avg_22):
                 try:
                     # For each time, plot smooth interpolated dashed line
                     # Use same technique as Mendel's baseline - interpolate across full year
@@ -1123,17 +1132,17 @@ class TemperatureTracker:
                             vals_wrap_6 = [vals_6[-1]] + vals_6 + [vals_6[0]]
                             
                             # CRITICAL FIX: Interpolate across FULL YEAR (1-12), not just available data range
-                            months_smooth_6 = np.linspace(1, 12, 500)  # Full year, 500 points
+                            months_smooth_6 = np.linspace(1, 13, 500)  # Full year, 500 points
                             spl_6 = make_interp_spline(months_wrap_6, vals_wrap_6, k=3)
                             vals_smooth_6 = spl_6(months_smooth_6)
                             ax.plot(months_smooth_6, vals_smooth_6, '--',
-                                   color=COLOR_MORNING_CB, linewidth=2, alpha=0.7, zorder=3)
+                                   color=C_R6, linewidth=2, alpha=0.7, zorder=3)
                             print(f"[PLOT] Plotted smooth 6am monthly avg with {len(valid_data_6)} data points")
                         elif len(valid_data_6) == 2:
                             # Only 2 points - use linear interpolation
                             months_6, vals_6 = zip(*valid_data_6)
                             ax.plot(months_6, vals_6, '--',
-                                   color=COLOR_MORNING_CB, linewidth=2, alpha=0.7, zorder=3)
+                                   color=C_R6, linewidth=2, alpha=0.7, zorder=3)
                     
                     if any(v is not None for v in sim_monthly_avg_14):
                         valid_data_14 = [(m, v) for m, v in zip(sim_months_with_data, sim_monthly_avg_14) if v is not None]
@@ -1146,16 +1155,16 @@ class TemperatureTracker:
                             vals_wrap_14 = [vals_14[-1]] + vals_14 + [vals_14[0]]
                             
                             # CRITICAL FIX: Full year interpolation
-                            months_smooth_14 = np.linspace(1, 12, 500)
+                            months_smooth_14 = np.linspace(1, 13, 500)
                             spl_14 = make_interp_spline(months_wrap_14, vals_wrap_14, k=3)
                             vals_smooth_14 = spl_14(months_smooth_14)
                             ax.plot(months_smooth_14, vals_smooth_14, '--',
-                                   color=COLOR_AFTERNOON_CB, linewidth=2, alpha=0.7, zorder=3)
+                                   color=C_R14, linewidth=2, alpha=0.7, zorder=3)
                             print(f"[PLOT] Plotted smooth 2pm monthly avg with {len(valid_data_14)} data points")
                         elif len(valid_data_14) == 2:
                             months_14, vals_14 = zip(*valid_data_14)
                             ax.plot(months_14, vals_14, '--',
-                                   color=COLOR_AFTERNOON_CB, linewidth=2, alpha=0.7, zorder=3)
+                                   color=C_R14, linewidth=2, alpha=0.7, zorder=3)
                     
                     if any(v is not None for v in sim_monthly_avg_22):
                         valid_data_22 = [(m, v) for m, v in zip(sim_months_with_data, sim_monthly_avg_22) if v is not None]
@@ -1168,16 +1177,16 @@ class TemperatureTracker:
                             vals_wrap_22 = [vals_22[-1]] + vals_22 + [vals_22[0]]
                             
                             # CRITICAL FIX: Full year interpolation
-                            months_smooth_22 = np.linspace(1, 12, 500)
+                            months_smooth_22 = np.linspace(1, 13, 500)
                             spl_22 = make_interp_spline(months_wrap_22, vals_wrap_22, k=3)
                             vals_smooth_22 = spl_22(months_smooth_22)
                             ax.plot(months_smooth_22, vals_smooth_22, '--',
-                                   color=COLOR_EVENING_CB, linewidth=2, alpha=0.7, zorder=3)
+                                   color=C_R22, linewidth=2, alpha=0.7, zorder=3)
                             print(f"[PLOT] Plotted smooth 10pm monthly avg with {len(valid_data_22)} data points")
                         elif len(valid_data_22) == 2:
                             months_22, vals_22 = zip(*valid_data_22)
                             ax.plot(months_22, vals_22, '--',
-                                   color=COLOR_EVENING_CB, linewidth=2, alpha=0.7, zorder=3)
+                                   color=C_R22, linewidth=2, alpha=0.7, zorder=3)
                 except Exception as e:
                     print(f"[WARNING] Failed to plot smooth monthly averages, falling back to simple lines: {e}")
                     import traceback
@@ -1185,24 +1194,24 @@ class TemperatureTracker:
                     # Fallback to simple dashed lines
                     if any(v is not None for v in sim_monthly_avg_6):
                         ax.plot(sim_months_with_data, sim_monthly_avg_6, '--',
-                               color=COLOR_MORNING_CB, linewidth=2, alpha=0.7, zorder=3)
+                               color=C_R6, linewidth=2, alpha=0.7, zorder=3)
                     if any(v is not None for v in sim_monthly_avg_14):
                         ax.plot(sim_months_with_data, sim_monthly_avg_14, '--',
-                               color=COLOR_AFTERNOON_CB, linewidth=2, alpha=0.7, zorder=3)
+                               color=C_R14, linewidth=2, alpha=0.7, zorder=3)
                     if any(v is not None for v in sim_monthly_avg_22):
                         ax.plot(sim_months_with_data, sim_monthly_avg_22, '--',
-                               color=COLOR_EVENING_CB, linewidth=2, alpha=0.7, zorder=3)
+                               color=C_R22, linewidth=2, alpha=0.7, zorder=3)
             else:
                 # No scipy - simple dashed lines
                 if any(v is not None for v in sim_monthly_avg_6):
                     ax.plot(sim_months_with_data, sim_monthly_avg_6, '--',
-                           color=COLOR_MORNING_CB, linewidth=2, alpha=0.7, zorder=3)
+                           color=C_R6, linewidth=2, alpha=0.7, zorder=3)
                 if any(v is not None for v in sim_monthly_avg_14):
                     ax.plot(sim_months_with_data, sim_monthly_avg_14, '--',
-                           color=COLOR_AFTERNOON_CB, linewidth=2, alpha=0.7, zorder=3)
+                           color=C_R14, linewidth=2, alpha=0.7, zorder=3)
                 if any(v is not None for v in sim_monthly_avg_22):
                     ax.plot(sim_months_with_data, sim_monthly_avg_22, '--',
-                           color=COLOR_EVENING_CB, linewidth=2, alpha=0.7, zorder=3)
+                           color=C_R22, linewidth=2, alpha=0.7, zorder=3)
         
         # NEW: Calculate and plot yearly average (all three times combined) for simulation
         if self.show_sim_yearly_avg_var and self.show_sim_yearly_avg_var.get():
@@ -1229,9 +1238,9 @@ class TemperatureTracker:
                     sim_yearly_avg.append(None)
             
             # Plot with interpolation if scipy available
-            if SCIPY_AVAILABLE and any(v is not None for v in sim_yearly_avg):
+            if use_interp and any(v is not None for v in sim_yearly_avg):
                 try:
-                    valid_data = [(m+1, v) for m, v in enumerate(sim_yearly_avg) if v is not None]
+                    valid_data = [(m+1.5, v) for m, v in enumerate(sim_yearly_avg) if v is not None]
                     if len(valid_data) >= 3:  # Need at least 3 points for good cubic spline
                         months_valid, vals_valid = zip(*valid_data)
                         months_valid = list(months_valid)
@@ -1242,7 +1251,7 @@ class TemperatureTracker:
                         vals_wrap = [vals_valid[-1]] + vals_valid + [vals_valid[0]]
                         
                         # CRITICAL FIX: Interpolate across FULL YEAR (1-12)
-                        months_smooth = np.linspace(1, 12, 500)
+                        months_smooth = np.linspace(1, 13, 500)
                         spl = make_interp_spline(months_wrap, vals_wrap, k=3)
                         vals_smooth = spl(months_smooth)
                         ax.plot(months_smooth, vals_smooth, '-',
@@ -1260,7 +1269,7 @@ class TemperatureTracker:
                     import traceback
                     traceback.print_exc()
                     # Fallback - plot only valid points
-                    valid_data = [(m+1, v) for m, v in enumerate(sim_yearly_avg) if v is not None]
+                    valid_data = [(m+1.5, v) for m, v in enumerate(sim_yearly_avg) if v is not None]
                     if valid_data:
                         months_valid, vals_valid = zip(*valid_data)
                         ax.plot(months_valid, vals_valid, '-',
@@ -1271,7 +1280,7 @@ class TemperatureTracker:
                            color='purple', linewidth=2.5, alpha=0.8, zorder=3,
                            label='Recorded Yearly Avg (all times)')
             else:
-                ax.plot(range(1, 13), sim_yearly_avg, '-',
+                ax.plot([m+0.5 for m in range(1, 13)], sim_yearly_avg, '-',
                        color='purple', linewidth=2.5, alpha=0.8, zorder=3,
                        label='Recorded Yearly Avg (all times)')
         
@@ -1287,12 +1296,12 @@ class TemperatureTracker:
                 mendel_yearly_avg.append(sum(temps) / len(temps))
             
             # Plot with interpolation if scipy available
-            if SCIPY_AVAILABLE:
+            if use_interp:
                 try:
                     # Add wraparound for seamless cycling (same technique as baseline)
-                    months_wrap = [0] + list(range(1, 13)) + [13]  # Month 0 = Dec, Month 13 = Jan
+                    months_wrap = [0.5] + [m + 0.5 for m in range(1, 13)] + [13.5]  # centred knots
                     vals_wrap = [mendel_yearly_avg[-1]] + mendel_yearly_avg + [mendel_yearly_avg[0]]
-                    months_smooth = np.linspace(1, 12, 500)  # Use 500 points like baseline
+                    months_smooth = np.linspace(1, 13, 500)  # Use 500 points like baseline
                     spl = make_interp_spline(months_wrap, vals_wrap, k=3)
                     vals_smooth = spl(months_smooth)
                     ax.plot(months_smooth, vals_smooth, '-',
@@ -1300,11 +1309,11 @@ class TemperatureTracker:
                            label="Mendel's Yearly Avg (all times)")
                 except Exception as e:
                     print(f"[WARNING] Failed to interpolate Mendel's yearly avg: {e}")
-                    ax.plot(range(1, 13), mendel_yearly_avg, '-',
+                    ax.plot([m+0.5 for m in range(1, 13)], mendel_yearly_avg, '-',
                            color='brown', linewidth=2.5, alpha=0.8, zorder=3,
                            label="Mendel's Yearly Avg (all times)")
             else:
-                ax.plot(range(1, 13), mendel_yearly_avg, '-',
+                ax.plot([m+0.5 for m in range(1, 13)], mendel_yearly_avg, '-',
                        color='brown', linewidth=2.5, alpha=0.8, zorder=3,
                        label="Mendel's Yearly Avg (all times)")
         
@@ -1329,7 +1338,7 @@ class TemperatureTracker:
                     days_in_month = 31
                 else:
                     days_in_month = (dt.date(date_obj.year, date_obj.month + 1, 1) - dt.date(date_obj.year, date_obj.month, 1)).days
-                day_of_year = date_obj.month + (date_obj.day - 1) / days_in_month
+                day_of_year = date_obj.month + date_obj.day / days_in_month
                 
                 if hour == 6:
                     sim6_days.append(day_of_year)
@@ -1353,14 +1362,14 @@ class TemperatureTracker:
         # Only plot recorded data points if checkbox is enabled (default: ON)
         if self.show_recorded_points_var and self.show_recorded_points_var.get():
             if sim6_days:
-                ax.scatter(sim6_days, sim6_temps, color=COLOR_MORNING_CB, s=50, 
-                          marker='o', edgecolors='black', linewidths=1.5, zorder=5)
+                ax.scatter(sim6_days, sim6_temps, color=C_R6, s=16*pt_scale,
+                          marker='o', edgecolors='none', zorder=5)
             if sim14_days:
-                ax.scatter(sim14_days, sim14_temps, color=COLOR_AFTERNOON_CB, s=50, 
-                          marker='s', edgecolors='black', linewidths=1.5, zorder=5)
+                ax.scatter(sim14_days, sim14_temps, color=C_R14, s=9*pt_scale,
+                          marker='s', edgecolors='none', zorder=5)
             if sim22_days:
-                ax.scatter(sim22_days, sim22_temps, color=COLOR_EVENING_CB, s=50, 
-                          marker='^', edgecolors='black', linewidths=1.5, zorder=5)
+                ax.scatter(sim22_days, sim22_temps, color=C_R22, s=20*pt_scale,
+                          marker='^', edgecolors='none', zorder=5)
         
         # MODERN measurements (red borders) - plot by day of year
         mod6_days, mod6_temps = [], []
@@ -1392,11 +1401,11 @@ class TemperatureTracker:
                                     days_in_month = 31
                                 else:
                                     days_in_month = (dt.date(date_obj.year, date_obj.month + 1, 1) - dt.date(date_obj.year, date_obj.month, 1)).days
-                                day_of_year = date_obj.month + (date_obj.day - 1) / days_in_month
+                                day_of_year = date_obj.month + date_obj.day / days_in_month
                                 
-                                # Ensure day_of_year is within valid range [1, 13)
-                                # This prevents edge cases from appearing outside the plot bounds
-                                if day_of_year < 1 or day_of_year >= 13:
+                                # Ensure day_of_year is within valid range [1, 13]
+                                # Dec 31 now correctly maps to exactly 13.0
+                                if day_of_year < 1 or day_of_year > 13:
                                     print(f"[WARNING] Invalid day_of_year {day_of_year:.3f} for date {date_str}, skipping")
                                     continue
                                 
@@ -1432,7 +1441,7 @@ class TemperatureTracker:
                     days_in_month = 31
                 else:
                     days_in_month = (dt.date(date_obj.year, date_obj.month + 1, 1) - dt.date(date_obj.year, date_obj.month, 1)).days
-                day_of_year = date_obj.month + (date_obj.day - 1) / days_in_month
+                day_of_year = date_obj.month + date_obj.day / days_in_month
                 
                 if hour == 6:
                     mod6_days.append(day_of_year)
@@ -1454,14 +1463,14 @@ class TemperatureTracker:
             print(f"[PLOT] Plotting {mod_count} modern measurements")
         
         if mod6_days:
-            ax.scatter(mod6_days, mod6_temps, color=COLOR_MORNING_CB, s=60, 
-                      marker='o', edgecolors='red', linewidths=2, zorder=6)
+            ax.scatter(mod6_days, mod6_temps, color=C_B6, s=16*pt_scale,
+                      marker='o', edgecolors='none', zorder=6)
         if mod14_days:
-            ax.scatter(mod14_days, mod14_temps, color=COLOR_AFTERNOON_CB, s=60, 
-                      marker='s', edgecolors='red', linewidths=2, zorder=6)
+            ax.scatter(mod14_days, mod14_temps, color=C_B14, s=9*pt_scale,
+                      marker='s', edgecolors='none', zorder=6)
         if mod22_days:
-            ax.scatter(mod22_days, mod22_temps, color=COLOR_EVENING_CB, s=60, 
-                      marker='^', edgecolors='red', linewidths=2, zorder=6)
+            ax.scatter(mod22_days, mod22_temps, color=C_B22, s=20*pt_scale,
+                      marker='^', edgecolors='none', zorder=6)
         
         # Calculate and plot 2025 averages if checkbox is enabled
         if self.show_2025_avg_var.get():
@@ -1489,14 +1498,15 @@ class TemperatureTracker:
                             except Exception:
                                 continue
                     
-                    # Calculate averages
-                    months_2025 = sorted(monthly_2025.keys())
-                    avg6_2025 = [sum(monthly_2025[m][6])/len(monthly_2025[m][6]) if monthly_2025[m][6] else None for m in months_2025]
-                    avg14_2025 = [sum(monthly_2025[m][14])/len(monthly_2025[m][14]) if monthly_2025[m][14] else None for m in months_2025]
-                    avg22_2025 = [sum(monthly_2025[m][22])/len(monthly_2025[m][22]) if monthly_2025[m][22] else None for m in months_2025]
+                    # Calculate averages using integer keys, then shift x to month centre
+                    months_keys = sorted(monthly_2025.keys())
+                    avg6_2025  = [sum(monthly_2025[m][6]) /len(monthly_2025[m][6])  if monthly_2025[m][6]  else None for m in months_keys]
+                    avg14_2025 = [sum(monthly_2025[m][14])/len(monthly_2025[m][14]) if monthly_2025[m][14] else None for m in months_keys]
+                    avg22_2025 = [sum(monthly_2025[m][22])/len(monthly_2025[m][22]) if monthly_2025[m][22] else None for m in months_keys]
+                    months_2025 = [m + 0.5 for m in months_keys]
                     
                     # Plot with smooth interpolation if scipy available
-                    if SCIPY_AVAILABLE and len(months_2025) >= 3:
+                    if use_interp and len(months_2025) >= 3:
                         print(f"[PLOT] Attempting smooth interpolation for 2025 averages (scipy available)")
                         try:
                             # Add wrap-around points for seamless year cycling (like Mendel baseline)
@@ -1505,33 +1515,33 @@ class TemperatureTracker:
                             if len(months_2025) == 12:  # Only if we have all 12 months
                                 print(f"[PLOT] Using wrap-around interpolation for complete year")
                                 # Wrap-around: add December at start and January at end
-                                months_wrap = [0] + list(months_2025) + [13]
+                                months_wrap = [months_2025[-1] - 12] + list(months_2025) + [months_2025[0] + 12]
                                 avg6_wrap = [avg6_2025[-1]] + avg6_2025 + [avg6_2025[0]]
                                 avg14_wrap = [avg14_2025[-1]] + avg14_2025 + [avg14_2025[0]]
                                 avg22_wrap = [avg22_2025[-1]] + avg22_2025 + [avg22_2025[0]]
                                 
                                 # Extra smooth with 600 points
-                                months_smooth = np.linspace(1, 12, 600)
+                                months_smooth = np.linspace(1, 13, 600)
                                 
                                 # Morning (6am)
                                 if all(v is not None for v in avg6_2025):
                                     spl6 = make_interp_spline(months_wrap, avg6_wrap, k=3)
                                     v6_smooth = spl6(months_smooth)
-                                    ax.plot(months_smooth, v6_smooth, '-', color='red', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Morning (6:00)')
+                                    ax.plot(months_smooth, v6_smooth, '-', color=C_B6, linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Morning (6:00)')
                                     print(f"[PLOT] Plotted smooth 2025 morning average")
                                 
                                 # Afternoon (2pm)
                                 if all(v is not None for v in avg14_2025):
                                     spl14 = make_interp_spline(months_wrap, avg14_wrap, k=3)
                                     v14_smooth = spl14(months_smooth)
-                                    ax.plot(months_smooth, v14_smooth, '-', color='darkorange', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Afternoon (14:00)')
+                                    ax.plot(months_smooth, v14_smooth, '-', color=C_B14, linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Afternoon (14:00)')
                                     print(f"[PLOT] Plotted smooth 2025 afternoon average")
                                 
                                 # Evening (10pm)
                                 if all(v is not None for v in avg22_2025):
                                     spl22 = make_interp_spline(months_wrap, avg22_wrap, k=3)
                                     v22_smooth = spl22(months_smooth)
-                                    ax.plot(months_smooth, v22_smooth, '-', color='darkgreen', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Evening (22:00)')
+                                    ax.plot(months_smooth, v22_smooth, '-', color=C_B22, linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Evening (22:00)')
                                     print(f"[PLOT] Plotted smooth 2025 evening average")
                             else:
                                 # Fallback for incomplete data - no wrap-around
@@ -1545,45 +1555,93 @@ class TemperatureTracker:
                                     m6_smooth = np.linspace(min(m6), max(m6), 400)
                                     spl6 = make_interp_spline(m6, v6, k=min(3, len(m6)-1))
                                     v6_smooth = spl6(m6_smooth)
-                                    ax.plot(m6_smooth, v6_smooth, '-', color='red', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Morning (6:00)')
+                                    ax.plot(m6_smooth, v6_smooth, '-', color=C_B6, linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Morning (6:00)')
                                 
                                 if len(valid_14) >= 3:
                                     m14, v14 = zip(*valid_14)
                                     m14_smooth = np.linspace(min(m14), max(m14), 400)
                                     spl14 = make_interp_spline(m14, v14, k=min(3, len(m14)-1))
                                     v14_smooth = spl14(m14_smooth)
-                                    ax.plot(m14_smooth, v14_smooth, '-', color='darkorange', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Afternoon (14:00)')
+                                    ax.plot(m14_smooth, v14_smooth, '-', color=C_B14, linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Afternoon (14:00)')
                                 
                                 if len(valid_22) >= 3:
                                     m22, v22 = zip(*valid_22)
                                     m22_smooth = np.linspace(min(m22), max(m22), 400)
                                     spl22 = make_interp_spline(m22, v22, k=min(3, len(m22)-1))
                                     v22_smooth = spl22(m22_smooth)
-                                    ax.plot(m22_smooth, v22_smooth, '-', color='darkgreen', linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Evening (22:00)')
+                                    ax.plot(m22_smooth, v22_smooth, '-', color=C_B22, linewidth=2.5, alpha=0.8, zorder=4, label='2025 Avg Evening (22:00)')
                         except Exception as e:
                             print(f"[WARNING] Failed to plot smooth 2025 averages: {e}")
                             import traceback
                             traceback.print_exc()
                             # Fallback to simple lines
                             if any(v is not None for v in avg6_2025):
-                                ax.plot(months_2025, avg6_2025, '-', color='red', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Morning (6:00)')
+                                ax.plot(months_2025, avg6_2025, '-', color=C_B6, linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Morning (6:00)')
                             if any(v is not None for v in avg14_2025):
-                                ax.plot(months_2025, avg14_2025, '-', color='darkorange', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Afternoon (14:00)')
+                                ax.plot(months_2025, avg14_2025, '-', color=C_B14, linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Afternoon (14:00)')
                             if any(v is not None for v in avg22_2025):
-                                ax.plot(months_2025, avg22_2025, '-', color='darkgreen', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Evening (22:00)')
+                                ax.plot(months_2025, avg22_2025, '-', color=C_B22, linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Evening (22:00)')
                     else:
                         # No scipy or too few points - simple lines
                         if any(v is not None for v in avg6_2025):
-                            ax.plot(months_2025, avg6_2025, '-', color='red', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Morning (6:00)')
+                            ax.plot(months_2025, avg6_2025, '-', color=C_B6, linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Morning (6:00)')
                         if any(v is not None for v in avg14_2025):
-                            ax.plot(months_2025, avg14_2025, '-', color='darkorange', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Afternoon (14:00)')
+                            ax.plot(months_2025, avg14_2025, '-', color=C_B14, linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Afternoon (14:00)')
                         if any(v is not None for v in avg22_2025):
-                            ax.plot(months_2025, avg22_2025, '-', color='darkgreen', linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Evening (22:00)')
+                            ax.plot(months_2025, avg22_2025, '-', color=C_B22, linewidth=2.5, alpha=0.7, zorder=4, label='2025 Avg Evening (22:00)')
                 except Exception as e:
                     print(f"[WARNING] Failed to load or plot 2025 averages: {e}")
-        
+
+        # ── 2025 yearly average (all three times combined) ────────────────────
+        if getattr(self, 'show_2025_yearly_avg_var', None) and self.show_2025_yearly_avg_var.get():
+            csv_path = Path(self.data_dir) / "brno_2025_06_14_22.csv"
+            if csv_path.exists():
+                try:
+                    from collections import defaultdict
+                    monthly_2025_y = defaultdict(lambda: {6: [], 14: [], 22: []})
+                    with open(csv_path, 'r') as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            try:
+                                hour = int(row['time_local'].split(':')[0])
+                                temp = float(row['temperature_2m_C'])
+                                month = dt.datetime.strptime(row['date'], "%Y-%m-%d").month
+                                if hour in [6, 14, 22]:
+                                    monthly_2025_y[month][hour].append(temp)
+                            except Exception:
+                                continue
+                    months_keys_y = sorted(monthly_2025_y.keys())
+                    yearly_2025 = []
+                    for m in months_keys_y:
+                        vals = []
+                        for h in [6, 14, 22]:
+                            if monthly_2025_y[m][h]:
+                                vals.append(sum(monthly_2025_y[m][h]) / len(monthly_2025_y[m][h]))
+                        yearly_2025.append(sum(vals) / len(vals) if vals else None)
+                    months_2025_y = [m + 0.5 for m in months_keys_y]
+                    valid = [(mx, v) for mx, v in zip(months_2025_y, yearly_2025) if v is not None]
+                    if len(valid) >= 3:
+                        mx_v, vals_v = zip(*valid)
+                        mx_v, vals_v = list(mx_v), list(vals_v)
+                        if use_interp:
+                            try:
+                                mw = [mx_v[-1] - 12] + mx_v + [mx_v[0] + 12]
+                                vw = [vals_v[-1]] + vals_v + [vals_v[0]]
+                                ms = np.linspace(1, 13, 500)
+                                spl = make_interp_spline(mw, vw, k=3)
+                                ax.plot(ms, spl(ms), '-', color='#004F3A', linewidth=2.5,
+                                        alpha=0.85, zorder=4, label='Brno 2025 Yearly Avg')
+                            except Exception:
+                                ax.plot(mx_v, vals_v, '-', color='#004F3A', linewidth=2.5,
+                                        alpha=0.85, zorder=4, label='Brno 2025 Yearly Avg')
+                        else:
+                            ax.plot(mx_v, vals_v, '-', color='#004F3A', linewidth=2.5,
+                                    alpha=0.85, zorder=4, label='Brno 2025 Yearly Avg')
+                except Exception as e:
+                    print(f"[WARNING] Failed to plot 2025 yearly avg: {e}")
+
         # Labels and title
-        ax.set_xlabel('Month', fontsize=12, fontfamily='serif', fontweight='bold')
+        ax.set_xlabel('')
         ax.set_ylabel('Temperature (°C)', fontsize=12, fontfamily='serif', fontweight='bold')
         
         title = 'Meteorological Observatory — Temperature Observations'
@@ -1598,67 +1656,81 @@ class TemperatureTracker:
         
         ax.set_title(title, fontsize=13, fontfamily='serif', fontweight='bold', pad=15)
         
-        ax.set_xticks(months)
+        ax.set_xticks([m + 0.5 for m in months])
         ax.set_xticklabels(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'], 
                           fontfamily='serif', fontsize=10)
         ax.tick_params(axis='y', labelsize=10)
         ax.set_ylim(-15, 40)  # Extended range to 40°C for buffer above 35°C maximum
         ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, color='#8B7355')
+        # End-of-December separator to match the other month boundary lines
+        ax.axvline(x=13, color='#8B7355', linewidth=0.5, linestyle='--', alpha=0.3)
         
         # Custom legend order: baseline (Morning/Afternoon/Evening), then Recorded, then Modern
         from matplotlib.lines import Line2D
         from matplotlib.patches import Patch
         
-        legend_elements = [
-            # Mendel baseline (lines only)
-            Line2D([0], [0], color=COLOR_MORNING_CB, linewidth=2.5, label='Morning (6:00) — Mendel 1848-1863'),
-            Line2D([0], [0], color=COLOR_AFTERNOON_CB, linewidth=2.5, label='Afternoon (14:00) — Mendel 1848-1863'),
-            Line2D([0], [0], color=COLOR_EVENING_CB, linewidth=2.5, label='Evening (22:00) — Mendel 1848-1863'),
-        ]
-        
-        # Add Recorded data if present AND checkbox is enabled (only times that have data)
+        legend_elements = []
+
+        # ── Mendel baseline ────────────────────────────────────────────────────
+        if not hasattr(self, 'show_mendel_baseline_var') or self.show_mendel_baseline_var.get():
+            legend_elements += [
+                Line2D([0], [0], color=C_M6,  linewidth=2.5, label='6:00 — Mendel 1848-1863'),
+                Line2D([0], [0], color=C_M14, linewidth=2.5, label='14:00 — Mendel 1848-1863'),
+                Line2D([0], [0], color=C_M22, linewidth=2.5, label='22:00 — Mendel 1848-1863'),
+            ]
+
+        # ── Recorded data ──────────────────────────────────────────────────────
         if has_simulation and self.show_recorded_points_var and self.show_recorded_points_var.get():
             if len(sim6_days) > 0:
-                legend_elements.append(Line2D([0], [0], marker='o', color='w', 
-                                             markerfacecolor=COLOR_MORNING_CB, markeredgecolor='black',
-                                             markeredgewidth=1.5, markersize=7, label='Morning (6:00) — Recorded'))
+                legend_elements.append(Line2D([0], [0], marker='o', color='w',
+                                             markerfacecolor=C_R6, markeredgecolor='none',
+                                             markersize=4, label='6:00 — Recorded'))
             if len(sim14_days) > 0:
                 legend_elements.append(Line2D([0], [0], marker='s', color='w',
-                                             markerfacecolor=COLOR_AFTERNOON_CB, markeredgecolor='black',
-                                             markeredgewidth=1.5, markersize=7, label='Afternoon (14:00) — Recorded'))
+                                             markerfacecolor=C_R14, markeredgecolor='none',
+                                             markersize=3, label='14:00 — Recorded'))
             if len(sim22_days) > 0:
                 legend_elements.append(Line2D([0], [0], marker='^', color='w',
-                                             markerfacecolor=COLOR_EVENING_CB, markeredgecolor='black',
-                                             markeredgewidth=1.5, markersize=7, label='Evening (22:00) — Recorded'))
-        
-        # Add Modern data if present (only times that have data)
-        if has_modern:
-            if len(mod6_days) > 0:
-                legend_elements.append(Line2D([0], [0], marker='o', color='w',
-                                             markerfacecolor=COLOR_MORNING_CB, markeredgecolor='red',
-                                             markeredgewidth=2, markersize=8, label='Morning (6:00) — Modern'))
-            if len(mod14_days) > 0:
-                legend_elements.append(Line2D([0], [0], marker='s', color='w',
-                                             markerfacecolor=COLOR_AFTERNOON_CB, markeredgecolor='red',
-                                             markeredgewidth=2, markersize=8, label='Afternoon (14:00) — Modern'))
-            if len(mod22_days) > 0:
-                legend_elements.append(Line2D([0], [0], marker='^', color='w',
-                                             markerfacecolor=COLOR_EVENING_CB, markeredgecolor='red',
-                                             markeredgewidth=2, markersize=8, label='Evening (22:00) — Modern'))
-        
-        # Add legend entries for monthly averages if checkbox is enabled
+                                             markerfacecolor=C_R22, markeredgecolor='none',
+                                             markersize=4, label='22:00 — Recorded'))
+
         if self.show_sim_monthly_avg_var and self.show_sim_monthly_avg_var.get():
             if any(v is not None for v in sim_monthly_avg_6):
-                legend_elements.append(Line2D([0], [0], linestyle='--', color=COLOR_MORNING_CB,
-                                             linewidth=2, alpha=0.7, label='Morning (6:00) — Recorded Monthly Avg'))
+                legend_elements.append(Line2D([0], [0], linestyle='--', color=C_R6,
+                                             linewidth=2, alpha=0.7, label='6:00 — Recorded Monthly Avg'))
             if any(v is not None for v in sim_monthly_avg_14):
-                legend_elements.append(Line2D([0], [0], linestyle='--', color=COLOR_AFTERNOON_CB,
-                                             linewidth=2, alpha=0.7, label='Afternoon (14:00) — Recorded Monthly Avg'))
+                legend_elements.append(Line2D([0], [0], linestyle='--', color=C_R14,
+                                             linewidth=2, alpha=0.7, label='14:00 — Recorded Monthly Avg'))
             if any(v is not None for v in sim_monthly_avg_22):
-                legend_elements.append(Line2D([0], [0], linestyle='--', color=COLOR_EVENING_CB,
-                                             linewidth=2, alpha=0.7, label='Evening (22:00) — Recorded Monthly Avg'))
-        
-        # Legend entries for yearly averages are already added via labels in the plot calls
+                legend_elements.append(Line2D([0], [0], linestyle='--', color=C_R22,
+                                             linewidth=2, alpha=0.7, label='22:00 — Recorded Monthly Avg'))
+
+        # ── Brno 2025 ──────────────────────────────────────────────────────────
+        if has_modern and self.show_2025_data_var.get():
+            if len(mod6_days) > 0:
+                legend_elements.append(Line2D([0], [0], marker='o', color='w',
+                                             markerfacecolor=C_B6, markeredgecolor='none',
+                                             markersize=4, label='6:00 — Brno 2025'))
+            if len(mod14_days) > 0:
+                legend_elements.append(Line2D([0], [0], marker='s', color='w',
+                                             markerfacecolor=C_B14, markeredgecolor='none',
+                                             markersize=3, label='14:00 — Brno 2025'))
+            if len(mod22_days) > 0:
+                legend_elements.append(Line2D([0], [0], marker='^', color='w',
+                                             markerfacecolor=C_B22, markeredgecolor='none',
+                                             markersize=4, label='22:00 — Brno 2025'))
+
+        if getattr(self, 'show_2025_avg_var', None) and self.show_2025_avg_var.get():
+            legend_elements.append(Line2D([0], [0], linestyle='--', color=C_B6,
+                                         linewidth=2, alpha=0.7, label='6:00 — Brno 2025 Monthly Avg'))
+            legend_elements.append(Line2D([0], [0], linestyle='--', color=C_B14,
+                                         linewidth=2, alpha=0.7, label='14:00 — Brno 2025 Monthly Avg'))
+            legend_elements.append(Line2D([0], [0], linestyle='--', color=C_B22,
+                                         linewidth=2, alpha=0.7, label='22:00 — Brno 2025 Monthly Avg'))
+
+        if getattr(self, 'show_2025_yearly_avg_var', None) and self.show_2025_yearly_avg_var.get():
+            legend_elements.append(Line2D([0], [0], color='#004F3A', linewidth=2.5,
+                                         alpha=0.85, label='Brno 2025 Yearly Avg'))
         
         legend = ax.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, -0.08), 
                           ncol=3, fontsize=9, framealpha=0.98, 
@@ -1716,13 +1788,11 @@ Mendel's meteorological observations were as meticulous as his genetic experimen
 
 His weather data contributed to the broader scientific understanding of Central European climate patterns in the 19th century.
 
-Your Role:
-In this simulation, you follow in Mendel's footsteps by taking measurements at the same times he did. Your observations are compared against his 15-year averages, allowing you to see how each day's weather compares to the historical baseline.
+You can follow in Mendel’s footsteps by taking measurements at the same times he did. Your observations can then be compared with his 15-year averages, allowing you to see how each day’s weather in the simulator compares to the historical baseline.
 
-Modern Measurements:
-The "Record" tab allows you to record today's actual temperatures. You can compare them directly with Mendel's 19th century observations, revealing how climate has changed over the past 160+ years.
+The Record tab also lets you log today’s actual temperatures. It can be fascinating to compare them directly with Mendel’s 19th-century observations and see how the climate may have changed over the past 160+ years.
 
-Careful measurements may reveal patterns in the simulated climate!"""
+For a quick look at modern conditions, measurements from Brno in 2025 are also available with a single click. Have fun exploring!"""
         
         tk.Label(s, text=txt, font=("Segoe UI",FONT_BODY), bg="white", fg=COLOR_TEXT_PRIMARY, 
                 justify="left", wraplength=660).pack(anchor="w", padx=20, pady=(0,20))

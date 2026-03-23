@@ -165,16 +165,32 @@ class Inventory:
     def remove(self, item: InventoryItem):
         """
         Remove an item from inventory.
-        
+
+        Uses identity (is) matching rather than equality (==) to avoid
+        issues with dataclass __eq__ on complex fields like Plant objects.
+
         Args:
             item: Item to remove
         """
         if isinstance(item, Seed):
-            self._items_seeds.remove(item)
+            self._items_seeds = [x for x in self._items_seeds if x is not item]
         elif isinstance(item, Pollen):
-            self._items_pollen.remove(item)
+            self._items_pollen = [x for x in self._items_pollen if x is not item]
         else:
-            self._items_misc.remove(item)
+            self._items_misc = [x for x in self._items_misc if x is not item]
+
+    def remove_by_id(self, item_id: int):
+        """
+        Remove an item from inventory by its ID field.
+
+        Fallback for cases where the original object reference is unavailable.
+
+        Args:
+            item_id: The id field of the item to remove
+        """
+        self._items_seeds   = [x for x in self._items_seeds   if getattr(x, "id", None) != item_id]
+        self._items_pollen  = [x for x in self._items_pollen  if getattr(x, "id", None) != item_id]
+        self._items_misc    = [x for x in self._items_misc    if getattr(x, "id", None) != item_id]
 
     def get_all(self, item_type: Literal['misc', 'seeds', 'pollen']) -> List[InventoryItem]:
         """
@@ -204,93 +220,41 @@ class Inventory:
 # ============================================================================
 
 class InventoryPopup(Toplevel):
-    """
-    Popup window for browsing and managing inventory.
-    
-    Displays seeds and pollen in paginated tabs.
-    """
-    
+    """Seeds-only popup for browsing and planting harvested seeds."""
+
     MAX_PER_PAGE_SEEDS = 9
-    MAX_PER_PAGE_POLLEN = 9
-    
-    def __init__(self, master, garden, inventory: Inventory, on_seed_selected: Callable,
+
+    def __init__(self, master, garden, inventory, on_seed_selected: Callable,
                  app=None, initial_tab=None):
-        """
-        Initialize inventory popup.
-        
-        Args:
-            master: Parent window
-            garden: Garden environment instance
-            inventory: Inventory instance
-            on_seed_selected: Callback for when a seed is selected to plant
-            app: Main application reference (for styling)
-            initial_tab: Tab to show initially ('Seeds' or 'Pollen')
-        """
         super().__init__(master)
-        
-        # Set topmost
         try:
             self.attributes("-topmost", True)
             self.lift()
         except Exception:
             pass
 
-        # Store references
         self.app = app
         if self.app is None:
             try:
                 self.app = master.master
             except Exception:
                 self.app = None
-        
-        self.title("Summary")
+
+        self.title("Seeds")
+        self.geometry("800x560")
         self.garden = garden
         self.inventory = inventory
         self.on_seed_selected = on_seed_selected
-
-        # Create notebook
-        self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=True)
-
-        # Seeds tab
-        self.seeds_frame = tk.Frame(self.nb, padx=8, pady=8)
-        self.nb.add(self.seeds_frame, text="Seeds")
         self.seeds_page = 0
-        self._build_seeds_tab()
-        
-        # Pollen tab
-        self.pollen_frame = tk.Frame(self.nb, padx=8, pady=8)
-        self.nb.add(self.pollen_frame, text="Pollen")
-        self.pollen_page = 0
-        self._build_pollen_tab()
-        
-        # Select initial tab
-        try:
-            if initial_tab == 'Pollen':
-                self.nb.select(self.pollen_frame)
-            elif initial_tab == 'Seeds':
-                self.nb.select(self.seeds_frame)
-        except Exception:
-            pass
 
-    # ========================================================================
-    # Tab Refresh
-    # ========================================================================
+        self.seeds_frame = tk.Frame(self, padx=8, pady=8)
+        self.seeds_frame.pack(fill="both", expand=True)
+        self._build_seeds_tab()
 
     def refresh_current_tab(self):
-        """Re-render whichever tab is currently selected."""
+        """Re-render the seeds page."""
         try:
-            current = self.nb.select()
-        except Exception:
-            current = None
-        
-        try:
-            if current and hasattr(self, "pollen_frame") and str(current) == str(self.pollen_frame):
-                self._render_pollen_page()
-                return
-            if current and hasattr(self, "seeds_frame") and str(current) == str(self.seeds_frame):
-                self._render_seeds_page()
-                return
+            self._render_seeds_page()
         except Exception:
             pass
 
@@ -818,40 +782,77 @@ class InventoryPopup(Toplevel):
         
         self._render_seed_icons(frame, traits)
 
-        # Plant button
-        def plant_one_from_group():
-            # Find first matching seed
-            target = None
-            for seed in self.inventory:
-                if self._seed_matches_group(seed, kind, source_id, donor_id):
-                    target = seed
-                    break
-            
-            if target is None:
-                return
-            
-            if callable(self.on_seed_selected):
-                self.on_seed_selected(target)
-            
-            self._render_seeds_page()
+        # ── Plant buttons row: "Plant (n)" + "Plant ALL" ──────────────────────────
+        match_fn = lambda s, k=kind, sid=source_id, did=donor_id: self._seed_matches_group(s, k, sid, did)
+        count = sum(1 for s in self.inventory if match_fn(s)) if not isinstance(self.inventory, list)             else sum(1 for s in self.inventory if match_fn(s))
 
-        if self.app is not None:
-            plant_btn = tk.Button(
-                frame,
-                text="Plant on selected tile",
-                fg="green",
-                command=plant_one_from_group,
-                **self.app.button_style,
-            )
-            self.app._apply_hover(plant_btn)
-        else:
-            plant_btn = tk.Button(
-                frame,
-                text="Plant on selected tile",
-                fg="green",
-                command=plant_one_from_group,
-            )
-        plant_btn.pack(anchor="e", pady=(6, 0))
+        btn_row = tk.Frame(frame)
+        btn_row.pack(fill="x", pady=(6, 0))
+
+        bstyle = self.app.button_style if self.app else {}
+
+        # Entry + "Plant (n)" -------------------------------------------------
+        plant_n_frame = tk.Frame(btn_row)
+        plant_n_frame.pack(side="left", padx=(0, 4))
+
+        entry_n = tk.Entry(plant_n_frame, width=4, font=("Segoe UI", 9))
+        entry_n.pack(side="left", padx=(0, 2))
+        entry_n.insert(0, str(count))
+
+        def _plant_n(k=kind, mf=match_fn, entry=entry_n):
+            try:
+                n = int(entry.get().strip())
+                if n <= 0:
+                    raise ValueError
+            except ValueError:
+                if self.app:
+                    self.app._toast("Enter a valid positive number.", level="warn")
+                return
+            if self.app and hasattr(self.app, "_on_plant_n_from_group"):
+                self.app._on_plant_n_from_group(k, mf, n)
+                self._render_seeds_page()
+            elif callable(self.on_seed_selected):
+                # fallback: plant one
+                for seed in list(self.inventory):
+                    if mf(seed):
+                        self.on_seed_selected(seed)
+                        self._render_seeds_page()
+                        break
+
+        b_plant_n = tk.Button(
+            plant_n_frame,
+            text="Plant (n)",
+            fg="green",
+            state=("normal" if count > 0 else "disabled"),
+            command=_plant_n,
+            **bstyle,
+        )
+        if self.app:
+            self.app._apply_hover(b_plant_n)
+        b_plant_n.pack(side="left")
+
+        # "Plant ALL" ---------------------------------------------------------
+        def _plant_all(k=kind, mf=match_fn):
+            if self.app and hasattr(self.app, "_on_plant_area_from_group"):
+                self.app._on_plant_area_from_group(k, mf)
+                self._render_seeds_page()
+            elif callable(self.on_seed_selected):
+                for seed in list(self.inventory):
+                    if mf(seed):
+                        self.on_seed_selected(seed)
+                self._render_seeds_page()
+
+        b_all = tk.Button(
+            btn_row,
+            text="Plant ALL",
+            fg="green",
+            state=("normal" if count > 0 else "disabled"),
+            command=_plant_all,
+            **bstyle,
+        )
+        if self.app:
+            self.app._apply_hover(b_all)
+        b_all.pack(side="left")
     
     def _seed_matches_group(self, seed, kind, source_id, donor_id):
         """Check if a seed matches a group key."""
@@ -894,13 +895,11 @@ class InventoryPopup(Toplevel):
             return False
 
         shown_any = False
-        
-        # Handle both dict and object access for traits
+
+        # Show seed_color only (seed_shape icon not needed)
         if isinstance(traits, dict):
-            shown_any |= add_trait_icon("seed_shape", traits.get("seed_shape"))
             shown_any |= add_trait_icon("seed_color", traits.get("seed_color"))
         else:
-            shown_any |= add_trait_icon("seed_shape", getattr(traits, "seed_shape", None))
             shown_any |= add_trait_icon("seed_color", getattr(traits, "seed_color", None))
 
         if not shown_any:
@@ -953,3 +952,293 @@ class InventoryPopup(Toplevel):
         if callable(self.on_seed_selected):
             self.on_seed_selected(seed)
         self.destroy()
+
+
+# ============================================================================
+# Standalone Pollen Chooser
+# ============================================================================
+
+class PollenChooserPopup(Toplevel):
+    """Standalone pollen chooser window opened when the player pollinates.
+
+    Mirrors the card layout of choose_seed_for_tiles: a 3-column paginated
+    grid where each card shows the source flower icon, the anther_small.png icon,
+    viability info, and a Use button.  No notebook tabs.
+    """
+
+    MAX_PER_PAGE = 9
+    ICON_SIZE    = 64   # display size for both icons (pixels)
+
+    def __init__(self, master, app):
+        super().__init__(master)
+        try:
+            self.attributes("-topmost", True)
+            self.lift()
+        except Exception:
+            pass
+
+        self.app   = app
+        self.page  = 0
+        self._img_refs = []
+
+        self.title("Choose Pollen")
+        self.geometry("800x700")
+        self.resizable(True, True)
+
+        self._build()
+
+    # ── Build ────────────────────────────────────────────────────────────────
+
+    def _build(self):
+        bstyle = self.app.button_style if self.app else {}
+
+        outer = tk.Frame(self, padx=10, pady=10)
+        outer.pack(fill="both", expand=True)
+
+        # ── Header ──────────────────────────────────────────────────────────
+        header = tk.Frame(outer)
+        header.pack(fill="x", pady=(0, 6))
+
+        btn_prev = tk.Button(header, text="◀ Prev", command=self._prev, **bstyle)
+        btn_next = tk.Button(header, text="Next ▶", command=self._next, **bstyle)
+        if self.app:
+            self.app._apply_hover(btn_prev)
+            self.app._apply_hover(btn_next)
+
+        self._page_lbl = tk.Label(header, text="", font=("Segoe UI", 11))
+
+        btn_close = tk.Button(header, text="✕", command=self.destroy, **bstyle)
+        if self.app:
+            self.app._apply_hover(btn_close)
+
+        self._page_lbl.pack(side="left", padx=8)
+        btn_prev.pack(side="left")
+        btn_close.pack(side="right")
+        btn_next.pack(side="right", padx=(0, 6))
+
+        # ── Card grid ───────────────────────────────────────────────────────
+        self._grid = tk.Frame(outer)
+        self._grid.pack(fill="both", expand=True)
+        for c in range(3):
+            self._grid.grid_columnconfigure(c, weight=1, uniform="col")
+        for r in range(3):
+            self._grid.grid_rowconfigure(r, weight=0)
+
+        self._render()
+
+    # ── Render ───────────────────────────────────────────────────────────────
+
+    def _get_items_and_today(self):
+        """Return (pollen_list, today_int) from the app's inventory."""
+        try:
+            items = self.app.inventory.get_all("pollen")
+        except Exception:
+            items = []
+        try:
+            today = int(getattr(self.app.garden, "day_of_month",
+                                getattr(self.app.garden, "day", 0)))
+        except Exception:
+            today = 0
+        return items, today
+
+    def _render(self):
+        # Discard stale image refs and clear grid
+        self._img_refs = []
+        for w in self._grid.winfo_children():
+            try:
+                w.destroy()
+            except Exception:
+                pass
+
+        items, today = self._get_items_and_today()
+
+        # Group by source plant
+        groups = defaultdict(list)
+        for pkt in items:
+            groups[int(getattr(pkt, "source_id", 0) or 0)].append(pkt)
+
+        keys  = sorted(groups.keys())
+        total = len(keys)
+
+        # Clamp page
+        if total > 0:
+            max_page = (total - 1) // self.MAX_PER_PAGE
+            self.page = min(self.page, max_page)
+        else:
+            self.page = 0
+
+        start = self.page * self.MAX_PER_PAGE
+        end   = min(total, start + self.MAX_PER_PAGE)
+
+        if total:
+            self._page_lbl.configure(text=f"Pollen groups {start+1}–{end} of {total}")
+        else:
+            self._page_lbl.configure(text="No pollen collected yet")
+
+        shown = keys[start:end]
+
+        if not shown:
+            f = tk.Frame(self._grid, borderwidth=1, relief="groove", padx=10, pady=10)
+            f.grid(row=1, column=1, padx=8, pady=8, sticky="nsew")
+            tk.Label(f, text="No pollen collected yet.",
+                     fg="#666666", font=("Segoe UI", 12, "italic")).pack()
+            return
+
+        for idx, source_id in enumerate(shown):
+            packets = groups[source_id]
+            self._render_card(idx, source_id, packets, today)
+
+    def _render_card(self, idx, source_id, packets, today):
+        bstyle = self.app.button_style if self.app else {}
+        r, c   = idx // 3, idx % 3
+
+        # No fixed size — let content determine height so Use button is never clipped
+        card = tk.Frame(self._grid, borderwidth=1, relief="groove", padx=8, pady=8)
+        card.grid(row=r, column=c, padx=8, pady=8, sticky="new")
+        card._img_refs = []
+
+        # ── Header: title (left) + ✕ (right) ────────────────────────────────
+        hdr = tk.Frame(card)
+        hdr.pack(fill="x")
+
+        tk.Label(hdr, text=f"from Plant #{source_id}",
+                 font=("Segoe UI", 11, "bold")).pack(side="left")
+
+        def _discard(sid=source_id):
+            try:
+                inv = self.app.inventory
+                for pkt in list(inv.get_all("pollen")):
+                    if int(getattr(pkt, "source_id", 0) or 0) == int(sid):
+                        inv.remove(pkt)
+                if hasattr(self.app, "_toast"):
+                    self.app._toast(f"Deleted pollen from plant #{sid}.")
+            except Exception:
+                pass
+            self._render()
+
+        btn_x = tk.Button(hdr, text="✕", width=2, fg="red",
+                          command=_discard, **bstyle)
+        if self.app:
+            self.app._apply_hover(btn_x)
+        btn_x.pack(side="right")
+
+        # ── Icon row: flower icon + anther icon ──────────────────────────────
+        icon_row = tk.Frame(card)
+        icon_row.pack(anchor="w", pady=(4, 2))
+
+        sz = self.ICON_SIZE
+
+        # Gather traits from first packet that has them
+        flower_pos   = None
+        flower_color = None
+        for pkt in packets:
+            t = getattr(pkt, "traits", {}) or {}
+            if isinstance(t, dict):
+                flower_pos   = flower_pos   or t.get("flower_position")
+                flower_color = flower_color or t.get("flower_color")
+            if flower_pos and flower_color:
+                break
+
+        # Flower icon (hi-res first, then standard)
+        flower_loaded = False
+        if flower_pos and flower_color:
+            for path_fn in (flower_icon_path_hi, flower_icon_path):
+                try:
+                    p = path_fn(flower_pos, flower_color)
+                    if p:
+                        raw = safe_image(p)
+                        if raw:
+                            img = raw.subsample(
+                                max(1, raw.width()  // sz),
+                                max(1, raw.height() // sz),
+                            )
+                            lbl = tk.Label(icon_row, image=img)
+                            lbl.pack(side="left", padx=(0, 4))
+                            self._img_refs.append(img)
+                            card._img_refs.append(img)
+                            flower_loaded = True
+                            break
+                except Exception:
+                    pass
+
+        if not flower_loaded:
+            # Fallback: coloured square placeholder
+            tk.Label(icon_row, text="🌸", font=("Segoe UI", sz // 2)).pack(
+                side="left", padx=(0, 4))
+
+        # Anther icon
+        try:
+            anther_path = os.path.join(ICONS_DIR, "anther_small.png")
+            if os.path.exists(anther_path):
+                raw = safe_image(anther_path)
+                if raw:
+                    img = raw.subsample(
+                        max(1, raw.width()  // sz),
+                        max(1, raw.height() // sz),
+                    )
+                    lbl = tk.Label(icon_row, image=img)
+                    lbl.pack(side="left", padx=(0, 4))
+                    self._img_refs.append(img)
+                    card._img_refs.append(img)
+            else:
+                tk.Label(icon_row, text="🌿", font=("Segoe UI", sz // 2)).pack(side="left")
+        except Exception:
+            tk.Label(icon_row, text="🌿", font=("Segoe UI", sz // 2)).pack(side="left")
+
+        # ── Viability ────────────────────────────────────────────────────────
+        def _exp(pkt):
+            try:
+                return int(getattr(pkt, "expires_day", -999999))
+            except Exception:
+                return -999999
+
+        viable = [p for p in packets if _exp(p) == today]
+        viable_count = len(viable)
+
+        # ── Info + Use row (Use aligned right under the ✕ discard button) ──
+        pkt_placeholder = [None]  # must be defined before _use closure captures it
+        pkt = viable[0] if viable else None
+        pkt_placeholder[0] = pkt
+
+        def _use():
+            p = pkt_placeholder[0]
+            if p and self.app and callable(getattr(self.app, "_apply_pollen", None)):
+                self.app._apply_pollen(p)
+                try:
+                    self._render()
+                except Exception:
+                    pass
+
+        info_row = tk.Frame(card)
+        info_row.pack(fill="x", pady=(4, 0))
+
+        # Use button — right side, aligned under the ✕
+        btn_use = tk.Button(info_row, text="Use", fg="green",
+                            state=("normal" if pkt else "disabled"),
+                            command=_use if pkt else None, **bstyle)
+        if self.app:
+            self.app._apply_hover(btn_use)
+        btn_use.pack(side="right")
+
+        # Count text — left side
+        stale_tag = "  STALE" if viable_count == 0 and packets else ""
+        tk.Label(info_row,
+                 text=f"×{len(packets)} collected  |  {viable_count} viable{stale_tag}",
+                 font=("Segoe UI", 9),
+                 fg=("#b45309" if stale_tag else "#444444")).pack(side="left")
+
+    # ── Pagination ────────────────────────────────────────────────────────────
+
+    def _prev(self):
+        if self.page > 0:
+            self.page -= 1
+            self._render()
+
+    def _next(self):
+        items, _ = self._get_items_and_today()
+        groups = defaultdict(list)
+        for pkt in items:
+            groups[int(getattr(pkt, "source_id", 0) or 0)].append(pkt)
+        if (self.page + 1) * self.MAX_PER_PAGE < len(groups):
+            self.page += 1
+            self._render()

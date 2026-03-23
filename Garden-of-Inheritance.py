@@ -32,7 +32,7 @@ The application is organized around these main components:
 3. **Plant**: Individual plant simulation with genetics
 4. **TileCanvas**: Visual representation of garden tiles
 5. **Inventory**: Seed and pollen storage
-6. **HistoryArchiveBrowser**: Pedigree viewer and analysis tool
+6. **TraitInheritanceExplorer**: Pedigree viewer and analysis tool
 
 File Structure:
 ---------------
@@ -84,14 +84,15 @@ from tkinter import (
 from crashhandler import CrashHandler
 from tile import TileCanvas
 from plant import Plant, STAGE_NAMES
-from historyarchivebrowser import HistoryArchiveBrowser
+from traitinheritanceexplorer import TraitInheritanceExplorer
 from garden import GardenEnvironment
 from mendelclimate import MendelClimate
 from icon_loader import *
-from inventory import Inventory, InventoryPopup, Seed, Pollen
+from inventory import Inventory, InventoryPopup, PollenChooserPopup, Seed, Pollen
 from mendel_temperature_tracker import TemperatureTracker
 from emasculation_dialog import EmasculationDialog
 from pollination_dialog import PollinationDialog
+from mendelian_law_wizard import MendelianLawWizard
 
 
 # ============================================================================
@@ -576,6 +577,12 @@ class GardenApp:
         except Exception:
             pass
 
+        # Start the smooth day/night animation loop
+        try:
+            self._start_daynight_animation()
+        except Exception:
+            pass
+
     def _on_tile_double_click(self, event, index: int):
         print("DOUBLE CLICK", index)
         self._toast(f"Double-click #{index}", level="info")
@@ -594,6 +601,7 @@ class GardenApp:
         self._open_tie_for_selected()
 
     def _test_mendelian_laws_now(self):
+        """Open the Mendelian Law Unlock wizard."""
         try:
             # Ensure archive is current
             try:
@@ -601,36 +609,27 @@ class GardenApp:
             except Exception:
                 pass
 
-            # Use selected plant as context (like TIE)
-            idx = getattr(self, "selected_index", None)
+            # Require a selected plant
+            idx   = getattr(self, "selected_index", None)
             plant = None
             if idx is not None:
                 try:
                     if 0 <= idx < len(self.tiles):
                         plant = self.tiles[idx].plant
                 except Exception:
-                    plant = None
+                    pass
 
             if not plant:
                 self._toast("Select a plant first.", level="info")
                 return
 
-            pid = getattr(plant, "id", None)
-            if pid is None:
-                return
-
-            from historyarchivebrowser import test_mendelian_laws
-            res = test_mendelian_laws(self, archive=getattr(self, "archive", None), pid=pid, allow_credit=True, toast=True)
-
-            # Optional: feedback if nothing new
-            if hasattr(self, "_toast") and not res.get("new"):
-                self._toast("No new Mendelian laws detected yet.", level="info")
+            MendelianLawWizard(self.root, self)
 
         except Exception as e:
             try:
-                self._toast(f"Law test failed: {e}", level="warn")
+                self._toast(f"Wizard failed to open: {e}", level="warn")
             except Exception:
-                print("Law test failed:", e)
+                print("Wizard error:", e)
 
     def _ensure_anther_check_today(self, plant):
         """If plant is flowering (stage 5), ensure today's anther check is computed."""
@@ -698,36 +697,109 @@ class GardenApp:
         self.render_all()
 
     def _apply_daynight_to_tiles(self):
-        # init caches once
-        if not hasattr(self, "_daynight_cache"):
-            self._daynight_cache = {}  # (base_hex, bucket)->tinted_hex
+        # ── Fast-forward: snap visual_L to target (no animation lag) ──
+        # The animation loop cannot run during FF (main thread is blocked).
+        # Instead of restoring bare colors, we snap to the correct hour
+        # shading each time render_all() fires during FF.
+        if getattr(self, "fast_forward", False):
+            self._daynight_last_bucket = None  # force a repaint this frame
 
-        # get sim date + hour from environment
+        # ── Init cache once ──
+        if not hasattr(self, "_daynight_cache"):
+            self._daynight_cache = {}  # (base_hex, bucket) -> tinted_hex
+
+        # ── Sim date ──
         yr  = int(getattr(self.garden, "year", 1856))
         mon = int(getattr(self.garden, "month", 4))
         dom = int(getattr(self.garden, "day_of_month", 1))
         d = dt.date(yr, mon, dom)
 
-        hour = float(getattr(self.garden, "clock_hour", 12))
-        minute = float(getattr(self.garden, "clock_minute", 0))
-        h = hour + minute/60.0
+        # ── Smooth fractional-hour interpolation ──────────────────────────────────
+        # clock_hour is an integer (0-23) that jumps each next_phase().
+        # To avoid stair-step lighting at fast sim speeds, we compute a
+        # *fractional* hour by interpolating between advances using wall time.
+        # Example: clock_hour=6, 60% through the phase → smooth_hour=6.6
+        # This makes target_L change continuously, not in discrete jumps.
+        now = time.time()
+        current_hour = float(getattr(self.garden, "clock_hour", 12))
 
-        L = self._compute_light_factor(d, h)  # 0..1
-        bucket = int(max(0, min(255, round(L * 255))))  # smoother, 256 steps
+        if getattr(self, "fast_forward", False):
+            # During FF, snap to exact sim hour (no interpolation needed)
+            smooth_hour = current_hour
+        else:
+            last_adv = getattr(self, "_daynight_last_advance", None)
+            phase_secs = max(0.05, getattr(self, "phase_ms", 600) / 1000.0)
+            if last_adv is not None:
+                elapsed = max(0.0, min(phase_secs, now - last_adv))
+                frac = elapsed / phase_secs   # 0.0 → 1.0 within this phase
+                smooth_hour = (current_hour + frac) % 24.0
+            else:
+                smooth_hour = current_hour
 
-        # mapping knobs (tweak to taste)
-        night_dark = 0.35 * (1.0 - L)
-        day_bright = 0.08 * L
-        day_tint_target = "#bfe3b0"  # subtle “sun wash”
+        target_L = self._compute_light_factor(d, smooth_hour)
 
-        for i, tile in enumerate(self.tiles):  # your TileCanvas list in the new app :contentReference[oaicite:7]{index=7}
+        # ── Velocity safety net ────────────────────────────────────────────────
+        # The fractional hour already gives a smooth target, but we keep a
+        # lightweight velocity clamp so that big jumps (load-game, time skip,
+        # toggle) never flash. Visual_L tracks target tightly with a generous
+        # max speed and snaps when close.
+        last_tick = getattr(self, "_daynight_last_tick", None)
+        dt_s = min(0.2, now - last_tick) if last_tick is not None else 0.04
+        self._daynight_last_tick = now
+
+        # Initialise on first call or snap during FF
+        if not hasattr(self, "_daynight_visual_L") or getattr(self, "fast_forward", False):
+            self._daynight_visual_L = target_L
+
+        # Generous max velocity: 1.2 L/sec allows tracking any natural
+        # dawn/dusk ramp while still damping sudden teleports.
+        max_L_per_sec = 1.2
+        delta = target_L - self._daynight_visual_L
+        max_step = max_L_per_sec * dt_s
+        if abs(delta) <= max_step:
+            self._daynight_visual_L = target_L   # close enough → snap
+        else:
+            self._daynight_visual_L += max_step if delta > 0 else -max_step
+
+        L = self._daynight_visual_L
+
+        # ── Display curve: remap L through a smoothstep crop ──────────────────
+        # Crop the long gradual dome tails (pre-dawn gloom, post-sunrise ramp)
+        # so the visible transition is concentrated into the twilight window.
+        # lo=0.10 -> fully dark below this, hi=0.70 -> fully bright above this.
+        # Smoothstep blend between them avoids hard edges at the crop points.
+        _lo, _hi = 0.10, 0.70
+        if L <= _lo:
+            L_display = 0.0
+        elif L >= _hi:
+            L_display = 1.0
+        else:
+            _t = (L - _lo) / (_hi - _lo)
+            L_display = _t * _t * (3.0 - 2.0 * _t)  # smoothstep
+
+        # Quantise to 100 steps — plenty for a smooth visual, cheaper cache
+        bucket = int(round(L_display * 100))
+
+        # Skip the repaint if the display level hasn't changed
+        last_bucket = getattr(self, "_daynight_last_bucket", None)
+        if bucket == last_bucket:
+            self._daynight_transitioning = False
+            return
+        self._daynight_last_bucket    = bucket
+        self._daynight_transitioning  = True  # keep loop at 40 ms
+
+        # ── Mapping knobs (driven by display curve, not raw L) ──
+        night_dark      = 0.35 * (1.0 - L_display)
+        day_bright      = 0.08 * L_display
+        day_tint_target = "#bfe3b0"  # subtle sun wash
+
+        for tile in self.tiles:
             base = getattr(tile, "base_soil", None)
             if not base:
-                # store the original base once (don’t overwrite it with tinted colors)
                 base = getattr(tile, "soil", "#88a884")
                 tile.base_soil = base
 
-            key = (base, bucket)
+            key    = (base, bucket)  # bucket already based on L_display
             shaded = self._daynight_cache.get(key)
             if shaded is None:
                 c = base
@@ -739,6 +811,35 @@ class GardenApp:
                 self._daynight_cache[key] = shaded
 
             tile.set_soil_color(shaded)
+
+    
+    def _start_daynight_animation(self):
+        """Lightweight animation loop that repaints tile shading smoothly.
+
+        Fires every 80 ms but skips the actual repaint when the computed light
+        level hasn't changed meaningfully - so on slow/weak hardware we only
+        pay the cost during active transitions (dawn/dusk), not all day long.
+        Safe to call multiple times - only one loop is ever active at once.
+        """
+        if getattr(self, "_daynight_anim_running", False):
+            return
+        self._daynight_anim_running = True
+
+        def _tick():
+            try:
+                if getattr(self, "enable_daynight", True) and not getattr(self, "fast_forward", False):
+                    self._apply_daynight_to_tiles()
+            except Exception:
+                pass
+            try:
+                # Slow down to 160 ms when nothing is transitioning (saves CPU)
+                is_transitioning = getattr(self, "_daynight_transitioning", False)
+                delay = 40 if is_transitioning else 100
+                self.root.after(delay, _tick)
+            except Exception:
+                self._daynight_anim_running = False
+
+        self.root.after(40, _tick)
 
 
     def _today(self) -> int:
@@ -823,6 +924,7 @@ class GardenApp:
         self.auto_water_normal = tk.BooleanVar(value=False) # ☐
         # cross_random removed - was non-functional legacy setting
         self.auto_record_temperature = tk.BooleanVar(value=True)  # ✅ "Auto-record temperature"
+        self.show_breed_dialogs = tk.BooleanVar(value=True)       # ✅ "Show Emasculation/Pollination dialogs"
         self.auto_record_temperature.trace_add(
             "write", lambda *_: self._update_temp_button_state()
         )
@@ -1076,7 +1178,11 @@ class GardenApp:
         try:
             # Get flower color from plant traits
             flower_color = plant.traits.get("flower_color", "purple")
-            dialog = EmasculationDialog(self.root, flower_color, on_emasculation_complete)
+            if not self.show_breed_dialogs.get():
+                # Dialogs disabled — emasculate immediately without the interactive step
+                on_emasculation_complete(True)
+            else:
+                dialog = EmasculationDialog(self.root, flower_color, on_emasculation_complete)
         except Exception as e:
             # Fallback to immediate emasculation if dialog fails
             print(f"Error opening emasculation dialog: {e}")
@@ -1303,7 +1409,8 @@ class GardenApp:
 
             # Advance phase and optionally render
             self.garden.next_phase()
-            
+            self._daynight_last_advance = time.time()  # smooth day/night interpolation
+
             # Clean up old dead plants (check every hour)
             try:
                 self._cleanup_old_dead_plants()
@@ -1414,10 +1521,6 @@ class GardenApp:
         self.root.bind('<s>', lambda e: self._on_harvest_selected())
         # Shift+S → harvest ALL pods on selected plant
         self.root.bind('<S>', lambda e: self._on_harvest_all_selected())
-        self.root.bind('<l>', lambda e: self._open_summary())
-        self.root.bind('<L>', lambda e: self._open_summary())
-        self.root.bind('<n>', lambda e: self._open_summary())
-        self.root.bind('<N>', lambda e: self._open_summary())
         self.root.bind('<g>', lambda e: self._choose_grid_bg())
         self.root.bind('<G>', lambda e: self._choose_grid_bg())
         self.root.bind('<F10>', lambda e: self._toggle_climate_mode())
@@ -1448,8 +1551,6 @@ class GardenApp:
         self.root.bind('<c>', lambda e: self._on_collect_pollen())
         self.root.bind('<C>', lambda e: self._on_collect_pollen())
         
-        # Quick open Summary → Pollen tab
-        self.root.bind('<Shift-O>', lambda e: self._open_summary(initial_tab='Pollen'))
         
         # Quick open Genotype window
         self.root.bind('<Shift-G>', lambda e: self._on_genetics())
@@ -2015,6 +2116,10 @@ class GardenApp:
         #                             variable=self.cross_random)
         game_menu.add_checkbutton(label="Auto-record temperature",
                                     variable=self.auto_record_temperature)
+        game_menu.add_checkbutton(
+            label="Show Emasculation / Pollination dialogs",
+            variable=self.show_breed_dialogs
+        )
         
         game_menu.add_separator()
         game_menu.add_command(
@@ -2462,15 +2567,7 @@ class GardenApp:
         except Exception:
             pass
 
-        # Summary button
-        self.summary_btn = tk.Button(
-            inventory_left,
-            text="Summary",
-            command=self._open_summary,
-            **btn_kwargs,
-        )
-        self._apply_hover(self.summary_btn)
-        self.summary_btn.pack(side="left", padx=2)
+
 
         # Grid frame (in right_panel)
         self.grid_frame = tk.Frame(right_panel, padx=0, pady=0, bg=self.grid_bg)
@@ -3016,25 +3113,18 @@ class GardenApp:
             self._apply_pollen(pkt)
             return
 
-        # Otherwise open the chooser (current behavior)
+        # Otherwise open the standalone pollen chooser
         try:
-            pop = InventoryPopup(self.root, self.garden, self.inventory, self._on_seed_selected, app=self)
+            pop = PollenChooserPopup(self.root, self)
             try:
                 self.summary_popup = pop
             except Exception:
                 pass
-
-            try:
-                pop.nb.select(pop.pollen_frame)
-            except Exception:
-                pass
-
             try:
                 pop.lift()
                 pop.focus_force()
             except Exception:
                 pass
-
         except Exception as e:
             self._toast(f"Could not open pollen chooser: {e}")
 
@@ -3211,19 +3301,15 @@ class GardenApp:
                 plant.ovules_left = int(getattr(plant, "ovules_per_pod", 0) or 0)
 
             # --- NOW consume pollen (single-use) ---
-            consumed = False
+            # Primary: identity-based removal (safe even if __eq__ fails on Plant fields)
             try:
-                if hasattr(self.inventory, "remove"):
-                    self.inventory.remove(packet_obj)
-                    consumed = True
+                self.inventory.remove(packet_obj)
             except Exception:
-                consumed = False
-
-            if not consumed:
-                pid = packet.get("id", None)
+                # Fallback: remove by id in case the object reference was lost
                 try:
-                    if pid is not None and hasattr(self.inventory, "items"):
-                        self.inventory.items = [x for x in self.inventory.items if getattr(x, "id", None) != pid]
+                    pid = getattr(packet_obj, "id", None) or packet.get("id", None)
+                    if pid is not None:
+                        self.inventory.remove_by_id(int(pid))
                 except Exception:
                     pass
 
@@ -3239,13 +3325,17 @@ class GardenApp:
         
         # Show the interactive pollination dialog
         try:
-            dialog = PollinationDialog(
-                self.root,
-                flower_color=flower_color,
-                is_emasculated=is_emasculated,
-                pollen_source=pollen_source_name,
-                callback=on_pollination_complete
-            )
+            if not self.show_breed_dialogs.get():
+                # Dialogs disabled — pollinate immediately without the interactive step
+                on_pollination_complete(True)
+            else:
+                dialog = PollinationDialog(
+                    self.root,
+                    flower_color=flower_color,
+                    is_emasculated=is_emasculated,
+                    pollen_source=pollen_source_name,
+                    callback=on_pollination_complete
+                )
         except Exception as e:
             # Fallback if dialog fails - apply directly
             print(f"Pollination dialog failed: {e}, applying directly")
@@ -4294,6 +4384,7 @@ class GardenApp:
     def _on_next_phase(self):
         old_hour = int(getattr(self.garden, 'clock_hour', 6))
         self.garden.next_phase()
+        self._daynight_last_advance = time.time()  # smooth day/night interpolation
         new_hour = int(getattr(self.garden, 'clock_hour', 6))
         
         # Clean up old dead plants
@@ -4847,7 +4938,7 @@ class GardenApp:
 
             
             self._toast(f"Harvested {made} seeds (aborted {aborted}). Pods left: {getattr(plant, 'pods_remaining', 0)}")
-            # Auto-remove when pods are exhausted — archive first like bulk removal
+            # When all pods are spent — archive and revert to pre-pod icon (stage 6), don't remove
             try:
                 if int(getattr(plant, 'pods_remaining', 0)) <= 0:
                     try:
@@ -4864,9 +4955,11 @@ class GardenApp:
                             self._snapshot_all_live_plants()
                     except Exception:
                         pass
-                    self.tiles[idx].plant = None
-                    self.tiles[idx].plant = None
-                    self._toast('Plant removed after final harvest.')
+                    plant.stage = 6
+                    plant.fully_harvested = True
+                    plant.img_obj = None   # force icon refresh
+                    plant._icon_key = None
+                    self._toast('All pods harvested. Plant remains on the plot.')
             except Exception:
                 pass
             self.render_all()
@@ -4880,7 +4973,7 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_harvest_all_selected(self):
-        """Harvest all remaining pods from the selected plant, then remove it."""
+        """Harvest all remaining pods from the selected plant. Plant stays on the plot afterwards."""
         idx = self.selected_index
         plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
 
@@ -5122,9 +5215,9 @@ class GardenApp:
         def _ensure_min(pid0, gen0="F0"):
             if pid0 in (None, "", -1):
                 return
-            key_int = int(pid0) if str(pid0).isdigit() else pid0
-            if key_int not in plants and str(key_int) not in plants:
-                self.archive_snapshot({"id": key_int, "generation": gen0})
+            key_str = str(int(pid0)) if str(pid0).isdigit() else str(pid0)
+            if key_str not in plants:
+                self.archive_snapshot({"id": pid0, "generation": gen0})
 
         _ensure_min(mid, "F0")
         _ensure_min(fid, "F0")
@@ -5722,6 +5815,11 @@ class GardenApp:
             except Exception:
                 pass
 
+        # Restore fast_forward flag FIRST so the final render applies the
+        # correct day/night shading for the sim hour we landed on.
+        self.fast_forward = False
+        self._daynight_last_advance = time.time()  # start interpolation from landed hour
+
         # After the loop, always do a final render so the clock & header are correct
         self.render_all()
         try:
@@ -5731,8 +5829,7 @@ class GardenApp:
             pass
 
 
-        # Restore state after fast-forward
-        self.fast_forward = False
+        # (fast_forward already cleared above)
         self.running = was_running
         self.pause_btn.configure(
             text="⏸ Pause" if self.running else "⏵ Resume"
@@ -5763,6 +5860,13 @@ class GardenApp:
     def _on_save_garden(self):
         """Save the entire garden state to a JSON file with optional naming."""
         import datetime
+
+        # Flush every live plant into the archive before serializing,
+        # so founder/ancestor data is never lost in the save file.
+        try:
+            self._eager_seed_and_backfill()
+        except Exception:
+            pass
         
         # Ensure data directory exists
         data_dir = os.path.join(_PG_BASE_DIR, "data")
@@ -6266,7 +6370,7 @@ class GardenApp:
             result = messagebox.askyesno(
                 "Load Garden",
                 f"Loading '{filename}' will replace your current garden.\n\nContinue?",
-                icon='warning'
+                icon='question'
             )
             
             if not result:
@@ -6316,11 +6420,19 @@ class GardenApp:
                     'ovules_per_pod': tile.plant.ovules_per_pod,
                     'ovules_left': tile.plant.ovules_left,
                     'aborted_ovules': tile.plant.aborted_ovules,
+                    'fully_harvested': getattr(tile.plant, 'fully_harvested', False),
                     'ancestry': tile.plant.ancestry,
                     'paternal_ancestry': tile.plant.paternal_ancestry,
+                    'genotype': getattr(tile.plant, 'genotype', None),
                     'last_anther_check_day': tile.plant.last_anther_check_day,
                     'anthers_available_today': tile.plant.anthers_available_today,
                     'anthers_collected_day': tile.plant.anthers_collected_day,
+                    # Parentage — dynamic attrs set by plant_seed(), not in the dataclass
+                    'mother_id': getattr(tile.plant, 'mother_id', None),
+                    'father_id': getattr(tile.plant, 'father_id', None),
+                    'selfed':    getattr(tile.plant, 'selfed', False),
+                    # Pod provenance — needed by TIE to group siblings by pod
+                    'source_pod_index': getattr(tile.plant, 'source_pod_index', None),
                 }
                 plants_data.append(plant_data)
         
@@ -6391,6 +6503,7 @@ class GardenApp:
             'auto_water_normal': self.auto_water_normal.get(),
             # 'cross_random': removed (non-functional legacy setting)
             'auto_record_temperature': self.auto_record_temperature.get(),
+            'show_breed_dialogs': self.show_breed_dialogs.get(),
             'available_seeds': self.available_seeds,
             'grid_rows': ROWS,
             'grid_cols': COLS,
@@ -6399,10 +6512,31 @@ class GardenApp:
         # Serialize archive (for Trait Inheritance Explorer)
         archive_data = None
         if hasattr(self, 'archive') and isinstance(self.archive, dict):
+            # Normalize to string keys to prevent int/str key collisions in JSON
             archive_data = {
-                'plants': dict(self.archive.get('plants', {}))
+                'plants': {str(k): v for k, v in self.archive.get('plants', {}).items()}
             }
-        
+
+        # Serialize lineage_store (TIE reads from both archive and lineage_store)
+        lineage_store_data = None
+        if hasattr(self, 'lineage_store') and isinstance(self.lineage_store, dict):
+            lineage_store_data = {
+                'plants': {str(k): v for k, v in self.lineage_store.get('plants', {}).items()}
+            }
+
+        # Serialize Mendelian law progress flags
+        law_flags = {
+            'law1_ever_discovered': getattr(self, 'law1_ever_discovered', False),
+            'law2_ever_discovered': getattr(self, 'law2_ever_discovered', False),
+            'law3_ever_discovered': getattr(self, 'law3_ever_discovered', False),
+            'law1_first_plant':    getattr(self, 'law1_first_plant', None),
+            'law2_first_plant':    getattr(self, 'law2_first_plant', None),
+            'law3_first_plant':    getattr(self, 'law3_first_plant', None),
+            'law2_ratio_ui':       getattr(self, 'law2_ratio_ui', ''),
+            'law3_ratio_ui':       getattr(self, 'law3_ratio_ui', ''),
+            '_genotype_revealed':  getattr(self, '_genotype_revealed', False),
+        }
+
         # Compile everything
         save_data = {
             'version': 'v1.0',
@@ -6412,19 +6546,33 @@ class GardenApp:
             'garden': garden_data,
             'history': history_data,
             'archive': archive_data,
+            'lineage_store': lineage_store_data,
+            'law_flags': law_flags,
             'next_plant_id': next_plant_id,
             'temperature_tracker': temp_tracker_data,
             'ui_settings': ui_settings,
         }
-        
+
         return save_data
     
     def _deserialize_garden_state(self, save_data):
         """Restore garden state from serialized data."""
         
-        # Clear current garden
+        # Clear current garden — must unregister from garden.plants too,
+        # otherwise stale plant objects linger in the set and _seed_archive_safe()
+        # would later overwrite the freshly-loaded archive with old-session data.
         for tile in self.tiles:
+            if tile.plant is not None:
+                try:
+                    self.garden.unregister_plant(tile.plant)
+                except Exception:
+                    pass
             tile.plant = None
+        # Belt-and-suspenders: clear any orphaned entries that bypass tile tracking
+        try:
+            self.garden.plants.clear()
+        except Exception:
+            pass
         
         # Restore garden environment
         garden_data = save_data['garden']
@@ -6456,9 +6604,36 @@ class GardenApp:
         if archive_data and isinstance(archive_data, dict):
             self.archive['plants'] = archive_data.get('plants', {})
         else:
-            # Initialize empty archive if none in save file
             self.archive['plants'] = {}
-        
+
+        # Restore lineage_store and merge with archive so TIE has the full picture
+        if not hasattr(self, 'lineage_store'):
+            self.lineage_store = {}
+        lineage_store_data = save_data.get('lineage_store')
+        if lineage_store_data and isinstance(lineage_store_data, dict):
+            self.lineage_store['plants'] = lineage_store_data.get('plants', {})
+        else:
+            self.lineage_store['plants'] = {}
+        # Merge archive into lineage_store (lineage_store is the union used by TIE)
+        for k, v in self.archive.get('plants', {}).items():
+            self.lineage_store['plants'].setdefault(str(k), v)
+
+        # Restore Mendelian law progress flags
+        law_flags = save_data.get('law_flags', {})
+        self.law1_ever_discovered = law_flags.get('law1_ever_discovered', False)
+        self.law2_ever_discovered = law_flags.get('law2_ever_discovered', False)
+        self.law3_ever_discovered = law_flags.get('law3_ever_discovered', False)
+        self.law1_first_plant     = law_flags.get('law1_first_plant', None)
+        self.law2_first_plant     = law_flags.get('law2_first_plant', None)
+        self.law3_first_plant     = law_flags.get('law3_first_plant', None)
+        self.law2_ratio_ui        = law_flags.get('law2_ratio_ui', 'Ratio __:__')
+        self.law3_ratio_ui        = law_flags.get('law3_ratio_ui', 'Ratio __:__:__:__')
+        self._genotype_revealed   = law_flags.get('_genotype_revealed', False)
+
+        # NOTE: do NOT call _seed_archive_safe() here — garden.plants is still
+        # empty at this point (plants are placed on tiles further below).
+        # The archive sync happens AFTER the plant-restoration loop instead.
+
         # Restore next_plant_id
         self.next_plant_id = save_data.get('next_plant_id', 1)
         
@@ -6476,17 +6651,21 @@ class GardenApp:
         self.auto_water_normal.set(ui_settings.get('auto_water_normal', False))
         # self.cross_random removed (non-functional legacy setting)
         self.auto_record_temperature.set(ui_settings.get('auto_record_temperature', True))
+        self.show_breed_dialogs.set(ui_settings.get('show_breed_dialogs', True))
         self.available_seeds = ui_settings.get('available_seeds', 10)
         
         # Check if grid size changed
         saved_rows = ui_settings.get('grid_rows', ROWS)
         saved_cols = ui_settings.get('grid_cols', COLS)
         if saved_rows != ROWS or saved_cols != COLS:
-            messagebox.showwarning(
-                "Grid Size Mismatch",
-                f"Save file has {saved_rows}x{saved_cols} grid, but current is {ROWS}x{COLS}.\n\n"
-                "Plants will be loaded where possible."
-            )
+            try:
+                self._toast(
+                    f"Grid mismatch: save is {saved_rows}×{saved_cols}, current is {ROWS}×{COLS}. "
+                    "Plants loaded where possible.",
+                    level="info"
+                )
+            except Exception:
+                pass
         
         # Restore inventory
         inventory_data = save_data['inventory']
@@ -6588,13 +6767,51 @@ class GardenApp:
             plant.ovules_per_pod = plant_data['ovules_per_pod']
             plant.ovules_left = plant_data['ovules_left']
             plant.aborted_ovules = plant_data['aborted_ovules']
+            plant.fully_harvested = plant_data.get('fully_harvested', False)
             plant.ancestry = plant_data['ancestry']
             plant.paternal_ancestry = plant_data['paternal_ancestry']
+            if plant_data.get('genotype'):
+                plant.genotype = plant_data['genotype']
             plant.last_anther_check_day = plant_data.get('last_anther_check_day')
             plant.anthers_available_today = plant_data['anthers_available_today']
             plant.anthers_collected_day = plant_data.get('anthers_collected_day')
-            
+
+            # Restore parentage (dynamic attrs — never part of the Plant dataclass)
+            plant.mother_id = plant_data.get('mother_id')
+            plant.father_id = plant_data.get('father_id')
+            plant.selfed    = plant_data.get('selfed', False)
+            # Restore pod provenance so TIE can group siblings by pod
+            spidx = plant_data.get('source_pod_index')
+            if spidx is not None:
+                plant.source_pod_index = int(spidx)
+
             tile.plant = plant
+
+        # Re-sync used_ids from all restored sources so new plants never reuse IDs
+        if not hasattr(self, 'used_ids'):
+            self.used_ids = set()
+        for tile in self.tiles:
+            if tile.plant is not None:
+                pid = getattr(tile.plant, 'id', None)
+                if pid is not None:
+                    try:
+                        self.used_ids.add(int(pid))
+                    except Exception:
+                        pass
+        for k in self.archive.get('plants', {}):
+            try:
+                self.used_ids.add(int(k))
+            except Exception:
+                pass
+        if self.used_ids:
+            self.next_plant_id = max(self.next_plant_id, max(self.used_ids) + 1)
+
+        # NOW sync live plants into archive and lineage_store so TIE and the
+        # Mendelian-law wizard have the full pedigree picture.
+        try:
+            self._eager_seed_and_backfill()
+        except Exception:
+            pass
         
         # Update UI
         self.render_all()
@@ -6982,6 +7199,10 @@ class GardenApp:
                             plant.alive = False
                             plant.death_day = self._get_current_day_number()  # Track when plant died
                             try:
+                                self.archive_snapshot(plant)  # preserve full data before it's gone
+                            except Exception:
+                                pass
+                            try:
                                 etype = str(ev.get("type", "")).lower()
                                 # Determine death message based on cause
                                 if "critical_stress" in etype or "chronic" in etype:
@@ -7022,6 +7243,10 @@ class GardenApp:
                             plant.death_day = self._get_current_day_number()  # Track when plant died
                             if hasattr(plant, "health"):
                                 plant.health = 0
+                            try:
+                                self.archive_snapshot(plant)  # preserve full data before it's gone
+                            except Exception:
+                                pass
                             try:
                                 self._toast(f"Plant #{pid} killed by freeze — {ev.get('message','')}", level="warning")
                             except Exception:
@@ -7089,6 +7314,10 @@ class GardenApp:
                     try:
                         plant.alive = False
                         plant.death_day = self._get_current_day_number()  # Track when plant died
+                        try:
+                            self.archive_snapshot(plant)  # preserve full data before it's gone
+                        except Exception:
+                            pass
                     except Exception:
                         pass
             try:
@@ -7265,19 +7494,31 @@ class GardenApp:
 
     def _eager_seed_and_backfill(self):
         """Seed archive from live + parent backfill + lineage merge."""
-        # seed from live
+        # Archive every plant currently in tiles (alive or recently dead)
+        # — more complete than garden.plants which only tracks live ones.
+        try:
+            for tile in getattr(self, "tiles", []):
+                p = getattr(tile, "plant", None)
+                if p is not None:
+                    try:
+                        self.archive_snapshot(p)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # Also seed from the garden.plants list (fallback / belt-and-suspenders)
         self.seed_archive_from_live(force=True)
         # backfill parents
         try:
             self.archive._archive_backfill_cross_parents(self)
         except Exception:
             pass
-        # merge archive => lineage_store
+        # merge archive => lineage_store (additive: never overwrite a richer entry)
         try:
             if "lineage_store" in dir(self):
                 pls = self.lineage_store.setdefault("plants", {})
                 for k, v in (getattr(self, "archive", {}).get("plants", {}) or {}).items():
-                    pls[str(k)] = v
+                    pls.setdefault(str(k), v)
         except Exception:
             pass
 
@@ -7335,10 +7576,16 @@ class GardenApp:
                     geno = get(p, "genotype", None)
                     if geno:
                         snap["genotype"] = geno
+                    else:
+                        # preserve genotype from existing archive entry if live plant lost it
+                        existing = self.archive["plants"].get(str(pid)) or self.archive["plants"].get(pid)
+                        if isinstance(existing, dict) and existing.get("genotype"):
+                            snap["genotype"] = existing["genotype"]
                     pidx = get(p, "source_pod_index", get(p, "pod_index", None))
                     if pidx is not None:
                         snap["source_pod_index"] = pidx
-                    self.archive["plants"][pid] = snap
+                    # Always use str key so it matches the JSON-loaded archive entries
+                    self.archive["plants"][str(pid)] = snap
                     count += 1
                 except Exception:
                     pass
@@ -7348,7 +7595,7 @@ class GardenApp:
         
     def open_history_archive_browser(self, parent_window, default_pid=None):
         # Simple wrapper used by the Genetics window button.
-        HistoryArchiveBrowser(parent_window, self, default_pid=default_pid)
+        TraitInheritanceExplorer(parent_window, self, default_pid=default_pid)
 
     def _set_day_length(self, secs, reschedule=True):
         """Compatibility wrapper: old UI calls _set_day_length(), v2 uses _set_day_length_patched()."""
@@ -7504,8 +7751,19 @@ class GardenApp:
             geno = g(plant, "genotype", None)
             if geno:
                 snap["genotype"] = geno
+            # Also carry source_pod_index from the live plant if present
+            spidx = g(plant, "source_pod_index", None)
+            if spidx is not None:
+                snap["source_pod_index"] = spidx
             snap.update(extras or {})
-            plants[pid] = snap
+            # Merge with existing archive entry — preserve any fields the new snap
+            # doesn't have (e.g. source_pod_index set before a save/load cycle).
+            existing = plants.get(str(pid))
+            if isinstance(existing, dict):
+                merged = dict(existing)
+                merged.update(snap)   # new snap wins on conflicts, but old fields survive
+                snap = merged
+            plants[str(pid)] = snap   # always string key — consistent with seed_archive_from_live
             return True
         except Exception:
             return False

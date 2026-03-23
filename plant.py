@@ -223,6 +223,8 @@ class Plant:
         """
         if not self.alive or self.stage >= 7:
             return
+        if getattr(self, 'fully_harvested', False):
+            return
 
         # ------------------------------------------------------------
         # Safety invariant:

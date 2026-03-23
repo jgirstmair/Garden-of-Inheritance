@@ -53,6 +53,8 @@ class EmasculationDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
         self.resizable(False, False)
+        self.lift()
+        self.focus_force()
         
         # Create UI first (this sets self.canvas_width and self.canvas_height)
         self._create_widgets()

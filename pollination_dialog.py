@@ -67,6 +67,8 @@ class PollinationDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
         self.resizable(False, False)
+        self.lift()
+        self.focus_force()
         
         # Create UI
         self._create_widgets()
