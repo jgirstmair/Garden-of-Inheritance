@@ -5455,14 +5455,19 @@ class TraitInheritanceExplorer(tk.Toplevel):
         """Scan the full archive and select the trait(s) with the best fit
         to the expected Mendelian ratio, ranked purely by chi-square.
 
-          Monohybrid → lowest χ² vs 3:1  across all families × all traits
-          Dihybrid   → lowest χ² vs 9:3:3:1 across all families × all pairs
+          Monohybrid → lowest χ² vs 3:1  (trait must be within the 2.1:1–3.9:1 band)
+          Dihybrid   → lowest χ² vs 9:3:3:1 (all 4 classes must be present)
 
-        A sibling from the winning family is selected in the listbox so the
-        Punnett Square immediately shows that family's observed counts.
-
-        Graceful fallbacks: if the requested mode has no qualifying data,
-        the button switches to the other mode and explains via toast.
+        Key design decisions
+        --------------------
+        - Families are POOLED by parent pair (all offspring of the same mother×father
+          are merged), which is exactly how test_mendelian_laws detects law 3.
+          This prevents per-family sample noise from hiding the best pair.
+        - No hard chi-square ceiling for the scan: we rank by chi2 and pick the
+          best available, so the button always shows something meaningful even when
+          no family individually clears the formal detection threshold of 4.0.
+        - The formal LAW2_DOM_FRAC band is still enforced for monohybrid so we
+          don't accidentally show a 1:1 trait as "3:1".
         """
         app  = getattr(self, "app", None)
         mode = self._cross_mode.get()
@@ -5501,7 +5506,8 @@ class TraitInheritanceExplorer(tk.Toplevel):
             v = snap.get("id") if isinstance(snap, dict) else getattr(snap, "id", None)
             return str(v) if v is not None else ""
 
-        # Pre-build family index: (mother_id, father_id) -> [snaps]
+        # Pool all snaps by parent pair (same logic as test_mendelian_laws).
+        # This merges all offspring of the same cross so chi-square is stable.
         from collections import defaultdict
         family_index = defaultdict(list)
         for snap in plants.values():
@@ -5513,13 +5519,14 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # ── full archive scan ─────────────────────────────────────────────────
         # best_law2: (chi2, N, index_pid, tk)
         # best_law3: (chi2, N, index_pid, tk1, tk2)
+        # No hard chi2 ceiling — rank by best available, let the user see data.
         best_law2 = None
         best_law3 = None
 
         for (m, f), sibs in family_index.items():
             index_pid = _sid(sibs[0])
 
-            # ── law 2: best 3:1 trait in this family ──────────────────────────
+            # ── monohybrid: best 3:1 trait ────────────────────────────────────
             if len(sibs) >= LAW2_MIN_N:
                 for tk in self._cross_trait_keys:
                     meta = self._CROSS_TRAIT_META.get(tk)
@@ -5532,20 +5539,23 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     if total < LAW2_MIN_N:
                         continue
                     dom_frac = dom / float(total)
+                    # Still enforce the acceptance band so we don't show a 1:1 trait
                     if not (LAW2_DOM_FRAC_MIN <= dom_frac <= LAW2_DOM_FRAC_MAX):
                         continue
                     exp_dom = 0.75 * total
                     exp_rec = 0.25 * total
                     chi2 = ((dom - exp_dom)**2 / exp_dom
                             + (rec - exp_rec)**2 / exp_rec)
-                    # Best = lowest chi2; break ties by highest N
                     if (best_law2 is None
                             or chi2 < best_law2[0]
                             or (chi2 == best_law2[0] and total > best_law2[1])):
                         best_law2 = (chi2, total, index_pid, tk)
 
-            # ── law 3: best 9:3:3:1 pair in this family ───────────────────────
-            if len(sibs) >= LAW3_MIN_N:
+            # ── dihybrid: best 9:3:3:1 pair ──────────────────────────────────
+            # Minimum N is halved vs formal detection so per-family noise doesn't
+            # hide pairs that are clearly present in pooled data.
+            min_n3 = max(20, LAW3_MIN_N // 2)
+            if len(sibs) >= min_n3:
                 for i, tk1 in enumerate(self._cross_trait_keys):
                     meta1 = self._CROSS_TRAIT_META.get(tk1)
                     if not meta1:
@@ -5565,15 +5575,17 @@ class TraitInheritanceExplorer(tk.Toplevel):
                             counts[("D" if v1 != rec1 else "r",
                                     "D" if v2 != rec2 else "r")] += 1
                         total = sum(counts.values())
-                        if total < LAW3_MIN_N or any(v == 0 for v in counts.values()):
+                        if total < min_n3:
+                            continue
+                        # All 4 classes must be present
+                        if any(v == 0 for v in counts.values()):
                             continue
                         exp_r = {("D","D"): 9, ("D","r"): 3,
                                  ("r","D"): 3, ("r","r"): 1}
                         chi2 = sum((counts[k] - exp_r[k] * total / 16.0) ** 2
                                    / (exp_r[k] * total / 16.0)
                                    for k in counts)
-                        if chi2 > LAW3_CHI2_MAX:
-                            continue
+                        # No ceiling — just pick lowest chi2 across all pairs
                         if (best_law3 is None
                                 or chi2 < best_law3[0]
                                 or (chi2 == best_law3[0] and total > best_law3[1])):

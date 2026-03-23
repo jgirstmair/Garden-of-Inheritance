@@ -552,23 +552,30 @@ class GardenApp:
         elif pollen_ok is False:
             parts.append("No pollen available")
 
-        # pods / harvest
-        if getattr(plant, "stage", 0) >= 6:
+        # fully harvested
+        if getattr(plant, "fully_harvested", False):
+            parts.append("Fully harvested — no pods remain")
+
+        # pods / harvest (only when not fully harvested)
+        elif getattr(plant, "stage", 0) >= 6:
             pods = int(getattr(plant, "pods_remaining", 0) or 0)
             is_emasculated = getattr(plant, "emasculated", False)
-            
+
             if is_emasculated and pods == 0:
-                # Emasculated plant with no pods - explain why
                 parts.append("No pods (emasculated, not pollinated)")
             elif getattr(plant, "stage", 0) >= 7 and pods > 0:
-                parts.append(f"Harvestable ({pods})")
+                parts.append(f"Harvestable ({pods} pod(s))")
             elif pods > 0:
-                parts.append(f"Pods: {pods}")
+                parts.append(f"Pods developing: {pods}")
             elif pods == 0:
                 parts.append("No pods")
 
         if len(parts) == 1:
             parts.append("Growing")
+
+        # Prepend weak-plant note (short, first in line)
+        if getattr(plant, "is_weak", False):
+            parts.insert(0, "Weak plant")
 
         self._toast(" | ".join(parts), level="info")
         self.render_all()
@@ -850,7 +857,12 @@ class GardenApp:
             return 0
 
     def _ensure_tile_icon(self, plant, selected=False):
-        """Ensure plant.img_obj exists so TileCanvas.render() can show the icon."""
+        """Ensure plant.img_obj exists so TileCanvas.render() can show the icon.
+
+        Weak plants and late-season-stressed plants receive an amber/yellow tint
+        so they are visually distinct in the grid.  The tint strength for
+        late-season plants scales with health loss so it deepens as they die.
+        """
         try:
             if plant is None:
                 return
@@ -869,9 +881,44 @@ class GardenApp:
                 else:
                     return
 
-            key = (icon_path, int(getattr(plant, "stage", -1)))
+            is_weak = getattr(plant, "is_weak", False)
+            is_late = getattr(plant, "late_season_stress", False)
+            # Only tint late-season plants once health starts dropping below 80
+            needs_tint = is_weak or (is_late and plant.health < 80)
+
+            # Cache key includes tint state; health bucketed so tint refreshes
+            # as the plant declines without re-compositing every single frame.
+            key = (icon_path, int(getattr(plant, "stage", -1)),
+                   is_weak, is_late, plant.health // 20)
+
             if getattr(plant, "_icon_key", None) == key and getattr(plant, "img_obj", None) is not None:
                 return
+
+            if needs_tint:
+                try:
+                    from PIL import Image, ImageTk
+                    pil = Image.open(icon_path).convert("RGBA")
+                    r, g, b, a = pil.split()
+
+                    if is_late and not is_weak:
+                        # Progressive tint: barely visible at health 79, full amber at 0
+                        t = max(0.0, min(1.0, (80 - plant.health) / 80.0))
+                        r_m = 1.0 + 0.12 * t
+                        g_m = 1.0 + 0.03 * t
+                        b_m = 1.0 - 0.35 * t
+                    else:
+                        # Fixed amber for weak plants
+                        r_m, g_m, b_m = 1.10, 1.05, 0.70
+
+                    r = r.point(lambda v: min(255, int(v * r_m)))
+                    g = g.point(lambda v: min(255, int(v * g_m)))
+                    b = b.point(lambda v: max(0, int(v * b_m)))
+                    img = ImageTk.PhotoImage(Image.merge("RGBA", (r, g, b, a)))
+                    plant.img_obj = img
+                    plant._icon_key = key
+                    return
+                except Exception:
+                    pass  # fall through to normal loading
 
             img = safe_image(icon_path)
             if img is None:
@@ -2838,6 +2885,7 @@ class GardenApp:
                     getattr(plant, "stage", None),
                     tuple(sorted(getattr(revealed, "items", lambda: [])())),
                     getattr(plant, "alive", None),
+                    getattr(plant, "fully_harvested", False),
                 )
         except Exception:
             sig = None
@@ -2929,11 +2977,14 @@ class GardenApp:
             
             # Update stage label (centered below icon)
             try:
-                stage_name = STAGE_NAMES.get(plant.stage, plant.stage)
-                self.stage_label.configure(text=stage_name)
+                if getattr(plant, "fully_harvested", False):
+                    self.stage_label.configure(text="harvested")
+                else:
+                    stage_name = STAGE_NAMES.get(plant.stage, plant.stage)
+                    self.stage_label.configure(text=stage_name)
             except Exception as e:
                 print(f"[WARNING] Failed to update stage label: {e}")
-            
+
             self.water_btn.configure(state="normal")
             self.inspect_btn.configure(state="normal")
             self.harvest_btn.configure(state=("normal" if (plant.stage >= 7 and plant.alive) else "disabled"))
@@ -6370,7 +6421,7 @@ class GardenApp:
             result = messagebox.askyesno(
                 "Load Garden",
                 f"Loading '{filename}' will replace your current garden.\n\nContinue?",
-                icon='question'
+                icon='warning'
             )
             
             if not result:
@@ -6433,6 +6484,9 @@ class GardenApp:
                     'selfed':    getattr(tile.plant, 'selfed', False),
                     # Pod provenance — needed by TIE to group siblings by pod
                     'source_pod_index': getattr(tile.plant, 'source_pod_index', None),
+                    'is_weak': getattr(tile.plant, 'is_weak', False),
+                    'weak_blocks_flowering': getattr(tile.plant, 'weak_blocks_flowering', False),
+                    'late_season_stress': getattr(tile.plant, 'late_season_stress', False),
                 }
                 plants_data.append(plant_data)
         
@@ -6658,14 +6712,11 @@ class GardenApp:
         saved_rows = ui_settings.get('grid_rows', ROWS)
         saved_cols = ui_settings.get('grid_cols', COLS)
         if saved_rows != ROWS or saved_cols != COLS:
-            try:
-                self._toast(
-                    f"Grid mismatch: save is {saved_rows}×{saved_cols}, current is {ROWS}×{COLS}. "
-                    "Plants loaded where possible.",
-                    level="info"
-                )
-            except Exception:
-                pass
+            messagebox.showwarning(
+                "Grid Size Mismatch",
+                f"Save file has {saved_rows}x{saved_cols} grid, but current is {ROWS}x{COLS}.\n\n"
+                "Plants will be loaded where possible."
+            )
         
         # Restore inventory
         inventory_data = save_data['inventory']
@@ -6780,6 +6831,9 @@ class GardenApp:
             plant.mother_id = plant_data.get('mother_id')
             plant.father_id = plant_data.get('father_id')
             plant.selfed    = plant_data.get('selfed', False)
+            plant.is_weak              = plant_data.get('is_weak', False)
+            plant.weak_blocks_flowering = plant_data.get('weak_blocks_flowering', False)
+            plant.late_season_stress    = plant_data.get('late_season_stress', False)
             # Restore pod provenance so TIE can group siblings by pod
             spidx = plant_data.get('source_pod_index')
             if spidx is not None:
@@ -7146,6 +7200,75 @@ class GardenApp:
         mode = str(getattr(self, "_season_mode", "off")).lower()
         if mode not in ("overlay", "enforce"):
             return
+
+        # ── Enforce-mode late-season decline ─────────────────────────────────
+        # Peas in Brno (Czech Republic) are a spring crop; they cannot survive
+        # autumn frosts.  We apply progressive date-based damage so all plants
+        # are dead before January regardless of watering.
+        #
+        # Timeline (enforce only):
+        #   Sep 15 – Sep 30 : onset — set late_season_stress, mild damage (-2/day)
+        #   Oct  1 – Oct 31 : moderate cold stress      (-5 to -8 /day)
+        #   Nov  1 – Nov 30 : heavy frost damage        (-10 to -15/day)
+        #   Dec  1 – Dec 31 : lethal cold               (-20 to -30/day)
+        #   Jan  1+         : instant death (any survivor)
+        if mode == "enforce":
+            import random as _rng
+            m, d = sim_date.month, sim_date.day
+            late_onset   = (m == 9  and d >= 15) or m in (10, 11, 12) or m == 1
+            daily_damage = 0
+
+            if m == 1:
+                daily_damage = 9999   # instant kill — January is impossible
+            elif m == 12:
+                daily_damage = _rng.randint(20, 30)
+            elif m == 11:
+                daily_damage = _rng.randint(10, 15)
+            elif m == 10:
+                daily_damage = _rng.randint(5, 8)
+            elif m == 9 and d >= 15:
+                daily_damage = _rng.randint(1, 3)
+
+            for plant in list(getattr(self.garden, "plants", []) or []):
+                if plant is None or not getattr(plant, "alive", True):
+                    continue
+                pid = getattr(plant, "id", None)
+
+                # Mark late-season stress (triggers sick color + no recovery)
+                if late_onset and not getattr(plant, "late_season_stress", False):
+                    plant.late_season_stress = True
+                    try:
+                        self._toast(
+                            f"Plant #{pid} is showing signs of late-season stress.",
+                            level="warn")
+                    except Exception:
+                        pass
+
+                # Apply daily damage
+                if daily_damage > 0:
+                    cur = int(getattr(plant, "health", 100))
+                    new_h = max(0, cur - daily_damage)
+                    plant.health = new_h
+                    if new_h <= 0:
+                        plant.alive = False
+                        try:
+                            plant.death_day = self._get_current_day_number()
+                        except Exception:
+                            pass
+                        try:
+                            self.archive_snapshot(plant)
+                        except Exception:
+                            pass
+                        _cause = (
+                            "killed by January frost"  if m == 1  else
+                            "killed by December freeze" if m == 12 else
+                            "died from autumn cold"
+                        )
+                        try:
+                            self._toast(f"Plant #{pid} {_cause}.", level="warn")
+                        except Exception:
+                            pass
+
         try:
             try:
                 self._season.update_soil(sim_date)

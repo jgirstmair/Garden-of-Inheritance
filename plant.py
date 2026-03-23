@@ -43,12 +43,12 @@ LIFECYCLE_SETTINGS = {
     },
     "overlay": {  # Moderate - Medium growth, medium lifespan
         "base_thresholds": [0, 0, 5, 10, 20, 30, 42, 55],
-        "max_age_range": (75, 105),
+        "max_age_range": (85, 115),  # stage 7 at day 55; min 85 gives ≥30-day harvest window
         "description": "Moderate: Balanced growth speed"
     },
     "enforce": {  # Realistic - Slow growth, long lifespan (Mendel-era timing)
         "base_thresholds": [0, 0, 7, 14, 28, 42, 60, 85],
-        "max_age_range": (90, 120),
+        "max_age_range": (115, 150),  # stage 7 at day 85; min 115 gives ≥30-day harvest window
         "description": "Realistic: Historical pea plant lifecycle"
     }
 }
@@ -124,7 +124,20 @@ class Plant:
     last_anther_check_day: Optional[int] = None
     anthers_available_today: bool = False
     anthers_collected_day: Optional[int] = None
-    
+
+    # Vigour / weak-plant flag (Mendel excluded weak specimens from experiments)
+    # Set once at planting based on difficulty; never changes afterwards.
+    is_weak: bool = False
+    # If True the plant is constitutionally unable to reach flowering (stage 5+).
+    # ~70% of weak plants are blocked; the other 30% flower but bear very few pods.
+    weak_blocks_flowering: bool = False
+
+    # Late-season stress flag (enforce/realistic mode only).
+    # Set externally by _season_daily_update when the calendar enters autumn.
+    # Once True: health cannot recover, color shifts to sick palette, stress
+    # damage is amplified — plant will die before January.
+    late_season_stress: bool = False
+
     # Class-level icon cache (lazy-loaded)
     _ICONS = None
 
@@ -150,6 +163,17 @@ class Plant:
             min_age, max_age = settings["max_age_range"]
             self.max_age_days = random.randint(min_age, max_age)
         
+        # Roll weak-plant status based on difficulty (only if not already set)
+        # Probabilities follow Mendel's own observation that a noticeable minority
+        # of plants were too weak to give reliable results.
+        if not getattr(self, "is_weak", False):
+            _weak_prob = {"off": 0.0, "overlay": 0.125, "enforce": 0.225}.get(
+                self.difficulty, 0.0)
+            if _weak_prob > 0.0 and random.random() < _weak_prob:
+                self.is_weak = True
+                # 70% blocked from flowering entirely; 30% flower but low fertility
+                self.weak_blocks_flowering = (random.random() < 0.70)
+
         # Set up F0 lineage
         try:
             gen = str(getattr(self, "generation", "F0") or "F0")
@@ -187,8 +211,12 @@ class Plant:
         """Initialize realistic pod and ovule counts."""
         try:
             if not getattr(self, "pods_total", 0):
-                # Mendel-era average ~10 pods per plant (±2), clamped 5-20
-                self.pods_total = max(5, min(20, int(round(random.gauss(10, 2)))))
+                if getattr(self, "is_weak", False):
+                    # Weak plants that manage to flower bear very few pods (1-3)
+                    self.pods_total = random.randint(1, 3)
+                else:
+                    # Mendel-era average ~10 pods per plant (±2), clamped 5-20
+                    self.pods_total = max(5, min(20, int(round(random.gauss(10, 2)))))
             
             # Pods exist by default ONLY for non-emasculated plants (selfing possible)
             if not self.emasculated:
@@ -247,9 +275,15 @@ class Plant:
         if self.stage == 1 and effective_age < 0:
             return  # Still underground, not germinated
         
+        # Weak plants that block flowering cannot advance past stage 4 (budding).
+        # This mirrors Mendel's observation that weak specimens "entweder gar nicht
+        # zur Blüthe gelangen" (either don't reach flowering at all).
+        flowering_cap = 4 if (getattr(self, "is_weak", False)
+                              and getattr(self, "weak_blocks_flowering", False)) else 7
+
         # Check all stages we can advance to
         # Keep advancing while we meet the requirements
-        while self.stage < 7:
+        while self.stage < flowering_cap:
             next_stage = self.stage + 1
             
             # Health affects growth speed (penalty days added to threshold)
@@ -369,14 +403,16 @@ class Plant:
         if not self.alive:
             return
         
-        # Evaporation based on weather
+        # Evaporation based on weather (weak plants lose ~50% more)
         if weather in ("☀️", "⛅"):
             evap = 6
         elif weather in ("☁️",):
             evap = 4
         else:
             evap = 2
-        
+        if getattr(self, "is_weak", False):
+            evap = int(round(evap * 1.5))
+
         self.water = max(0, self.water - evap)
         
         # Rain replenishes water
@@ -414,7 +450,10 @@ class Plant:
             '🌧': 0.4, '⛈': 0.4,
         }.get(weather, 0.8)
         
-        evap = max(0.2, min(2.2, evap_rate * weather_factor))
+        # Weak plants lose water ~50% faster (reduced root system / poor stomatal control)
+        if getattr(self, "is_weak", False):
+            evap_rate *= 1.5
+        evap = max(0.2, min(3.3, evap_rate * weather_factor))
         self.water = max(0, int(round(self.water - evap)))
         
         # Rain adds water (with ceiling)
@@ -426,19 +465,31 @@ class Plant:
         self._update_health_from_water()
     
     def _update_health_from_water(self):
-        """Adjust health based on current water level."""
+        """Adjust health based on current water level.
+
+        Weak plants suffer ~50% more from stress (any out-of-range water level
+        deals 1.5× the normal penalty), consistent with Mendel's note that weak
+        specimens produce unreliable results under adverse conditions.
+        """
+        _weak = getattr(self, "is_weak", False)
+
         if self.water < 20 or self.water > 95:
-            self.health = max(0, self.health - 2)
+            penalty = 3 if _weak else 2
+            self.health = max(0, self.health - penalty)
         elif self.water > 85:
-            self.health = max(0, self.health - 1)
+            penalty = 2 if _weak else 1
+            self.health = max(0, self.health - penalty)
         elif 40 <= self.water <= 70:
-            # Senescent plants cannot recover health
-            if not getattr(self, 'senescent', False):
+            # Senescent, weak, or late-season-stressed plants cannot recover health
+            _late = getattr(self, 'late_season_stress', False)
+            if not getattr(self, 'senescent', False) and not _weak and not _late:
                 self.health = min(100, self.health + 1)
         elif 30 <= self.water < 40 or 70 < self.water <= 85:
-            pass  # Neutral bands
+            if _weak:
+                self.health = max(0, self.health - 1)  # weak plants decline even in neutral band
         else:
-            self.health = max(0, self.health - 1)
+            penalty = 2 if _weak else 1
+            self.health = max(0, self.health - penalty)
         
         # Death check
         if self.health <= 0:
@@ -502,6 +553,9 @@ class Plant:
         Returns:
             Tuple of (bool, str) - (can_collect, reason)
         """
+        if getattr(self, "is_weak", False):
+            return False, "Weak plant — pollen from weak specimens gives unreliable results."
+
         if self.emasculated:
             return False, "This flower was emasculated: it cannot produce pollen anymore."
         
@@ -523,13 +577,29 @@ class Plant:
     def color(self) -> str:
         """
         Get display color based on health status.
+        Weak plants are shown in a yellowish palette to distinguish them visually.
         
         Returns:
             Hex color string
         """
         if not self.alive:
             return "#666666"
-        
+
+        if getattr(self, "is_weak", False) or getattr(self, "late_season_stress", False):
+            # Yellowish-amber sick palette: used for weak plants and late-season decline.
+            # Health 80+ stays green so a freshly-stressed plant isn't immediately alarming;
+            # below 80 it gradually shifts through amber and ochre as the season kills it.
+            if self.health >= 80:
+                return "#008b1c"  # still green at full health
+            elif self.health >= 60:
+                return "#c8a822"  # pale yellow — first sign of stress
+            elif self.health >= 40:
+                return "#b07010"  # amber
+            elif self.health >= 20:
+                return "#885500"  # ochre-brown
+            else:
+                return "#704000"  # dark brown — near death
+
         if self.health >= 80:
             return "#008b1c"
         elif self.health >= 60:

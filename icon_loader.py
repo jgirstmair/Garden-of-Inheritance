@@ -99,6 +99,10 @@ def stage_icon_path_for_plant(plant) -> str:
 
     stage = getattr(plant, "stage", 0)
 
+    # Fully harvested: all pods collected.  Fall straight through to the normal
+    # stage 6/7 path which already shows the flowering icon when pods_remaining==0.
+    # This avoids showing the dead/withered icon for a plant that is simply spent.
+
     # NOTE:
     # Stage 6–7 icon logic is handled later and depends ONLY on pods_remaining.
     # Do NOT add emasculation-based overrides here.

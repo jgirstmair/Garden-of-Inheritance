@@ -233,9 +233,10 @@ class GardenEnvironment:
                             decline = int(base_decline * variation)
                             plant.health = max(0, int(plant.health) - decline)
                     
-                    # At max age, accelerate health decline instead of instant death
-                    if age >= max_age:
-                        # Severe health decline for plants that lived too long
+                    # At max age, accelerate health decline — but only in casual mode.
+                    # overlay/enforce use pea_season_model.py which handles this;
+                    # stacking both causes instant death right at the harvest window.
+                    if age >= max_age and season_mode == 'off':
                         import random
                         severe_decline = random.randint(8, 15)
                         plant.health = max(0, int(plant.health) - severe_decline)
