@@ -21,6 +21,9 @@ import json
 import os
 from pathlib import Path
 import csv
+import platform
+
+_IS_MAC = (platform.system() == "Darwin")
 
 # === FONT SIZES - ADJUST THESE TO CHANGE ALL FONTS ===
 FONT_TITLE = 14          # Main titles
@@ -290,6 +293,36 @@ class TemperatureTracker:
         self.window.title("Meteorological Observatory")
         self.window.geometry("950x700")
         self.window.configure(bg=COLOR_BG_PARCHMENT)
+
+        # ── Cross-platform button styling ─────────────────────────────────────
+        obs_style = ttk.Style(self.window)
+        if _IS_MAC:
+            try:
+                obs_style.theme_use("clam")
+            except tk.TclError:
+                pass
+        # Primary action (blue-gray, white text) — Take / Record
+        obs_style.configure("Obs.TButton",
+            padding=(20, 10), foreground="white",
+            background=COLOR_MORNING, font=("Segoe UI", FONT_BODY, "bold"))
+        obs_style.map("Obs.TButton",
+            foreground=[("active", "white")],
+            background=[("active", "#3A4F6A")])
+        # Danger (red) — Delete All
+        obs_style.configure("ObsDel.TButton",
+            padding=(8, 4), foreground="white",
+            background="#c0392b", font=("Segoe UI", FONT_SMALL))
+        obs_style.map("ObsDel.TButton",
+            foreground=[("active", "white")],
+            background=[("active", "#922b21")])
+        # Neutral — Refresh
+        obs_style.configure("ObsRef.TButton",
+            padding=(8, 3), foreground=COLOR_TEXT_PRIMARY,
+            background="#dddddd", font=("Segoe UI", FONT_SMALL, "bold"))
+        obs_style.map("ObsRef.TButton",
+            foreground=[("active", COLOR_TEXT_PRIMARY)],
+            background=[("active", "#cccccc")])
+        self._obs_style_ready = True
         
         nb = ttk.Notebook(self.window)
         nb.pack(fill="both", expand=True, padx=8, pady=8)
@@ -370,9 +403,16 @@ class TemperatureTracker:
             if success:
                 self.window.after(2000, lambda: status.config(text=""))
         
-        btn = tk.Button(s, text="📝 Take Measurement", font=("Segoe UI",FONT_BODY,"bold"), 
-                       bg=COLOR_MORNING, fg="white", activebackground="#3A4F6A", 
-                       command=do_measure, cursor="hand2", bd=0, padx=20, pady=10)
+        if _IS_MAC:
+            btn = ttk.Button(s, text="\U0001f4dd Take Measurement",
+                             style="Obs.TButton", command=do_measure)
+        else:
+            btn = tk.Button(s, text="\U0001f4dd Take Measurement",
+                            font=("Segoe UI",FONT_BODY,"bold"), 
+                            bg=COLOR_MORNING, fg="white",
+                            activebackground="#3A4F6A", 
+                            command=do_measure, cursor="hand2",
+                            bd=0, padx=20, pady=10)
         btn.pack(pady=(0,20))
         
         if not can:
@@ -453,9 +493,16 @@ class TemperatureTracker:
             if success:
                 left_content.after(2000, lambda: status_sim.config(text=""))
         
-        btn_sim = tk.Button(left_content, text="📝 Take Measurement", font=("Segoe UI",FONT_BODY,"bold"), 
-                           bg=COLOR_MORNING, fg="white", activebackground="#3A4F6A", 
-                           command=do_measure, cursor="hand2", bd=0, padx=20, pady=10)
+        if _IS_MAC:
+            btn_sim = ttk.Button(left_content, text="\U0001f4dd Take Measurement",
+                                 style="Obs.TButton", command=do_measure)
+        else:
+            btn_sim = tk.Button(left_content, text="\U0001f4dd Take Measurement",
+                                font=("Segoe UI",FONT_BODY,"bold"), 
+                                bg=COLOR_MORNING, fg="white",
+                                activebackground="#3A4F6A", 
+                                command=do_measure, cursor="hand2",
+                                bd=0, padx=20, pady=10)
         btn_sim.pack(pady=(0,15))
         
         if not can:
@@ -562,9 +609,16 @@ class TemperatureTracker:
             except ValueError:
                 status_modern.config(text="⚠ Enter valid values", fg="red")
         
-        btn_modern = tk.Button(right_content, text="💾 Record Measurement", font=("Segoe UI",FONT_BODY,"bold"), 
-                              bg=COLOR_AFTERNOON, fg="white", activebackground="#7A3A0F", 
-                              command=record_modern, cursor="hand2", bd=0, padx=20, pady=10)
+        if _IS_MAC:
+            btn_modern = ttk.Button(right_content, text="\U0001f4be Record Measurement",
+                                    style="Obs.TButton", command=record_modern)
+        else:
+            btn_modern = tk.Button(right_content, text="\U0001f4be Record Measurement",
+                                   font=("Segoe UI",FONT_BODY,"bold"), 
+                                   bg=COLOR_AFTERNOON, fg="white",
+                                   activebackground="#7A3A0F", 
+                                   command=record_modern, cursor="hand2",
+                                   bd=0, padx=20, pady=10)
         btn_modern.pack(pady=(5,15), anchor="w", padx=15)
         
         temp_entry.bind('<Return>', lambda e: record_modern())
@@ -603,10 +657,17 @@ class TemperatureTracker:
                 bg="white", fg=COLOR_TEXT_PRIMARY).pack(side="left", padx=(0,10))
         
         # Refresh button
-        refresh_btn = tk.Button(header_row, text="🔄 Refresh", font=("Segoe UI",FONT_SMALL,"bold"),
-                               bg=COLOR_BG_LIGHT, fg=COLOR_TEXT_PRIMARY, 
-                               command=lambda: self._tab_history(parent),
-                               cursor="hand2", bd=1, relief="solid", padx=8, pady=3)
+        if _IS_MAC:
+            refresh_btn = ttk.Button(header_row, text="\U0001f504 Refresh",
+                                     style="ObsRef.TButton",
+                                     command=lambda: self._tab_history(parent))
+        else:
+            refresh_btn = tk.Button(header_row, text="\U0001f504 Refresh",
+                                    font=("Segoe UI",FONT_SMALL,"bold"),
+                                    bg=COLOR_BG_LIGHT, fg=COLOR_TEXT_PRIMARY, 
+                                    command=lambda: self._tab_history(parent),
+                                    cursor="hand2", bd=1, relief="solid",
+                                    padx=8, pady=3)
         refresh_btn.pack(side="left")
         
         totals_text = f"Recorded: {len(self.measurements)}  |  Modern: {len(self.modern_measurements)}"
@@ -632,8 +693,14 @@ class TemperatureTracker:
             self._save_measurements()
             self._tab_history(parent)  # Refresh
         
-        tk.Button(hdr1, text="🗑️ Delete All", command=del_sim, font=("Segoe UI",FONT_SMALL),
-                 bg="#dc3545", fg="white", padx=10, pady=2).pack(side="right", padx=10, pady=5)
+        if _IS_MAC:
+            ttk.Button(hdr1, text="\U0001f5d1\ufe0f Delete All", style="ObsDel.TButton",
+                       command=del_sim).pack(side="right", padx=10, pady=5)
+        else:
+            tk.Button(hdr1, text="\U0001f5d1\ufe0f Delete All", command=del_sim,
+                      font=("Segoe UI",FONT_SMALL),
+                      bg="#dc3545", fg="white",
+                      padx=10, pady=2).pack(side="right", padx=10, pady=5)
         
         # Scrollable canvas for simulation
         c1 = tk.Canvas(left, bg="white", highlightthickness=1, highlightbackground=COLOR_SEPARATOR)
@@ -679,8 +746,14 @@ class TemperatureTracker:
             self._save_modern_measurements()
             self._tab_history(parent)  # Refresh
         
-        tk.Button(hdr2, text="🗑️ Delete All", command=del_mod, font=("Segoe UI",FONT_SMALL),
-                 bg="#dc3545", fg="white", padx=10, pady=2).pack(side="right", padx=10, pady=5)
+        if _IS_MAC:
+            ttk.Button(hdr2, text="\U0001f5d1\ufe0f Delete All", style="ObsDel.TButton",
+                       command=del_mod).pack(side="right", padx=10, pady=5)
+        else:
+            tk.Button(hdr2, text="\U0001f5d1\ufe0f Delete All", command=del_mod,
+                      font=("Segoe UI",FONT_SMALL),
+                      bg="#dc3545", fg="white",
+                      padx=10, pady=2).pack(side="right", padx=10, pady=5)
         
         # Scrollable canvas for modern
         c2 = tk.Canvas(right, bg="white", highlightthickness=1, highlightbackground=COLOR_SEPARATOR)
@@ -821,9 +894,16 @@ class TemperatureTracker:
                 status_label.config(text="⚠ Enter a valid temperature number", fg="red")
         
         # Record button
-        btn = tk.Button(s, text="💾 Record Measurement", font=("Segoe UI",FONT_BODY,"bold"), 
-                       bg=COLOR_AFTERNOON, fg="white", activebackground="#7A3A0F", 
-                       command=record_modern, cursor="hand2", bd=0, padx=20, pady=10)
+        if _IS_MAC:
+            btn = ttk.Button(s, text="\U0001f4be Record Measurement",
+                             style="Obs.TButton", command=record_modern)
+        else:
+            btn = tk.Button(s, text="\U0001f4be Record Measurement",
+                            font=("Segoe UI",FONT_BODY,"bold"), 
+                            bg=COLOR_AFTERNOON, fg="white",
+                            activebackground="#7A3A0F", 
+                            command=record_modern, cursor="hand2",
+                            bd=0, padx=20, pady=10)
         btn.pack(pady=(10,20), anchor="w", padx=20)
         
         # Enable Enter key to record

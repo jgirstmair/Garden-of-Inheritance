@@ -10,6 +10,8 @@ Usage:
 """
 
 import tkinter as tk
+from tkinter import ttk
+import platform
 
 
 class MendelianLawWizard(tk.Toplevel):
@@ -123,6 +125,39 @@ class MendelianLawWizard(tk.Toplevel):
         self.app   = app
         self._imgs = {}          # keep PhotoImage references alive
 
+        # ── macOS compatibility ──────────────────────────────────────────────
+        self._is_mac = (platform.system() == "Darwin")
+        self._wiz_style = ttk.Style(self)
+        if self._is_mac:
+            try:
+                self._wiz_style.theme_use("clam")
+            except tk.TclError:
+                pass
+        # Neutral parchment button
+        self._wiz_style.configure("Wiz.TButton",
+            padding=(14, 6), foreground=self.TEXT_DARK, background=self.BTN_BG)
+        self._wiz_style.map("Wiz.TButton",
+            foreground=[("active", self.TEXT_DARK)],
+            background=[("active", self.BTN_ACTIVE)])
+        # Primary terracotta action button
+        self._wiz_style.configure("Wiz.Primary.TButton",
+            padding=(14, 6), foreground=self.BTN_PRIMARY_FG, background=self.BTN_PRIMARY)
+        self._wiz_style.map("Wiz.Primary.TButton",
+            foreground=[("active", self.BTN_PRIMARY_FG), ("disabled", "#8a6050")],
+            background=[("active", "#5C2810"), ("disabled", "#6a4030")])
+        # Success green
+        self._wiz_style.configure("Wiz.Success.TButton",
+            padding=(14, 6), foreground="#FFFFFF", background="#3AB050")
+        self._wiz_style.map("Wiz.Success.TButton",
+            foreground=[("active", "#FFFFFF")],
+            background=[("active", "#2A8040")])
+        # Danger red
+        self._wiz_style.configure("Wiz.Danger.TButton",
+            padding=(14, 6), foreground="#FFFFFF", background="#D04040")
+        self._wiz_style.map("Wiz.Danger.TButton",
+            foreground=[("active", "#FFFFFF")],
+            background=[("active", "#A02020")])
+
         self.title("Mendelian Law Discovery")
         self.resizable(False, False)
         self.configure(bg=self.BG)
@@ -196,18 +231,24 @@ class MendelianLawWizard(tk.Toplevel):
         # navigation
         nav = tk.Frame(p, bg=self.BG)
         nav.pack(fill="x", padx=20, pady=14)
-        tk.Button(nav, text="Cancel",
-                  font=self.FONT_BOLD, bg=self.BTN_BG,
-                  activebackground=self.BTN_ACTIVE,
-                  relief="flat", bd=0, padx=14, pady=6,
-                  command=self.destroy).pack(side="right", padx=(8, 0))
-        tk.Button(nav, text="Next  →",
-                  font=self.FONT_BOLD,
-                  bg=self.BTN_PRIMARY, fg=self.BTN_PRIMARY_FG,
-                  activebackground="#5C2810",
-                  activeforeground="white",
-                  relief="flat", bd=0, padx=14, pady=6,
-                  command=lambda: self._show_page(2)).pack(side="right")
+        if self._is_mac:
+            ttk.Button(nav, text="Cancel", style="Wiz.TButton",
+                       command=self.destroy).pack(side="right", padx=(8, 0))
+            ttk.Button(nav, text="Next  \u2192", style="Wiz.Primary.TButton",
+                       command=lambda: self._show_page(2)).pack(side="right")
+        else:
+            tk.Button(nav, text="Cancel",
+                      font=self.FONT_BOLD, bg=self.BTN_BG,
+                      activebackground=self.BTN_ACTIVE,
+                      relief="flat", bd=0, padx=14, pady=6,
+                      command=self.destroy).pack(side="right", padx=(8, 0))
+            tk.Button(nav, text="Next  \u2192",
+                      font=self.FONT_BOLD,
+                      bg=self.BTN_PRIMARY, fg=self.BTN_PRIMARY_FG,
+                      activebackground="#5C2810",
+                      activeforeground="white",
+                      relief="flat", bd=0, padx=14, pady=6,
+                      command=lambda: self._show_page(2)).pack(side="right")
 
     def _make_law_card(self, parent, law):
         """Create a clickable card for one law. Returns the outer frame."""
@@ -299,26 +340,42 @@ class MendelianLawWizard(tk.Toplevel):
         sep.pack(fill="x", side="bottom")
         nav = tk.Frame(p, bg=self.BG)
         nav.pack(fill="x", padx=20, pady=10, side="bottom")
-        self._p2_back_btn = tk.Button(nav, text="←  Back",
-                  font=self.FONT_BOLD, bg=self.BTN_BG,
-                  activebackground=self.BTN_ACTIVE,
-                  relief="flat", bd=0, padx=14, pady=6,
-                  command=self._go_back)
-        self._p2_back_btn.pack(side="left")
-        tk.Button(nav, text="Cancel",
-                  font=self.FONT_BOLD, bg=self.BTN_BG,
-                  activebackground=self.BTN_ACTIVE,
-                  relief="flat", bd=0, padx=14, pady=6,
-                  command=self.destroy).pack(side="right", padx=(8, 0))
-        self._p2_unlock_btn = tk.Button(
-            nav, text="🔓  Unlock",
-            font=self.FONT_BOLD,
-            bg=self.BTN_PRIMARY, fg=self.BTN_PRIMARY_FG,
-            activebackground="#5C2810", activeforeground=self.BTN_PRIMARY_FG,
-            relief="flat", bd=0, padx=14, pady=6,
-            state="disabled",
-            command=self._on_unlock)
-        self._p2_unlock_btn.pack(side="right")
+        if self._is_mac:
+            self._p2_back_btn = ttk.Button(nav, text="\u2190  Back",
+                                           style="Wiz.TButton",
+                                           command=self._go_back)
+            self._p2_back_btn.pack(side="left")
+            ttk.Button(nav, text="Cancel", style="Wiz.TButton",
+                       command=self.destroy).pack(side="right", padx=(8, 0))
+            self._p2_unlock_btn = ttk.Button(nav, text="\U0001f513  Unlock",
+                                             style="Wiz.Primary.TButton",
+                                             command=self._on_unlock)
+            self._p2_unlock_btn.pack(side="right")
+            try:
+                self._p2_unlock_btn.state(["disabled"])
+            except Exception:
+                pass
+        else:
+            self._p2_back_btn = tk.Button(nav, text="\u2190  Back",
+                      font=self.FONT_BOLD, bg=self.BTN_BG,
+                      activebackground=self.BTN_ACTIVE,
+                      relief="flat", bd=0, padx=14, pady=6,
+                      command=self._go_back)
+            self._p2_back_btn.pack(side="left")
+            tk.Button(nav, text="Cancel",
+                      font=self.FONT_BOLD, bg=self.BTN_BG,
+                      activebackground=self.BTN_ACTIVE,
+                      relief="flat", bd=0, padx=14, pady=6,
+                      command=self.destroy).pack(side="right", padx=(8, 0))
+            self._p2_unlock_btn = tk.Button(
+                nav, text="\U0001f513  Unlock",
+                font=self.FONT_BOLD,
+                bg=self.BTN_PRIMARY, fg=self.BTN_PRIMARY_FG,
+                activebackground="#5C2810", activeforeground=self.BTN_PRIMARY_FG,
+                relief="flat", bd=0, padx=14, pady=6,
+                state="disabled",
+                command=self._on_unlock)
+            self._p2_unlock_btn.pack(side="right")
 
         # scrollable canvas for the body content
         self._p2_canvas_frame = tk.Frame(p, bg=self.BG)
@@ -373,11 +430,21 @@ class MendelianLawWizard(tk.Toplevel):
         # Restore nav buttons to default state
         try:
             self._p2_back_btn.pack(side="left")
-            self._p2_unlock_btn.configure(
-                text="🔓  Unlock",
-                command=self._on_unlock,
-                bg=self.BTN_PRIMARY, fg=self.BTN_PRIMARY_FG,
-                state="disabled")
+            if self._is_mac:
+                self._p2_unlock_btn.configure(
+                    text="\U0001f513  Unlock",
+                    command=self._on_unlock,
+                    style="Wiz.Primary.TButton")
+                try:
+                    self._p2_unlock_btn.state(["disabled"])
+                except Exception:
+                    pass
+            else:
+                self._p2_unlock_btn.configure(
+                    text="\U0001f513  Unlock",
+                    command=self._on_unlock,
+                    bg=self.BTN_PRIMARY, fg=self.BTN_PRIMARY_FG,
+                    state="disabled")
         except Exception:
             pass
         # Reset selections when going back
@@ -603,73 +670,75 @@ class MendelianLawWizard(tk.Toplevel):
     # ── trait icon loading ────────────────────────────────────────────────────
 
     def _load_trait_img(self, trait_key, value, size=72):
-        """Load trait icon scaled to size×size; cache result.
-
-        Uses PIL (ImageTk.PhotoImage) throughout — tkinter's native PhotoImage
-        cannot open these icon files reliably (format/encoding incompatibility).
-        """
+        """Load trait icon scaled to size×size; cache result."""
         cache_key = (trait_key, value, size)
         if cache_key in self._imgs:
             return self._imgs[cache_key]
 
-        def _pil_load(path):
-            """Open path with PIL, resize to size×size, return ImageTk.PhotoImage."""
-            if not path:
-                return None
-            try:
-                from PIL import Image, ImageTk
-                pil = Image.open(path).convert("RGBA")
-                pil = pil.resize((size, size), Image.LANCZOS)
-                img = ImageTk.PhotoImage(pil)
-                return img
-            except Exception:
-                return None
-
         try:
-            from icon_loader import (trait_icon_path, pod_shape_icon_path,
-                                     flower_icon_path_hi, flower_icon_path)
-
-            # ── pod_shape ────────────────────────────────────────────────────
-            # pod_shape_icon_path() needs shape + color; try both pod colors.
+            from icon_loader import trait_icon_path, safe_image_scaled
+            # ── pod_shape needs pod_shape_icon_path (takes shape + color) ────
+            # Load the coloured asset then desaturate so icons are always grey.
             if trait_key == "pod_shape":
-                for pod_color in ("green", "yellow"):
-                    img = _pil_load(pod_shape_icon_path(value, pod_color))
-                    if img is not None:
-                        self._imgs[cache_key] = img
-                        return img
+                try:
+                    from icon_loader import pod_shape_icon_path
+                    from PIL import Image, ImageTk, ImageOps
+                    for pod_color in ("yellow", "green"):
+                        path = pod_shape_icon_path(value, pod_color)
+                        if path:
+                            pil_img = Image.open(path).convert("RGBA")
+                            grey = ImageOps.grayscale(pil_img)
+                            grey_rgba = grey.convert("RGBA")
+                            grey_rgba.putalpha(pil_img.split()[3])
+                            pil_img = grey_rgba.resize((size, size), Image.LANCZOS)
+                            img = ImageTk.PhotoImage(pil_img)
+                            self._imgs[cache_key] = img
+                            return img
+                except Exception:
+                    pass
 
-            # ── flower_position ──────────────────────────────────────────────
-            # flower_icon_path_hi() encodes BOTH position and color in the
-            # filename (flower_{pos}_{col}_64x64.png), so None/empty color
-            # produces a path that never exists.  Try both valid colors.
+            # ── flower_position: try the composed hi-res icon first ────────
             if trait_key == "flower_position":
-                for col in ("purple", "white"):
-                    img = _pil_load(flower_icon_path_hi(value, col))
-                    if img is not None:
+                try:
+                    from icon_loader import flower_icon_path_hi
+                    path = flower_icon_path_hi(value, None)   # position only, no specific colour
+                    if not path:
+                        path = flower_icon_path_hi(value, "purple")
+                    if path:
+                        img = safe_image_scaled(path, 1, 1)
+                        w = img.width(); h = img.height()
+                        if w > 0 and h > 0:
+                            sx = max(1, round(w / size))
+                            sy = max(1, round(h / size))
+                            if sx > 1 or sy > 1:
+                                img = img.subsample(sx, sy)
                         self._imgs[cache_key] = img
                         return img
-                    img = _pil_load(flower_icon_path(value, col))
-                    if img is not None:
-                        self._imgs[cache_key] = img
-                        return img
-
-            # ── generic fallback for all other traits ────────────────────────
-            img = _pil_load(trait_icon_path(trait_key, value))
-            if img is not None:
+                except Exception:
+                    pass   # fall through to trait_icon_path below
+            path = trait_icon_path(trait_key, value)
+            if path:
+                img = safe_image_scaled(path, 1, 1)   # natural size first
+                # subsample/zoom to approx size
+                w = img.width()
+                h = img.height()
+                if w > 0 and h > 0:
+                    sx = max(1, round(w / size))
+                    sy = max(1, round(h / size))
+                    if sx > 1 or sy > 1:
+                        img = img.subsample(sx, sy)
                 self._imgs[cache_key] = img
                 return img
-
         except Exception:
             pass
 
-        # last-resort blank image
+        # fallback blank image
         try:
             img = tk.PhotoImage(width=size, height=size)
             self._imgs[cache_key] = img
             return img
         except Exception:
             return None
-
 
     # ── instruction label ─────────────────────────────────────────────────────
 
@@ -798,7 +867,6 @@ class MendelianLawWizard(tk.Toplevel):
                     a_lbl = tk.Label(inner, bg=bg, width=28, height=28)
                     if img_a:
                         a_lbl.configure(image=img_a, text="")
-                        a_lbl.image = img_a  # prevent GC
                     else:
                         a_lbl.configure(text="A", font=("Segoe UI", 13, "bold"), fg=bd)
                     a_lbl.pack(side="left", padx=2)
@@ -809,7 +877,6 @@ class MendelianLawWizard(tk.Toplevel):
                     b_lbl = tk.Label(inner, bg=bg, width=28, height=28)
                     if img_b:
                         b_lbl.configure(image=img_b, text="")
-                        b_lbl.image = img_b  # prevent GC
                     else:
                         b_lbl.configure(text="B", font=("Segoe UI", 13, "bold"), fg=self.BORDER)
                     b_lbl.pack(side="left", padx=2)
@@ -824,7 +891,6 @@ class MendelianLawWizard(tk.Toplevel):
                         a_lbl = tk.Label(inner, bg=bg, width=28, height=28)
                         if img_a:
                             a_lbl.configure(image=img_a, text="")
-                            a_lbl.image = img_a  # prevent GC
                         else:
                             a_lbl.configure(text="A", font=("Segoe UI", 13, "bold"), fg=bd)
                         a_lbl.pack(side="left", padx=2)
@@ -839,7 +905,6 @@ class MendelianLawWizard(tk.Toplevel):
                         b_lbl = tk.Label(inner, bg=bg, width=28, height=28)
                         if img_b:
                             b_lbl.configure(image=img_b, text="")
-                            b_lbl.image = img_b  # prevent GC
                         else:
                             b_lbl.configure(text="B", font=("Segoe UI", 13, "bold"), fg=self.BORDER)
                         b_lbl.pack(side="left", padx=2)
@@ -924,10 +989,19 @@ class MendelianLawWizard(tk.Toplevel):
             for i in range(pairs_n)
         )
         if hasattr(self, "_p2_unlock_btn"):
-            self._p2_unlock_btn.configure(
-                state="normal" if ready else "disabled",
-                bg=self.BTN_PRIMARY if ready else "#B8A888",
-                fg="white")
+            if self._is_mac:
+                try:
+                    if ready:
+                        self._p2_unlock_btn.state(["!disabled"])
+                    else:
+                        self._p2_unlock_btn.state(["disabled"])
+                except Exception:
+                    pass
+            else:
+                self._p2_unlock_btn.configure(
+                    state="normal" if ready else "disabled",
+                    bg=self.BTN_PRIMARY if ready else "#B8A888",
+                    fg="white")
 
     # =========================================================================
     # Unlock action
@@ -937,9 +1011,12 @@ class MendelianLawWizard(tk.Toplevel):
         app     = self.app
         law_num = self._law_var.get()
 
-        # ── sync archive ──────────────────────────────────────────────────────
+        # ── sync archive — use the fuller eager backfill so that ancestor
+        # genotype data (grandparents etc.) is present for law 3 detection ──
         try:
-            if hasattr(app, "_seed_archive_safe"):
+            if hasattr(app, "_eager_seed_and_backfill"):
+                app._eager_seed_and_backfill()
+            elif hasattr(app, "_seed_archive_safe"):
                 app._seed_archive_safe()
         except Exception:
             pass
@@ -980,6 +1057,43 @@ class MendelianLawWizard(tk.Toplevel):
 
         law_key = f"law{law_num}"
         discovered = bool(res.get(law_key, False))
+
+        # ── Fallback for law 3: if fresh detection failed but the law was
+        # already credited, re-run from the plant that originally demonstrated it.
+        # That plant's ancestry in the archive is guaranteed to be complete.
+        if not discovered and law_num == 3 and getattr(app, "law3_ever_discovered", False):
+            fallback_pid = getattr(app, "law3_first_plant", None)
+            if fallback_pid is not None and str(fallback_pid) != str(pid):
+                try:
+                    res2 = test_mendelian_laws(
+                        app,
+                        archive=getattr(app, "archive", None),
+                        pid=fallback_pid,
+                        allow_credit=False,
+                        toast=False,
+                        target_law=3,
+                    )
+                    if res2.get("law3"):
+                        res = res2
+                        discovered = True
+                except Exception:
+                    pass
+            # Last resort: scan archive snaps for stored law3_all_valid_pairs
+            if not discovered:
+                try:
+                    all_snaps = list(
+                        (getattr(app, "archive", {}) or {}).get("plants", {}).values()
+                    )
+                    for s in all_snaps:
+                        vp = s.get("law3_all_valid_pairs") if isinstance(s, dict) else None
+                        if vp:
+                            res = dict(res)
+                            res["law3"] = True
+                            res["law3_all_valid_pairs"] = vp
+                            discovered = True
+                            break
+                except Exception:
+                    pass
 
         if not discovered:
             # Build a helpful explanation
@@ -1141,16 +1255,13 @@ class MendelianLawWizard(tk.Toplevel):
         except Exception:
             pass
 
-        # Collect selected trait names for the success message.
-        # TRAITS labels use "\n" for the icon grid; replace with space for inline use.
-        def _flat(lbl): return lbl.replace("\n", " ").strip()
-
+        # Collect selected trait names for the success message
         dom_val_str = self.VALUE_LABELS.get(self._sels[0]["dominant"][1],
                                              self._sels[0]["dominant"][1])
         rec_val_str = self.VALUE_LABELS.get(self._sels[0]["recessive"][1],
                                              self._sels[0]["recessive"][1])
-        trait_name  = _flat(dict((k, lbl) for k, lbl, *_ in self.TRAITS).get(
-            self._sels[0]["dominant"][0], self._sels[0]["dominant"][0]))
+        trait_name  = dict((k, lbl) for k, lbl, *_ in self.TRAITS).get(
+            self._sels[0]["dominant"][0], self._sels[0]["dominant"][0])
 
         if law_num == 2:
             # Update ratio UI to the player-chosen trait, not just the first detected one
@@ -1163,16 +1274,16 @@ class MendelianLawWizard(tk.Toplevel):
                     app._update_law_status_label()
                 except Exception:
                     pass
-            extra = f"\nTrait: {dom_val_str} > {rec_val_str}  ({trait_name})"
+            extra = f"\n\nTrait: {dom_val_str} > {rec_val_str}  ({trait_name})"
 
         elif law_num == 3:
             dom2_val_str = self.VALUE_LABELS.get(self._sels[1]["dominant"][1],
                                                   self._sels[1]["dominant"][1])
             rec2_val_str = self.VALUE_LABELS.get(self._sels[1]["recessive"][1],
                                                   self._sels[1]["recessive"][1])
-            trait_name2  = _flat(dict((k, lbl) for k, lbl, *_ in self.TRAITS).get(
-                self._sels[1]["dominant"][0], self._sels[1]["dominant"][0]))
-            extra = (f"\nTrait 1: {dom_val_str} > {rec_val_str}  ({trait_name})"
+            trait_name2  = dict((k, lbl) for k, lbl, *_ in self.TRAITS).get(
+                self._sels[1]["dominant"][0], self._sels[1]["dominant"][0])
+            extra = (f"\n\nTrait 1: {dom_val_str} > {rec_val_str}  ({trait_name})"
                      f"\nTrait 2: {dom2_val_str} > {rec2_val_str}  ({trait_name2})")
 
             # Update ratio UI for the chosen pair
@@ -1188,7 +1299,7 @@ class MendelianLawWizard(tk.Toplevel):
                     pass
 
         else:
-            extra = f"\nTrait: {dom_val_str} > {rec_val_str}  ({trait_name})"
+            extra = f"\n\nTrait: {dom_val_str} > {rec_val_str}  ({trait_name})"
 
         self._show_result(True,
             f"{law_name} confirmed!{extra}")
@@ -1229,33 +1340,50 @@ class MendelianLawWizard(tk.Toplevel):
 
         tk.Label(panel, text=f"{icon}  {message}",
                  font=self.FONT_BOLD, bg=color, fg=fg,
-                 wraplength=660, justify="left").pack(anchor="w", padx=4)
+                 wraplength=520, justify="left").pack(anchor="w", padx=4)
 
         # ── swap nav button on outcome ────────────────────────────────────
         try:
-            if success:
-                # Unlock button becomes a green Close button.
-                # The player can read the confirmation banner at their own pace.
-                self._p2_unlock_btn.configure(
-                    text="✔  Close",
-                    command=self.destroy,
-                    bg="#3AB050",
-                    fg="#FFFFFF",
-                    activebackground="#2A8040",
-                    activeforeground="#FFFFFF",
-                    state="normal",
-                )
+            if self._is_mac:
+                if success:
+                    self._p2_unlock_btn.configure(
+                        text="\u2714  Close",
+                        command=self.destroy,
+                        style="Wiz.Success.TButton")
+                    try:
+                        self._p2_unlock_btn.state(["!disabled"])
+                    except Exception:
+                        pass
+                else:
+                    self._p2_unlock_btn.configure(
+                        text="\u21ba  Try Again",
+                        command=self._go_back,
+                        style="Wiz.Danger.TButton")
+                    try:
+                        self._p2_unlock_btn.state(["!disabled"])
+                    except Exception:
+                        pass
             else:
-                # Failure: offer a quick way back to re-select traits
-                self._p2_unlock_btn.configure(
-                    text="↺  Try Again",
-                    command=self._go_back,
-                    bg="#D04040",
-                    fg="#FFFFFF",
-                    activebackground="#A02020",
-                    activeforeground="#FFFFFF",
-                    state="normal",
-                )
+                if success:
+                    self._p2_unlock_btn.configure(
+                        text="\u2714  Close",
+                        command=self.destroy,
+                        bg="#3AB050",
+                        fg="#FFFFFF",
+                        activebackground="#2A8040",
+                        activeforeground="#FFFFFF",
+                        state="normal",
+                    )
+                else:
+                    self._p2_unlock_btn.configure(
+                        text="\u21ba  Try Again",
+                        command=self._go_back,
+                        bg="#D04040",
+                        fg="#FFFFFF",
+                        activebackground="#A02020",
+                        activeforeground="#FFFFFF",
+                        state="normal",
+                    )
         except Exception:
             pass
 

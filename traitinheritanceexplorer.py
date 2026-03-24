@@ -874,6 +874,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
         # --- Cross-platform button styling: macOS Aqua ignores tk.Button colors ---
         IS_MAC = (platform.system() == "Darwin")
+        self._is_mac = IS_MAC
 
         # Force a theme that allows us to control button colors on macOS
         self._style = ttk.Style(self)
@@ -883,7 +884,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             except tk.TclError:
                 pass
 
-        # Toolbar button style
+        # Toolbar button style (neutral, matches dark panel)
         self._style.configure(
             "Toolbar.TButton",
             padding=(10, 4),
@@ -896,14 +897,44 @@ class TraitInheritanceExplorer(tk.Toplevel):
             background=[("active", self.CARD), ("pressed", self.CARD)],
         )
 
+        # Action button style (blue accent — Best Fit, etc.)
+        self._style.configure(
+            "Action.TButton",
+            padding=(10, 4),
+            foreground=self.FG,
+            background="#1e4d6b",
+        )
+        self._style.map(
+            "Action.TButton",
+            foreground=[("active", self.FG), ("pressed", self.FG)],
+            background=[("active", "#2a6080"), ("pressed", "#163c55")],
+        )
+
+        # Nav button style (slightly lighter blue — pagination ◀ ▶)
+        self._style.configure(
+            "Nav.TButton",
+            padding=(8, 3),
+            foreground="#ffffff",
+            background="#2a5a7a",
+        )
+        self._style.map(
+            "Nav.TButton",
+            foreground=[("active", "#ffffff"), ("pressed", "#ffffff"),
+                        ("disabled", "#607090")],
+            background=[("active", "#3a6e8e"), ("pressed", "#1e4a62"),
+                        ("disabled", "#1a3040")],
+        )
+
         def _mkbtn(parent, text, command, **extra):
             if IS_MAC:
                 # On macOS use ttk + styled theme (reliable)
-                return ttk.Button(parent, text=text, command=command, style="Toolbar.TButton")
+                style = extra.pop("style", "Toolbar.TButton")
+                return ttk.Button(parent, text=text, command=command, style=style)
             else:
                 # On Windows/Linux classic tk.Button styling is fine
                 kw = dict(bg=self.CARD, fg=self.FG, relief="groove")
                 kw.update(extra)
+                kw.pop("style", None)
                 return tk.Button(parent, text=text, command=command, **kw)
 
 
@@ -1240,10 +1271,16 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # "Best fit" button — scans the full archive and selects the trait(s)
         # that best match 9:3:3:1 (Dihybrid) or 3:1 (Monohybrid).
         # Also serves as the pack anchor for Trait 2 re-insertion.
-        self._cross_best_btn = tk.Button(
-            cross_ctrl, text="⟳ Best fit", bg="#1e4d6b", fg=self.FG,
-            relief="flat", bd=0, font=("Segoe UI", 9), padx=10,
-            command=self._cross_auto_detect)
+        if getattr(self, "_is_mac", False):
+            self._cross_best_btn = ttk.Button(
+                cross_ctrl, text="\u27f3 Best fit",
+                style="Action.TButton",
+                command=self._cross_auto_detect)
+        else:
+            self._cross_best_btn = tk.Button(
+                cross_ctrl, text="\u27f3 Best fit", bg="#1e4d6b", fg=self.FG,
+                relief="flat", bd=0, font=("Segoe UI", 9), padx=10,
+                command=self._cross_auto_detect)
         self._cross_best_btn.pack(side="left", padx=(16, 0))
 
         _cross_scroll_wrap = tk.Frame(cross_outer, bg=self.PANEL)
@@ -4395,18 +4432,35 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 self._pods_page = p
                 self._render_siblings(_pid, target_sibs=_ts, target_ratio=_tr)
             BTN_BG = "#2a5a7a"
-            tk.Button(nav, text="◀", command=lambda: _go_page(cur - 1),
-                      bg=BTN_BG, fg="#ffffff", relief="flat", bd=0,
-                      font=("Segoe UI", 11), padx=8,
-                      state="normal" if cur > 0 else "disabled"
-                      ).pack(side="left", padx=(0, 6))
+            _is_mac = getattr(self, "_is_mac", False)
+            if _is_mac:
+                _prev_btn = ttk.Button(nav, text="\u25c0", style="Nav.TButton",
+                                       command=lambda: _go_page(cur - 1))
+                _prev_btn.pack(side="left", padx=(0, 6))
+                if cur <= 0:
+                    try: _prev_btn.state(["disabled"])
+                    except Exception: pass
+            else:
+                tk.Button(nav, text="\u25c0", command=lambda: _go_page(cur - 1),
+                          bg=BTN_BG, fg="#ffffff", relief="flat", bd=0,
+                          font=("Segoe UI", 11), padx=8,
+                          state="normal" if cur > 0 else "disabled"
+                          ).pack(side="left", padx=(0, 6))
             tk.Label(nav, text=f"{cur + 1} / {total_pages}",
                      bg=self.PANEL, fg=self.FG, font=("Segoe UI", 10)).pack(side="left")
-            tk.Button(nav, text="▶", command=lambda: _go_page(cur + 1),
-                      bg=BTN_BG, fg="#ffffff", relief="flat", bd=0,
-                      font=("Segoe UI", 11), padx=8,
-                      state="normal" if cur < total_pages - 1 else "disabled"
-                      ).pack(side="left", padx=(6, 0))
+            if _is_mac:
+                _next_btn = ttk.Button(nav, text="\u25b6", style="Nav.TButton",
+                                       command=lambda: _go_page(cur + 1))
+                _next_btn.pack(side="left", padx=(6, 0))
+                if cur >= total_pages - 1:
+                    try: _next_btn.state(["disabled"])
+                    except Exception: pass
+            else:
+                tk.Button(nav, text="\u25b6", command=lambda: _go_page(cur + 1),
+                          bg=BTN_BG, fg="#ffffff", relief="flat", bd=0,
+                          font=("Segoe UI", 11), padx=8,
+                          state="normal" if cur < total_pages - 1 else "disabled"
+                          ).pack(side="left", padx=(6, 0))
 
         for pidx in page_keys:
             # Determine maternal pod color, then choose tint
@@ -5333,12 +5387,22 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 notebook_w = max(700, tree_w + PAD)
                 notebook_h = max(600, tree_h)
             else:
-                # Pods / Ratio / Punnett tabs: size to their own content
+                # Pods / Ratio tabs: size to their own content
                 pods_w = getattr(self, "_pods_content_w", 0)
                 pods_h = getattr(self, "_pods_content_h", 0) + TAB_BAR + TOGGLES + RATIO_H + CHROME_V
                 _prev_w = getattr(self, "_last_non_combo_w", 0) - LEFT_W - CHROME
                 notebook_w = max(700, pods_w + PAD, _prev_w)
                 notebook_h = max(600, pods_h)
+
+            if tab_idx == 3:
+                # Punnett Square tab: size to the cross canvas scrollregion
+                # (stored after each render in _draw_monohybrid / _draw_dihybrid)
+                pw_canvas = getattr(self, "_punnett_content_w", 0)
+                ph_canvas = getattr(self, "_punnett_content_h", 0)
+                # Add room for the cross-ctrl toolbar (Type/Trait selectors row)
+                CROSS_CTRL_H = 46
+                notebook_w = max(820, pw_canvas + PAD + 30)
+                notebook_h = max(700, ph_canvas + TAB_BAR + CROSS_CTRL_H + CHROME_V)
 
             total_w = LEFT_W + notebook_w + CHROME
             total_w = max(900, min(total_w, screen_w - 20))
@@ -5407,14 +5471,15 @@ class TraitInheritanceExplorer(tk.Toplevel):
     # =========================================================================
 
     # Trait meta: key → (dom_allele, rec_allele, dom_phenotype, rec_phenotype, display_name)
+    # Allele letters match the Genotype Viewer / Garden-of-Inheritance locus names exactly.
     _CROSS_TRAIT_META = {
         "flower_color":    ("A",  "a",  "purple",   "white",       "Flower Color"),
         "flower_position": ("Fa", "fa", "axial",    "terminal",    "Flower Position"),
-        "pod_color":       ("G",  "g",  "green",    "yellow",      "Pod Color"),
+        "pod_color":       ("Gp", "gp", "green",    "yellow",      "Pod Color"),
         "pod_shape":       ("P",  "p",  "inflated", "constricted", "Pod Shape"),
         "seed_color":      ("I",  "i",  "yellow",   "green",       "Seed Color"),
         "seed_shape":      ("R",  "r",  "round",    "wrinkled",    "Seed Shape"),
-        "plant_height":    ("L",  "l",  "tall",     "short",       "Plant Height"),
+        "plant_height":    ("Le", "le", "tall",     "short",       "Plant Height"),
     }
 
     # 4 phenotype-class colours (dom/dom, dom/rec, rec/dom, rec/rec)
@@ -5737,6 +5802,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
             self._draw_monohybrid(c, siblings, _tv,
                                   tk1, d1, r1, dom1, rec1, name1)
 
+        # Resize window to fit the newly rendered Punnett canvas
+        self.after(60, self._auto_resize_window)
+
     # ── Monohybrid 2×2 ───────────────────────────────────────────────────────
 
     def _draw_monohybrid(self, c, siblings, _tv,
@@ -5762,6 +5830,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
         H = MT + 2 * CELL + PAD + 140
 
         c.configure(scrollregion=(0, 0, W, H))
+        # Store for window auto-resize
+        self._punnett_content_w = W
+        self._punnett_content_h = H
 
         # Title
         c.create_text(W // 2, 12, text=f"Monohybrid Cross — {name1}",
@@ -5889,15 +5960,20 @@ class TraitInheritanceExplorer(tk.Toplevel):
         H = MT + 4 * CELL + PAD + 140
 
         c.configure(scrollregion=(0, 0, W, H))
+        # Store for window auto-resize (Punnett tab needs own sizing)
+        self._punnett_content_w = W
+        self._punnett_content_h = H
 
         # Title — centred over the grid portion only
         grid_cx = ML + 2 * CELL
         c.create_text(grid_cx, 12, anchor="n",
-                      text=f"Dihybrid Cross — {name1}  ×  {name2}",
+                      text=f"Dihybrid Cross — {name1}  \u00d7  {name2}",
                       fill=FG, font=("Segoe UI", 14, "bold"))
-        parent_gam = f"{d1}{d2}{r1}{r2}"  # e.g. "RrIi"
+        # Parent genotype: use slash notation so multi-char alleles (Le, Gp, Fa) read cleanly
+        # e.g. "LeGp / legp" instead of the old "LeGplegp" concat
+        parent_gam_str = f"{d1}{d2} / {r1}{r2}"
         c.create_text(grid_cx, 38, anchor="n",
-                      text=f"Parent × Parent  ({parent_gam[:2]}{parent_gam[2:]} × {parent_gam[:2]}{parent_gam[2:]})",
+                      text=f"Parent \u00d7 Parent  ({parent_gam_str}  \u00d7  {parent_gam_str})",
                       fill=MUTED, font=FONT_S)
 
         # Column headers
@@ -5954,9 +6030,12 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 # Icons for both traits — shifted up slightly
                 icon_y = y0 + CELL // 2 - 4
                 try:
-                    fake1 = {"traits": {tk1: pheno1,
-                                        "pod_color": "green",
-                                        "flower_color": "purple"}}
+                    # Build the fake-snap dict without duplicate-key risk:
+                    # if tk1 IS "flower_color" or "pod_color", the trait value must
+                    # win over the hardcoded defaults, so we assign last.
+                    _ft1 = {"pod_color": "green", "flower_color": "purple"}
+                    _ft1[tk1] = pheno1
+                    fake1 = {"traits": _ft1}
                     im1 = self._icon_for_snap(tk1, fake1, sx=0.75, sy=0.75)
                     if im1:
                         c.create_image(mid_x - 16, icon_y, image=im1)
@@ -5964,9 +6043,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 except Exception:
                     pass
                 try:
-                    fake2 = {"traits": {tk2: pheno2,
-                                        "pod_color": "green",
-                                        "flower_color": "purple"}}
+                    _ft2 = {"pod_color": "green", "flower_color": "purple"}
+                    _ft2[tk2] = pheno2
+                    fake2 = {"traits": _ft2}
                     im2 = self._icon_for_snap(tk2, fake2, sx=0.75, sy=0.75)
                     if im2:
                         c.create_image(mid_x + 16, icon_y, image=im2)
