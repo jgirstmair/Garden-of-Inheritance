@@ -552,28 +552,29 @@ class GardenApp:
         elif pollen_ok is False:
             parts.append("No pollen available")
 
-        # fully harvested
-        if getattr(plant, "fully_harvested", False):
-            parts.append("Fully harvested — no pods remain")
-
-        # pods / harvest (only when not fully harvested)
-        elif getattr(plant, "stage", 0) >= 6:
+        # pods / harvest
+        if getattr(plant, "stage", 0) >= 6:
             pods = int(getattr(plant, "pods_remaining", 0) or 0)
             is_emasculated = getattr(plant, "emasculated", False)
-
+            
             if is_emasculated and pods == 0:
+                # Emasculated plant with no pods - explain why
                 parts.append("No pods (emasculated, not pollinated)")
             elif getattr(plant, "stage", 0) >= 7 and pods > 0:
-                parts.append(f"Harvestable ({pods} pod(s))")
+                parts.append(f"Harvestable ({pods})")
             elif pods > 0:
-                parts.append(f"Pods developing: {pods}")
+                parts.append(f"Pods: {pods}")
             elif pods == 0:
                 parts.append("No pods")
 
         if len(parts) == 1:
             parts.append("Growing")
 
-        # Prepend weak-plant note (short, first in line)
+        # Fully harvested override
+        if getattr(plant, "fully_harvested", False):
+            parts = ["Fully harvested — no pods remain"]
+
+        # Prepend weak note (short, first in line)
         if getattr(plant, "is_weak", False):
             parts.insert(0, "Weak plant")
 
@@ -860,8 +861,7 @@ class GardenApp:
         """Ensure plant.img_obj exists so TileCanvas.render() can show the icon.
 
         Weak plants and late-season-stressed plants receive an amber/yellow tint
-        so they are visually distinct in the grid.  The tint strength for
-        late-season plants scales with health loss so it deepens as they die.
+        via PIL so they are visually distinct in the grid.
         """
         try:
             if plant is None:
@@ -883,33 +883,29 @@ class GardenApp:
 
             is_weak = getattr(plant, "is_weak", False)
             is_late = getattr(plant, "late_season_stress", False)
-            # Only tint late-season plants once health starts dropping below 80
-            needs_tint = is_weak or (is_late and plant.health < 80)
+            # Tint late-season plants only once health drops below 80
+            needs_tint = is_weak or (is_late and getattr(plant, "health", 100) < 80)
 
-            # Cache key includes tint state; health bucketed so tint refreshes
-            # as the plant declines without re-compositing every single frame.
+            # Bucket health so cache refreshes as tint deepens, without every frame
             key = (icon_path, int(getattr(plant, "stage", -1)),
-                   is_weak, is_late, plant.health // 20)
+                   is_weak, is_late, getattr(plant, "health", 100) // 20)
 
             if getattr(plant, "_icon_key", None) == key and getattr(plant, "img_obj", None) is not None:
                 return
 
             if needs_tint:
                 try:
-                    from PIL import Image, ImageTk
                     pil = Image.open(icon_path).convert("RGBA")
                     r, g, b, a = pil.split()
-
                     if is_late and not is_weak:
-                        # Progressive tint: barely visible at health 79, full amber at 0
-                        t = max(0.0, min(1.0, (80 - plant.health) / 80.0))
+                        # Progressive tint: subtle at health 79, full amber at 0
+                        t = max(0.0, min(1.0, (80 - getattr(plant, "health", 100)) / 80.0))
                         r_m = 1.0 + 0.12 * t
                         g_m = 1.0 + 0.03 * t
                         b_m = 1.0 - 0.35 * t
                     else:
                         # Fixed amber for weak plants
                         r_m, g_m, b_m = 1.10, 1.05, 0.70
-
                     r = r.point(lambda v: min(255, int(v * r_m)))
                     g = g.point(lambda v: min(255, int(v * g_m)))
                     b = b.point(lambda v: max(0, int(v * b_m)))
@@ -7201,25 +7197,21 @@ class GardenApp:
         if mode not in ("overlay", "enforce"):
             return
 
-        # ── Enforce-mode late-season decline ─────────────────────────────────
-        # Peas in Brno (Czech Republic) are a spring crop; they cannot survive
-        # autumn frosts.  We apply progressive date-based damage so all plants
-        # are dead before January regardless of watering.
-        #
-        # Timeline (enforce only):
-        #   Sep 15 – Sep 30 : onset — set late_season_stress, mild damage (-2/day)
-        #   Oct  1 – Oct 31 : moderate cold stress      (-5 to -8 /day)
-        #   Nov  1 – Nov 30 : heavy frost damage        (-10 to -15/day)
-        #   Dec  1 – Dec 31 : lethal cold               (-20 to -30/day)
-        #   Jan  1+         : instant death (any survivor)
+        # ── Enforce-mode late-season decline ──────────────────────────────────
+        # Peas in Brno cannot survive autumn frosts. Progressive date-based
+        # damage ensures all plants are dead before January.
+        #   Sep 15–30 : onset  — set late_season_stress flag, mild damage
+        #   Oct        : moderate cold stress
+        #   Nov        : heavy frost damage
+        #   Dec        : lethal cold
+        #   Jan+       : instant kill
         if mode == "enforce":
             import random as _rng
             m, d = sim_date.month, sim_date.day
-            late_onset   = (m == 9  and d >= 15) or m in (10, 11, 12) or m == 1
+            late_onset = (m == 9 and d >= 15) or m in (10, 11, 12) or m == 1
             daily_damage = 0
-
             if m == 1:
-                daily_damage = 9999   # instant kill — January is impossible
+                daily_damage = 9999
             elif m == 12:
                 daily_damage = _rng.randint(20, 30)
             elif m == 11:
@@ -7233,18 +7225,12 @@ class GardenApp:
                 if plant is None or not getattr(plant, "alive", True):
                     continue
                 pid = getattr(plant, "id", None)
-
-                # Mark late-season stress (triggers sick color + no recovery)
                 if late_onset and not getattr(plant, "late_season_stress", False):
                     plant.late_season_stress = True
                     try:
-                        self._toast(
-                            f"Plant #{pid} is showing signs of late-season stress.",
-                            level="warn")
+                        self._toast(f"Plant #{pid} showing late-season stress.", level="warn")
                     except Exception:
                         pass
-
-                # Apply daily damage
                 if daily_damage > 0:
                     cur = int(getattr(plant, "health", 100))
                     new_h = max(0, cur - daily_damage)
@@ -7253,17 +7239,12 @@ class GardenApp:
                         plant.alive = False
                         try:
                             plant.death_day = self._get_current_day_number()
-                        except Exception:
-                            pass
-                        try:
                             self.archive_snapshot(plant)
                         except Exception:
                             pass
-                        _cause = (
-                            "killed by January frost"  if m == 1  else
-                            "killed by December freeze" if m == 12 else
-                            "died from autumn cold"
-                        )
+                        _cause = ("killed by January frost" if m == 1
+                                  else "killed by December freeze" if m == 12
+                                  else "died from autumn cold")
                         try:
                             self._toast(f"Plant #{pid} {_cause}.", level="warn")
                         except Exception:
@@ -7309,69 +7290,75 @@ class GardenApp:
                     delta = int(ev.get("suggested_health_delta", 12) or 0)
                 except Exception:
                     delta = 0
-                
-                # Apply health delta with variation already built into season model
+
+                # Apply health delta — cap non-lethal events to -12 per day so the
+                # season model cannot instant-kill plants with a single large delta.
+                # Harvest-stage plants (6-7) are protected to health=1 minimum.
                 if delta < 0:
                     try:
+                        etype = str(ev.get("type", "")).lower()
+                        # Only true freeze events bypass the per-event damage cap.
+                        # "wither" (natural lifespan cap) uses -9999 but is not a
+                        # freeze event — apply the cap so it drains health over days.
+                        is_lethal = ("lethal" in etype or "freeze" in etype)
+                        if not is_lethal:
+                            delta = max(delta, -12)
                         cur = int(getattr(plant, "health", 100))
-                        new_health = max(0, cur + delta)
+                        # Protect plants that are actively harvestable (have pods).
+                        # Once pods are gone or fully harvested, no floor — natural death allowed.
+                        pods_left = int(getattr(plant, "pods_remaining", 0) or 0)
+                        fully_done = getattr(plant, "fully_harvested", False)
+                        at_harvest = (int(getattr(plant, "stage", 0)) >= 6
+                                      and pods_left > 0 and not fully_done)
+                        floor = 1 if (at_harvest and not is_lethal) else 0
+                        new_health = max(floor, cur + delta)
                         setattr(plant, "health", new_health)
-                        
-                        # Natural death when health reaches 0 (only if was alive)
                         if new_health <= 0 and getattr(plant, "alive", True):
                             plant.alive = False
-                            plant.death_day = self._get_current_day_number()  # Track when plant died
+                            plant.death_day = self._get_current_day_number()
                             try:
-                                self.archive_snapshot(plant)  # preserve full data before it's gone
+                                self.archive_snapshot(plant)
                             except Exception:
                                 pass
                             try:
-                                etype = str(ev.get("type", "")).lower()
-                                # Determine death message based on cause
                                 if "critical_stress" in etype or "chronic" in etype:
                                     death_msg = f"Plant #{pid} died from prolonged stress"
                                 elif "senescent" in etype:
                                     death_msg = f"Plant #{pid} died of old age"
-                                elif "lethal" in etype or "freeze" in etype:
+                                elif is_lethal:
                                     death_msg = f"Plant #{pid} killed by freeze"
                                 else:
                                     death_msg = f"Plant #{pid} died from health failure"
-                                
                                 self._toast(death_msg, level="warning")
                             except Exception:
                                 pass
                     except Exception:
                         pass
                 
-                # Only handle true lethal events (instant death regardless of health)
-                deathish = False
+                # Only true lethal_freeze events cause instant death.
+                # "wither" events (natural lifespan cap) use -9999 delta but are
+                # NOT freeze — they should drain health gradually, not kill instantly.
                 try:
                     t = str(ev.get("type", "")).lower()
-                    m = str(ev.get("message", "")).lower()
-                    sd = ev.get("suggested_health_delta", 12) or 0
-                    # ONLY instant death for: lethal_freeze or massive instant damage
-                    # Removed: wither, accumulated stress (those now drain health gradually)
-                    deathish = (
-                        t in ("lethal_freeze",)  # Only lethal freeze causes instant death
-                        or (isinstance(sd, (int, float)) and sd <= -9000)  # Or massive instant damage
-                    )
+                    is_true_freeze = (t == "lethal_freeze")
                 except Exception:
-                    deathish = False
-                
-                if deathish and (mode == "enforce" or t == "lethal_freeze"):
+                    is_true_freeze = False
+
+                if is_true_freeze:
                     try:
-                        # Check again if plant is still alive before killing
                         if getattr(plant, "alive", False):
                             plant.alive = False
-                            plant.death_day = self._get_current_day_number()  # Track when plant died
+                            plant.death_day = self._get_current_day_number()
                             if hasattr(plant, "health"):
                                 plant.health = 0
                             try:
-                                self.archive_snapshot(plant)  # preserve full data before it's gone
+                                self.archive_snapshot(plant)
                             except Exception:
                                 pass
                             try:
-                                self._toast(f"Plant #{pid} killed by freeze — {ev.get('message','')}", level="warning")
+                                self._toast(
+                                    f"Plant #{pid} killed by freeze — {ev.get('message','')}",
+                                    level="warning")
                             except Exception:
                                 pass
                     except Exception:
@@ -7391,21 +7378,13 @@ class GardenApp:
                 self._season_daily_update(sim_date)
             except Exception:
                 pass
-        elif sim_date is not None:
-            # No date change: still check for immediate lethal conditions
-            try:
-                res = self._season.can_grow(sim_date)
-                ok, why = (res if isinstance(res, tuple) else (bool(res), ""))
-            except Exception:
-                ok, why = (True, "")
-            try:
-                if (not ok) and ("lethal" in str(why).lower()):
-                    
-                    self._season_daily_update(sim_date)
-                    self._season_apply_hourly_lethal(-20)
-                    self._season_daily_update(sim_date)
-            except Exception:
-                pass
+        # NOTE: The intra-day lethal-polling block has been removed.
+        # It called can_grow() every 500ms and triggered _season_apply_hourly_lethal
+        # + double _season_daily_update when can_grow returned any "lethal" string —
+        # which it did incorrectly in summer (e.g. June at 26°C), draining all plants
+        # to zero within seconds.  True lethal events (frost/freeze) are now handled
+        # exclusively by _season_daily_update on day change, which is the correct
+        # granularity for a daily simulation.
         try:
             self.root.after(500, self._season_poll)
         except Exception:

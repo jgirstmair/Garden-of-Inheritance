@@ -182,8 +182,8 @@ class PeaSeasonModelV1F4:
     # Lifespan and Senescence Limits
     # ========================================================================
     
-    LIFESPAN_RANGE_DAYS = (75, 100)      # Total lifespan (days)
-    SENESCENCE_RANGE_DAYS = (20, 40)     # Max senescence duration (days)
+    LIFESPAN_RANGE_DAYS = (125, 160)     # Total lifespan (days) — aligned with plant.max_age_days enforce range
+    SENESCENCE_RANGE_DAYS = (30, 50)     # Max senescence duration (days) — extended for harvest window
     
     # ========================================================================
     # Initialization

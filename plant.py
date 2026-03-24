@@ -48,7 +48,7 @@ LIFECYCLE_SETTINGS = {
     },
     "enforce": {  # Realistic - Slow growth, long lifespan (Mendel-era timing)
         "base_thresholds": [0, 0, 7, 14, 28, 42, 60, 85],
-        "max_age_range": (115, 150),  # stage 7 at day 85; min 115 gives ≥30-day harvest window
+        "max_age_range": (125, 160),  # stage 7 at day 85; min 125 gives ≥40-day harvest window
         "description": "Realistic: Historical pea plant lifecycle"
     }
 }
