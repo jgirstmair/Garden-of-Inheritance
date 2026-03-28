@@ -984,6 +984,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         right_split = tk.PanedWindow(right_pane, orient="horizontal", bg=self.PANEL,
                                      sashwidth=4, sashrelief="flat", handlesize=0)
         right_split.pack(fill="both", expand=True)
+        self._right_split = right_split   # saved so _auto_resize_window can adjust sash
 
         # ── Fixed lineage pane (left — always visible) ────────────────────────
         lineage_pane = tk.Frame(right_split, bg="#0b1a22", highlightthickness=0)
@@ -3499,7 +3500,22 @@ class TraitInheritanceExplorer(tk.Toplevel):
         img2 = img2.subsample(denom, denom)
         return img2
 
-    def _icon_for_snap(self, trait_key, snap, sx=3, sy=3):
+    def _icon_for_snap(self, trait_key, snap, sx=3, sy=3, target_px=None):
+        """
+        Return a tk/PIL PhotoImage for the given trait.
+        When target_px is set, ALL icons are loaded via PIL and resized to
+        exactly target_px × target_px — giving consistent sizes across all
+        trait types regardless of the native icon dimensions.
+        """
+        def _pil_load(path, px):
+            """Load any icon via PIL and resize to px × px."""
+            try:
+                from PIL import Image as _PILImg, ImageTk as _PILTk
+                _pil = _PILImg.open(path).convert("RGBA")
+                _pil = _pil.resize((px, px), _PILImg.LANCZOS)
+                return _PILTk.PhotoImage(_pil)
+            except Exception:
+                return None
 
         try:
             traits = (snap.get("traits", {}) if isinstance(snap, dict) else getattr(snap, "traits", {}) or {})
@@ -3529,7 +3545,10 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 except Exception:
                     p = ""
                 if p:
-                    im = safe_image_scaled(p, sx, sy)
+                    if target_px:
+                        im = _pil_load(p, target_px)
+                    else:
+                        im = safe_image_scaled(p, sx, sy)
                     if im is not None:
                         return im
 
@@ -3537,9 +3556,6 @@ class TraitInheritanceExplorer(tk.Toplevel):
             if trait_key in ("flower_position",):
                 pos = str(traits.get("flower_position", val)).lower()
                 col = str(traits.get("flower_color", "")).lower()
-                # Build candidate paths: hi-res with known colors first, then
-                # non-hi variants, then generic — all loaded via PIL because
-                # tkinter PhotoImage cannot open these 64x64 PNG files.
                 _fp_candidates = []
                 for _col in ([col] if col else []) + ["purple", "white"]:
                     try:
@@ -3557,15 +3573,10 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 for p in _fp_candidates:
                     if not p:
                         continue
-                    try:
-                        from PIL import Image as _PILImg, ImageTk as _PILTk
-                        _pil = _PILImg.open(p).convert("RGBA")
-                        _tgt = max(1, int(round(64 * float(sx))))
-                        _pil = _pil.resize((_tgt, _tgt), _PILImg.LANCZOS)
-                        im = _PILTk.PhotoImage(_pil)
+                    px = target_px if target_px else max(1, int(round(64 * float(sx))))
+                    im = _pil_load(p, px)
+                    if im is not None:
                         return im
-                    except Exception:
-                        pass
 
             # Combined pod color/shape when asked for pod shape family
             if trait_key in ("pod_shape", "pod_color_shape", "pod"):
@@ -3573,22 +3584,16 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 s = str(traits.get("pod_shape", "")).lower()
                 c = "green" if "green" in c else ("yellow" if "yellow" in c else c)
                 s = "constricted" if "constrict" in s else ("inflated" if "inflate" in s else s)
-                # Try known colors if c is empty (e.g. fake dict had no pod_color)
                 for _pc in ([c] if c else []) + ["green", "yellow"]:
                     try:
                         p = pod_shape_icon_path(s, _pc)
                     except Exception:
                         p = ""
                     if p:
-                        try:
-                            from PIL import Image as _PILImg, ImageTk as _PILTk
-                            _pil = _PILImg.open(p).convert("RGBA")
-                            _tgt = max(1, int(round(64 * float(sx))))
-                            _pil = _pil.resize((_tgt, _tgt), _PILImg.LANCZOS)
-                            im = _PILTk.PhotoImage(_pil)
+                        px = target_px if target_px else max(1, int(round(64 * float(sx))))
+                        im = _pil_load(p, px)
+                        if im is not None:
                             return im
-                        except Exception:
-                            pass
 
             # Generic trait icon
             try:
@@ -3596,7 +3601,10 @@ class TraitInheritanceExplorer(tk.Toplevel):
             except Exception:
                 p = ""
             if p:
-                im = safe_image_scaled(p, sx, sy)
+                if target_px:
+                    im = _pil_load(p, target_px)
+                else:
+                    im = safe_image_scaled(p, sx, sy)
                 if im is not None:
                     return im
 
@@ -3607,7 +3615,10 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 except Exception:
                     p = ""
                 if p:
-                    im = safe_image_scaled(p, sx, sy)
+                    if target_px:
+                        im = _pil_load(p, target_px)
+                    else:
+                        im = safe_image_scaled(p, sx, sy)
                     if im is not None:
                         return im
         except Exception:
@@ -4542,16 +4553,15 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 row = tk.Frame(col, bg=col_bg)
                 row.pack(anchor="w", pady=4)
 
-                # Load icon first; subsample for small mode BEFORE sizing canvas
-                im = self._icon_for_snap(_sib_trait_key, csnap, sx=self.SCALE_SIB, sy=self.SCALE_SIB)
-                _default_sz = 28 if (is_combo or self._pods_icon_small) else 56
+                # All icons loaded via PIL at a consistent pixel size so that
+                # ALL trait types (flower color, pod shape, etc.) scale uniformly.
+                _target_px = 32 if (self._pods_icon_small and not is_combo) else 56
+                im = self._icon_for_snap(_sib_trait_key, csnap,
+                                         sx=self.SCALE_SIB, sy=self.SCALE_SIB,
+                                         target_px=_target_px)
+                _default_sz = _target_px
                 if im is not None:
                     try:
-                        if self._pods_icon_small and not is_combo:
-                            try:
-                                im = im.subsample(2, 2)
-                            except Exception:
-                                pass   # non-PIL image; will render at original size
                         canvas_w = im.width()
                         canvas_h = im.height()
                     except Exception:
@@ -4690,7 +4700,39 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     pass
         except Exception:
             pass
-        # Reveal pods canvas now content is built — prevents flicker
+        # Reveal pods canvas — but wait until _redraw_card (after(20)) has settled.
+        # Keep canvas hidden and show a brief "Rendering…" label, then swap in at 120ms.
+        try:
+            if not is_combo and getattr(self, "_pods_win", None):
+                # Show a placeholder while cards finish rendering
+                _loading_lbl = None
+                try:
+                    _loading_lbl = tk.Label(
+                        self.pods_scroll_canvas,
+                        text="Loading…", fg=self.MUTED, bg=self.PANEL,
+                        font=("Segoe UI", 11))
+                    _loading_lbl.place(relx=0.5, rely=0.5, anchor="center")
+                except Exception:
+                    pass
+
+                def _reveal(_lbl=_loading_lbl):
+                    try:
+                        if _lbl:
+                            _lbl.destroy()
+                    except Exception:
+                        pass
+                    try:
+                        self.pods_scroll_canvas.itemconfig(
+                            self._pods_win, state="normal")
+                    except Exception:
+                        pass
+                    self.after(200, self._auto_resize_window)
+
+                self.after(120, _reveal)
+                return   # skip the synchronous reveal and resize below
+        except Exception:
+            pass
+        # Fallback (combo or no _pods_win): reveal synchronously
         try:
             if not is_combo and getattr(self, "_pods_win", None):
                 self.pods_scroll_canvas.itemconfig(self._pods_win, state="normal")
@@ -4702,7 +4744,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 self._combo_right.pack(side="left", fill="both", padx=(6, 0))
         except Exception:
             pass
-        self.after(80, self._auto_resize_window)
+        # For combo, trigger resize now (non-combo exits early via return above)
+        if is_combo:
+            self.after(200, self._auto_resize_window)
 
     def _greyscale_icon_from_path(self, path, sx=1, sy=1):
         """Load an icon from file path, convert to greyscale, return PhotoImage or None."""
@@ -5453,7 +5497,8 @@ class TraitInheritanceExplorer(tk.Toplevel):
         try:
             self.update_idletasks()
             LEFT_W      = 230   # plant list pane
-            LINEAGE_W   = 500   # fixed lineage pane (default sash position)
+            # Lineage pane width: use actual tree content width, with 500 as minimum
+            LINEAGE_W   = max(500, getattr(self, "_tree_content_w", 0))
             CHROME      = 36
             PAD         = 60
             TAB_BAR     = 36
@@ -5477,8 +5522,20 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 ph_canvas = getattr(self, "_punnett_content_h", 0)
                 notebook_w = max(820, pw_canvas + PAD + 30)
                 notebook_h = max(700, ph_canvas + TAB_BAR + CROSS_CTRL_H + CHROME_V)
+            elif tab_idx == 0:
+                # Pod Seeds: measure pods_row live after update_idletasks so
+                # _redraw_card has already run and card canvases have correct sizes
+                try:
+                    self.pods_row.update_idletasks()
+                    row_w = self.pods_row.winfo_reqwidth()
+                    row_h = self.pods_row.winfo_reqheight()
+                except Exception:
+                    row_w = getattr(self, "_pods_content_w", 0)
+                    row_h = getattr(self, "_pods_content_h", 0)
+                notebook_w = max(700, row_w + PAD)
+                notebook_h = max(600, row_h + TAB_BAR + TOGGLES + RATIO_H + CHROME_V)
             else:
-                # Pod Seeds / Trait Ratio: size to pods content
+                # Trait Ratio: use cached content size
                 pods_w = getattr(self, "_pods_content_w", 0)
                 pods_h = getattr(self, "_pods_content_h", 0) + TAB_BAR + TOGGLES + RATIO_H + CHROME_V
                 _prev_w = getattr(self, "_last_non_punnett_w", 0) - LEFT_W - LINEAGE_W - CHROME
@@ -5498,6 +5555,11 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 if isinstance(w, ttk.Panedwindow):
                     w.sashpos(0, LEFT_W)
                     break
+            # Re-pin the inner right_split sash (lineage vs tabs)
+            try:
+                self._right_split.sashpos(0, LINEAGE_W)
+            except Exception:
+                pass
             if tab_idx != 1:
                 self._last_non_punnett_w = total_w
                 self._last_non_punnett_h = total_h
