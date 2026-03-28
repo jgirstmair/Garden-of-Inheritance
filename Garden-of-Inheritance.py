@@ -88,6 +88,12 @@ from traitinheritanceexplorer import TraitInheritanceExplorer
 from garden import GardenEnvironment
 from mendelclimate import MendelClimate
 from icon_loader import *
+
+# Wildlife (bees, butterflies, Bruchus pisi) — optional, fails silently if missing
+try:
+    from wildlife import WildlifeManager as _WildlifeManager
+except ImportError:
+    _WildlifeManager = None
 from inventory import Inventory, InventoryPopup, PollenChooserPopup, Seed, Pollen
 from mendel_temperature_tracker import TemperatureTracker
 from emasculation_dialog import EmasculationDialog
@@ -968,6 +974,10 @@ class GardenApp:
         # cross_random removed - was non-functional legacy setting
         self.auto_record_temperature = tk.BooleanVar(value=True)  # ✅ "Auto-record temperature"
         self.show_breed_dialogs = tk.BooleanVar(value=True)       # ✅ "Show Emasculation/Pollination dialogs"
+
+        # Wildlife settings
+        self._wildlife_enabled_var = tk.BooleanVar(value=True)
+        self._wildlife_freq_var    = tk.StringVar(value="low")
         self.auto_record_temperature.trace_add(
             "write", lambda *_: self._update_temp_button_state()
         )
@@ -1016,6 +1026,17 @@ class GardenApp:
             self._ensure_auto_loop(delay_ms=50)
         except Exception:
             pass
+
+        # Wildlife: bees, butterflies, Bruchus pisi
+        self.wildlife = None
+        if _WildlifeManager is not None:
+            try:
+                self.wildlife = _WildlifeManager(app=self, tk_root=self.root)
+                self.wildlife.set_frequency(self._wildlife_freq_var.get())
+                if not self._wildlife_enabled_var.get():
+                    self.wildlife.set_enabled(False)
+            except Exception:
+                pass
 
         # ==== Season overlay (non-invasive; optional) ====
 
@@ -1471,6 +1492,13 @@ class GardenApp:
                     self._update_temp_button_state()
                     self._last_temp_check_hour = current_hour
 
+                    # Wildlife tick — once per simulated hour
+                    try:
+                        if self.wildlife is not None:
+                            self.wildlife.tick()
+                    except Exception:
+                        pass
+
                     # AUTO-RECORD (same logic as _on_next_phase)
                     auto_record_enabled = self.auto_record_temperature.get()
                     has_tracker = self.temp_tracker is not None
@@ -1564,8 +1592,7 @@ class GardenApp:
         self.root.bind('<s>', lambda e: self._on_harvest_selected())
         # Shift+S → harvest ALL pods on selected plant
         self.root.bind('<S>', lambda e: self._on_harvest_all_selected())
-        self.root.bind('<g>', lambda e: self._choose_grid_bg())
-        self.root.bind('<G>', lambda e: self._choose_grid_bg())
+        # Note: <g>/<G> removed — conflicted with Wildlife submenu on Windows
         self.root.bind('<F10>', lambda e: self._toggle_climate_mode())
 
         # Navigation
@@ -1727,6 +1754,16 @@ class GardenApp:
                 self._toast("Could not open grid wizard (see console).")
             except Exception:
                 pass
+
+    def _on_wildlife_enabled_change(self):
+        """Toggle wildlife on/off from Game Settings menu."""
+        if self.wildlife is not None:
+            self.wildlife.set_enabled(self._wildlife_enabled_var.get())
+
+    def _on_wildlife_freq_change(self):
+        """Apply new wildlife frequency from Game Settings menu."""
+        if self.wildlife is not None:
+            self.wildlife.set_frequency(self._wildlife_freq_var.get())
 
     def _choose_grid_bg(self):
         """Open a color picker to change grid background."""
@@ -2113,8 +2150,33 @@ class GardenApp:
             variable=self.daynight_var,
             command=self._toggle_daynight
         )
-        
-        # --- Difficulty (Season Model) submenu ---
+
+        # --- Wildlife submenu (visual/atmosphere — grouped with day/night) ---
+        wildlife_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
+        wildlife_menu.add_checkbutton(
+            label="Enable wildlife",
+            variable=self._wildlife_enabled_var,
+            command=self._on_wildlife_enabled_change
+        )
+        wildlife_menu.add_separator()
+        for freq_label, freq_value in [
+            ("Low frequency",    "low"),
+            ("Medium frequency", "medium"),
+            ("High frequency",   "high"),
+        ]:
+            wildlife_menu.add_radiobutton(
+                label=freq_label,
+                variable=self._wildlife_freq_var,
+                value=freq_value
+                # command omitted — handled by trace_add below
+            )
+        # Trace fires whenever the variable changes (cleaner than per-item command=)
+        self._wildlife_freq_var.trace_add(
+            "write", lambda *_: self._on_wildlife_freq_change()
+        )
+        game_menu.add_cascade(label="Wildlife", menu=wildlife_menu)
+
+        game_menu.add_separator()
         difficulty_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
         
         # Initialize difficulty variable if not exists
@@ -4468,6 +4530,11 @@ class GardenApp:
                     logging.error(f"Error in auto-record: {e}", exc_info=True)
         
         # Traits rarely change every phase; keep cache so we don't rebuild unless needed.
+        try:
+            if self.wildlife is not None:
+                self.wildlife.tick()
+        except Exception:
+            pass
         self.render_all()
 # Start automated phase progression (slight delay for safety)
         try:
