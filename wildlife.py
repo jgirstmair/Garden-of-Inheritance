@@ -282,6 +282,7 @@ class _Creature:
         if img and self._item:
             try:
                 self.tile.itemconfig(self._item, image=img)
+                self.tile.tag_raise("wildlife")   # stay on top after every render
             except Exception:
                 pass
         self._later(FRAME_MS, self._tick_anim)
@@ -290,11 +291,18 @@ class _Creature:
         if not self._alive:
             return
         ts = getattr(self.tile, 'w', 85)
-        self.cx = max(6, min(ts - 6, self.cx + random.randint(-2, 2)))
-        self.cy = max(6, min(ts - 6, self.cy + random.randint(-2, 2)))
+        try:
+            f = self.variant.frames[0] if self.variant.frames else None
+            mx = f.width()  // 2 if f else 16
+            my = f.height() // 2 if f else 16
+        except Exception:
+            mx = my = 16
+        self.cx = max(mx, min(ts - mx, self.cx + random.randint(-2, 2)))
+        self.cy = max(my, min(ts - my, self.cy + random.randint(-2, 2)))
         if self._item:
             try:
                 self.tile.coords(self._item, self.cx, self.cy)
+                self.tile.tag_raise("wildlife")
             except Exception:
                 pass
         self._later(WANDER_MS, self._wander)
@@ -385,6 +393,16 @@ class WildlifeManager:
         """Call once per simulated hour."""
         if not self._enabled:
             return
+
+        # During fast-forward dismiss immediately and don't spawn
+        if getattr(self.app, "fast_forward", False):
+            if self._active:
+                for c in list(self._active):
+                    c.destroy()
+                self._active.clear()
+                self._occupied.clear()
+            return
+
         try:
             if not self._is_daytime():
                 if self._active:
@@ -459,6 +477,8 @@ class WildlifeManager:
     def _revisit(self, type_name: str, pods_only: bool):
         if not self._enabled:
             return
+        if getattr(self.app, "fast_forward", False):
+            return
         if not self._is_daytime() or not self._is_season():
             return
         eligible = self._count_eligible_tiles()
@@ -507,14 +527,26 @@ class WildlifeManager:
         icx = ts // 2 + water_thick // 2
         icy = ts // 2 - health_thick // 2 - icon_lift + icon_drop
 
-        # Safe zone (avoid bars and label)
-        safe_x0 = water_thick + 2
-        safe_x1 = ts - 4
+        # Half-dimensions of the wildlife image — need to stay inside canvas bounds
+        # Get from first loaded frame; fall back to 16 (half of standard 32x32)
+        try:
+            frame0 = next(
+                (v.frames[0] for pool in self._pools.values()
+                 for v in pool if v.frames), None)
+            img_hw = frame0.width()  // 2 if frame0 else 16
+            img_hh = frame0.height() // 2 if frame0 else 16
+        except Exception:
+            img_hw = img_hh = 16
+
+        # Safe zone: avoid bars/label AND keep full wildlife image inside canvas
+        safe_x0 = max(water_thick + 2, img_hw)
+        safe_x1 = min(ts - img_hw, ts - 4)
         hb_y_start = getattr(tile, "hb_y_start",
                              ts - health_thick - getattr(tile, "bar_pad", 3)
                              + getattr(tile, "bottom_shift", 4))
-        safe_y0 = 4
-        safe_y1 = int(hb_y_start) - getattr(tile, "label_h", 14) - 2
+        safe_y0 = max(4, img_hh)
+        safe_y1 = min(int(hb_y_start) - getattr(tile, "label_h", 14) - 2,
+                      ts - img_hh)
 
         try:
             pil = self._pil_for_tile(tile)

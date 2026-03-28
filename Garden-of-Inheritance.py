@@ -5824,6 +5824,13 @@ class GardenApp:
         self.running = False
         self.fast_forward = True
 
+        # Dismiss any visible wildlife immediately when FF starts
+        try:
+            if self.wildlife is not None:
+                self.wildlife.destroy_all()
+        except Exception:
+            pass
+
         total_hours = days * 24  # simulate N full days
         last_day_key = None
 
