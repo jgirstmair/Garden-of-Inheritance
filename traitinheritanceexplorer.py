@@ -976,9 +976,45 @@ class TraitInheritanceExplorer(tk.Toplevel):
         sb.pack(side="right", fill="y")
         self.listbox.config(yscrollcommand=sb.set)
 
-        # ── Single right pane containing a two-tab notebook ────────────────────
+        # ── Right pane: fixed lineage (left) + switching tabs (right) ───────
         right_pane = tk.Frame(pw, bg=self.PANEL, highlightthickness=1, highlightbackground="#153242")
         pw.add(right_pane, weight=5)
+
+        # Horizontal split: lineage always-visible on left, tab switcher on right
+        right_split = tk.PanedWindow(right_pane, orient="horizontal", bg=self.PANEL,
+                                     sashwidth=4, sashrelief="flat", handlesize=0)
+        right_split.pack(fill="both", expand=True)
+
+        # ── Fixed lineage pane (left — always visible) ────────────────────────
+        lineage_pane = tk.Frame(right_split, bg="#0b1a22", highlightthickness=0)
+        right_split.add(lineage_pane, width=500)
+
+        canvas_frame = tk.Frame(lineage_pane, bg="#0b1a22", highlightthickness=0)
+        canvas_frame.pack(fill="both", expand=True, padx=self.PAD, pady=self.PAD)
+
+        self.canvas = tk.Canvas(canvas_frame, bg="#0b1a22", highlightthickness=0)
+        _tree_vscroll = tk.Scrollbar(canvas_frame, orient="vertical",   command=self.canvas.yview)
+        _tree_hscroll = tk.Scrollbar(canvas_frame, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=_tree_vscroll.set, xscrollcommand=_tree_hscroll.set)
+        _tree_vscroll.pack(side="right",  fill="y")
+        _tree_hscroll.pack(side="bottom", fill="x")
+        self.canvas.pack(fill="both", expand=True)
+
+        def _tree_mousewheel(event):
+            try:
+                if event.state & 0x1:
+                    self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+                else:
+                    self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                pass
+        self.canvas.bind("<MouseWheel>", _tree_mousewheel)
+        self.canvas.bind("<Button-4>",   lambda e: self.canvas.yview_scroll(-1, "units"))
+        self.canvas.bind("<Button-5>",   lambda e: self.canvas.yview_scroll( 1, "units"))
+
+        # ── Tab switcher pane (right — Pod Seeds / Punnett Square / Trait Ratio) ──
+        tabs_pane = tk.Frame(right_split, bg=self.PANEL, highlightthickness=0)
+        right_split.add(tabs_pane, width=700)
 
         # ── Notebook tab styling ──────────────────────────────────────────────
         nb_style = ttk.Style()
@@ -1011,7 +1047,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
             relief=[("selected", "flat"), ("active", "flat")],
         )
 
-        self.tie_notebook = ttk.Notebook(right_pane, style="TIE.TNotebook")
+        # Style for Punnett title trait selectors (macOS uses ttk.Menubutton)
+        _title_font = ("Helvetica Neue", 15, "bold") if getattr(self, "_is_mac", False) else ("Segoe UI", 14, "bold")
+        nb_style.configure("TraitTitle.TMenubutton",
+                            font=_title_font,
+                            padding=[10, 5],
+                            relief="flat")
+        nb_style.map("TraitTitle.TMenubutton",
+                     background=[("active", "#1e6fa0"), ("!active", "#16405a")],
+                     foreground=[("active", "#ffffff"), ("!active", "#cce8f5")],
+                     relief=[("active", "flat"), ("!active", "flat")])
+
+        self.tie_notebook = ttk.Notebook(tabs_pane, style="TIE.TNotebook")
         self.tie_notebook.pack(side="top", fill="x", padx=4, pady=(4, 0))
         self.tie_notebook.enable_traversal()
         self.tie_notebook.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_changed())
@@ -1022,7 +1069,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             self.trait_mode.trace_add('write', lambda *a: self._refresh_views())
         except Exception:
             pass
-        shared_toolbar = tk.Frame(right_pane, bg=self.PANEL)
+        shared_toolbar = tk.Frame(tabs_pane, bg=self.PANEL)
         shared_toolbar.pack(side="top", fill="x", padx=self.PAD, pady=(6, 4))
         self._shared_toolbar = shared_toolbar
         for label in ("Flowers", "Pod color", "Pod shape", "Seed color", "Seed shape", "Height"):
@@ -1032,64 +1079,65 @@ class TraitInheritanceExplorer(tk.Toplevel):
                                 command=lambda: self._refresh_views())
             rb.pack(side="left", padx=(0, 12))
 
+        # Pod icon size toggle — lives in the shared toolbar, shown only on Pod Seeds tab
+        self._pods_icon_small = False
+        def _toggle_pods_size():
+            self._pods_icon_small = not self._pods_icon_small
+            self._pods_size_btn.config(text="＋" if self._pods_icon_small else "－")
+            pid_ = (getattr(self, "preview_pid", None)
+                    or getattr(self, "_pods_pid", None)
+                    or getattr(self, "current_pid", None))
+            if pid_:
+                self._render_siblings(pid_)
+        self._pods_size_btn = tk.Button(
+            shared_toolbar, text="－",
+            bg="#1e4d6b", fg=self.FG, relief="flat", bd=0,
+            font=("Segoe UI", 11, "bold"), padx=8, pady=0,
+            command=_toggle_pods_size)
+        # Packed/unpacked by _on_tab_changed; shown only on Pod Seeds tab
+
+        # Ratio font-size toggle — also lives in the shared toolbar, shown only on Trait Ratio tab
+        self._ratio_font_large = False
+        self._ratio_size_btn = tk.Button(
+            shared_toolbar, text="＋",
+            bg="#1e4d6b", fg=self.FG, relief="flat", bd=0,
+            font=("Segoe UI", 11, "bold"), padx=8, pady=0,
+            command=lambda: self._toggle_ratio_font_size())
+        # Packed/unpacked by _on_tab_changed; shown only on Trait Ratio tab
+
         # ── Content switcher — each tab's body frame lives here ───────────────
-        tab_content = tk.Frame(right_pane, bg=self.PANEL)
+        tab_content = tk.Frame(tabs_pane, bg=self.PANEL)
         tab_content.pack(side="top", fill="both", expand=True, padx=4, pady=(0, 4))
 
-        # ── Tab 1: Lineage tree ───────────────────────────────────────────────
-        center = tk.Frame(tab_content, bg=self.PANEL)
-        self._tab_frames = [center]   # index matches notebook tab order
-        center.pack(fill="both", expand=True)
-        self.tie_notebook.add(tk.Frame(self.tie_notebook, bg=self.PANEL, height=1), text="  Lineage  ")
-
-        canvas_frame = tk.Frame(center, bg="#0b1a22", highlightthickness=0)
-        canvas_frame.pack(fill="both", expand=True, padx=self.PAD, pady=(0, self.PAD))
-
-        self.canvas = tk.Canvas(canvas_frame, bg="#0b1a22", highlightthickness=0)
-        _tree_vscroll = tk.Scrollbar(canvas_frame, orient="vertical",   command=self.canvas.yview)
-        _tree_hscroll = tk.Scrollbar(canvas_frame, orient="horizontal", command=self.canvas.xview)
-        self.canvas.configure(yscrollcommand=_tree_vscroll.set, xscrollcommand=_tree_hscroll.set)
-        _tree_vscroll.pack(side="right",  fill="y")
-        _tree_hscroll.pack(side="bottom", fill="x")
-        self.canvas.pack(fill="both", expand=True)
-
-        def _tree_mousewheel(event):
-            try:
-                if event.state & 0x1:
-                    self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
-                else:
-                    self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            except Exception:
-                pass
-        self.canvas.bind("<MouseWheel>", _tree_mousewheel)
-        self.canvas.bind("<Button-4>",   lambda e: self.canvas.yview_scroll(-1, "units"))
-        self.canvas.bind("<Button-5>",   lambda e: self.canvas.yview_scroll( 1, "units"))
-
-        # ── Tab 2: Pods (parents + siblings) ─────────────────────────────────
+        # ── Tab 0: Pod Seeds (parents + siblings) ─────────────────────────────
         self.tie_notebook.add(tk.Frame(self.tie_notebook, bg=self.PANEL, height=1), text="  Pod Seeds  ")
         right = tk.Frame(tab_content, bg=self.PANEL)
-        self._tab_frames.append(right)
+        self._tab_frames = [right]
+        right.pack(fill="both", expand=True)  # default visible tab
 
         pods_body = tk.Frame(right, bg=self.PANEL)
         pods_body.pack(fill="both", expand=True, padx=self.PAD, pady=(0, self.PAD))
 
-        # Grid layout: col 0 = pods (expands), col 1 = ratio (natural width, top-anchored)
+        # Grid layout: col 0 = pods canvas, col 1 = v-scrollbar
         pods_body.columnconfigure(0, weight=1)
-        pods_body.columnconfigure(1, weight=0)
         pods_body.rowconfigure(1, weight=1)
 
         # Nav bar row 0, col 0 — hidden until >1 page
         self.pods_nav_frame = tk.Frame(pods_body, bg=self.PANEL)
-        # gridded dynamically when needed
+
+        # Vertical scrollbar for pods (col 1)
+        _pods_vscroll = tk.Scrollbar(pods_body, orient="vertical")
+        _pods_vscroll.grid(row=0, column=1, rowspan=2, sticky="ns")
 
         # Pods canvas row 1, col 0
-        self.pods_scroll_canvas = tk.Canvas(pods_body, bg=self.PANEL, highlightthickness=0)
+        self.pods_scroll_canvas = tk.Canvas(pods_body, bg=self.PANEL, highlightthickness=0,
+                                             yscrollcommand=_pods_vscroll.set)
         self.pods_scroll_canvas.grid(row=1, column=0, sticky="nsew")
+        _pods_vscroll.config(command=self.pods_scroll_canvas.yview)
         self.pods_hscroll = None
 
-        # Ratio col 1, rows 0+1, top-anchored
-        self.pods_tab_ratio_frame = tk.Frame(pods_body, bg=self.PANEL)
-        self.pods_tab_ratio_frame.grid(row=0, column=1, rowspan=2, sticky="n", padx=(12, 0))
+        # pods_tab_ratio_frame: rendered inline in pods_row after last pod card
+        self.pods_tab_ratio_frame = None
 
         # pods_row = permanent content frame inside canvas
         self.pods_row = tk.Frame(self.pods_scroll_canvas, bg=self.PANEL)
@@ -1097,128 +1145,35 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self.pods_row.bind("<Configure>",
             lambda e: self.pods_scroll_canvas.configure(
                 scrollregion=self.pods_scroll_canvas.bbox("all")))
-        # mousewheel horizontal scroll on pods canvas
-        def _pods_hwheel(event):
+        # Horizontal scroll on plain scroll, vertical on Shift+scroll or plain scroll
+        def _pods_wheel(event):
             try:
-                self.pods_scroll_canvas.xview_scroll(int(-1*(event.delta/120)), "units")
+                if event.state & 0x1:   # Shift held → horizontal
+                    self.pods_scroll_canvas.xview_scroll(int(-1*(event.delta/120)), "units")
+                else:
+                    self.pods_scroll_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
             except Exception:
                 pass
-        self.pods_scroll_canvas.bind("<MouseWheel>", _pods_hwheel)
-        self.pods_scroll_canvas.bind("<Shift-MouseWheel>", _pods_hwheel)
+        self.pods_scroll_canvas.bind("<MouseWheel>", _pods_wheel)
+        self.pods_scroll_canvas.bind("<Button-4>", lambda e: self.pods_scroll_canvas.yview_scroll(-1, "units"))
+        self.pods_scroll_canvas.bind("<Button-5>", lambda e: self.pods_scroll_canvas.yview_scroll(1, "units"))
 
         self.sibs_inner = self.pods_row   # compat: _render_siblings clears this
         self.pods_ratio_frame = self.sibs_inner
         self._pods_page = 0
 
-        # ── Tab 3: Ratio ──────────────────────────────────────────────────────
+        # ── Tab 1: Punnett Square ─────────────────────────────────────────────
+        self.tie_notebook.add(tk.Frame(self.tie_notebook, bg=self.PANEL, height=1), text="  Punnett Square  ")
+        cross_outer = tk.Frame(tab_content, bg=self.PANEL)
+        self._tab_frames.append(cross_outer)
+
+        # ── Tab 2: Trait Ratio ────────────────────────────────────────────────
         self.tie_notebook.add(tk.Frame(self.tie_notebook, bg=self.PANEL, height=1), text="  Trait Ratio  ")
         ratio_tab_body = tk.Frame(tab_content, bg=self.PANEL)
         self._tab_frames.append(ratio_tab_body)
 
         self.ratio_tab_frame = tk.Frame(ratio_tab_body, bg=self.PANEL)
         self.ratio_tab_frame.pack(fill="both", expand=True, padx=self.PAD, pady=(0, self.PAD))
-
-        # ── Tab 4: Lineage + Pods combined ────────────────────────────────────
-        self.tie_notebook.add(tk.Frame(self.tie_notebook, bg=self.PANEL, height=1), text="  Lineage + Pod Seeds  ")
-        combo_outer = tk.Frame(tab_content, bg=self.PANEL)
-        self._tab_frames.append(combo_outer)
-
-        # ── Unified combo canvas: shared h+v scrollbars, tree left, ratio+pods right ──
-        combo_body = tk.Frame(combo_outer, bg=self.PANEL)
-        combo_body.pack(fill="both", expand=True, padx=self.PAD, pady=(0, self.PAD))
-
-        _combo_vscroll = tk.Scrollbar(combo_body, orient="vertical")
-        _combo_vscroll.pack(side="right", fill="y")
-        _combo_hscroll = tk.Scrollbar(combo_body, orient="horizontal")
-        _combo_hscroll.pack(side="bottom", fill="x")
-
-        # One big canvas covering the full combo area
-        self._combo_main_canvas = tk.Canvas(
-            combo_body, bg=self.PANEL, highlightthickness=0,
-            xscrollcommand=_combo_hscroll.set,
-            yscrollcommand=_combo_vscroll.set)
-        self._combo_main_canvas.pack(fill="both", expand=True)
-        _combo_hscroll.config(command=self._combo_main_canvas.xview)
-        _combo_vscroll.config(command=self._combo_main_canvas.yview)
-
-        # Inner frame embedded in the big canvas
-        self._combo_inner = tk.Frame(self._combo_main_canvas, bg=self.PANEL)
-        self._combo_inner_win = self._combo_main_canvas.create_window(
-            (0, 0), window=self._combo_inner, anchor="nw")
-
-        # Left column: lineage tree canvas (sized to content after render)
-        combo_left = tk.Frame(self._combo_inner, bg="#0b1a22")
-        combo_left.pack(side="left", fill="y")   # no expand — sized by combo_canvas
-        self.combo_canvas = tk.Canvas(combo_left, bg="#0b1a22", highlightthickness=0,
-                                      width=600, height=500)
-        self.combo_canvas.pack()
-        self.combo_canvas.bind("<Button-1>",
-            lambda e: self._on_canvas_node_click(e, source_canvas=self.combo_canvas))
-
-        # Right column: ratio on top, nav+pods below (grows to fit content)
-        combo_right = tk.Frame(self._combo_inner, bg=self.PANEL)
-        combo_right.pack(side="left", fill="both", padx=(6, 0))
-        self._combo_right = combo_right   # stored so _render_siblings can hide/show it
-
-        # Combo right order: nav (top, hidden) → pods → ratio
-        self.combo_nav_frame = tk.Frame(combo_right, bg=self.PANEL)
-        # packed dynamically above sibs when >1 page
-
-        # Pods — plain frame directly in combo_right; outer canvas scrolls everything
-        self.combo_sibs_inner = tk.Frame(combo_right, bg=self.PANEL)
-        self.combo_sibs_inner.pack(side="top", fill="x")
-        # alias used in _render_siblings combo path
-        self.combo_pods_canvas = combo_right
-
-        self.combo_ratio_frame = tk.Frame(combo_right, bg=self.PANEL)
-        self.combo_ratio_frame.pack(side="top", fill="x", pady=(6, 0))
-        self.combo_ratio_frame.bind("<Configure>", lambda e: self._update_combo_scrollregion())
-        self.combo_sibs_inner.bind("<Configure>", lambda e: self._update_combo_scrollregion())
-
-        # Sync inner frame changes → outer scrollregion
-        def _combo_inner_configure(e):
-            self._combo_main_canvas.configure(
-                scrollregion=self._combo_main_canvas.bbox("all"))
-        self._combo_inner.bind("<Configure>", _combo_inner_configure)
-
-        # Mousewheel: vertical on main canvas
-        def _combo_vwheel(event):
-            try:
-                self._combo_main_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-            except Exception:
-                pass
-        def _combo_hwheel(event):
-            try:
-                self._combo_main_canvas.xview_scroll(int(-1*(event.delta/120)), "units")
-            except Exception:
-                pass
-        for _w in (self._combo_main_canvas, self.combo_canvas, self.combo_pods_canvas):
-            _w.bind("<MouseWheel>", _combo_vwheel)
-            _w.bind("<Shift-MouseWheel>", _combo_hwheel)
-            _w.bind("<Button-4>", lambda e: self._combo_main_canvas.yview_scroll(-1,"units"))
-            _w.bind("<Button-5>", lambda e: self._combo_main_canvas.yview_scroll( 1,"units"))
-
-        # No PanedWindow → no self.combo_pw; set a dummy for _auto_resize_window compat
-        self.combo_pw = None
-
-        # ── Tab 5: Cross Diagrams (Punnett square) ────────────────────────────
-        self.tie_notebook.add(tk.Frame(self.tie_notebook, bg=self.PANEL, height=1), text="  Punnett Square  ")
-        cross_outer = tk.Frame(tab_content, bg=self.PANEL)
-        self._tab_frames.append(cross_outer)
-
-        # ── Reorder tabs: Combo→2, Punnett→3, Trait Ratio→4 ───────────────
-        # Original order: Lineage(0), Pod Seeds(1), Trait Ratio(2), Combo(3), Punnett(4)
-        # Target  order: Lineage(0), Pod Seeds(1), Combo(2), Punnett(3), Trait Ratio(4)
-        # NOTE: cross_outer must already be in _tab_frames (done above) before this runs.
-        try:
-            _tabs = self.tie_notebook.tabs()
-            self.tie_notebook.insert(2, _tabs[3])   # Combo: 3→2
-            _tabs = self.tie_notebook.tabs()
-            self.tie_notebook.insert(3, _tabs[4])   # Punnett: 4→3  (Ratio falls to 4)
-            _tf = list(self._tab_frames)             # copy before reassigning
-            self._tab_frames = [_tf[0], _tf[1], _tf[3], _tf[4], _tf[2]]
-        except Exception:
-            pass
 
         cross_ctrl = tk.Frame(cross_outer, bg=self.PANEL)
         cross_ctrl.pack(side="top", fill="x", padx=self.PAD, pady=(self.PAD, 4))
@@ -1243,34 +1198,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self._cross_trait_labels = [t[0] for t in _CROSS_TRAITS]
         self._cross_trait_keys   = [t[1] for t in _CROSS_TRAITS]
 
-        tk.Label(cross_ctrl, text="  Trait 1:", bg=self.PANEL, fg=self.FG,
-                 font=("Segoe UI", 11)).pack(side="left", padx=(20, 0))
-        self._cross_t1 = tk.StringVar(value=self._cross_trait_labels[3])  # Seed Color
-        self._cross_t1_menu = tk.OptionMenu(
-            cross_ctrl, self._cross_t1, *self._cross_trait_labels,
-            command=lambda *_: self.after(10, self._on_cross_settings_changed))
-        self._cross_t1_menu.config(bg=self.CARD, fg=self.FG, activebackground=self.CARD,
-                                    activeforeground=self.FG, highlightthickness=0,
-                                    relief="flat", font=("Segoe UI", 10))
-        self._cross_t1_menu["menu"].config(bg=self.CARD, fg=self.FG)
-        self._cross_t1_menu.pack(side="left", padx=(4, 0))
-
-        self._cross_t2_lbl = tk.Label(cross_ctrl, text="  Trait 2:", bg=self.PANEL, fg=self.FG,
-                                       font=("Segoe UI", 11))
-        self._cross_t2_lbl.pack(side="left", padx=(16, 0))
-        self._cross_t2 = tk.StringVar(value=self._cross_trait_labels[4])  # Seed Shape
-        self._cross_t2_menu = tk.OptionMenu(
-            cross_ctrl, self._cross_t2, *self._cross_trait_labels,
-            command=lambda *_: self.after(10, self._on_cross_settings_changed))
-        self._cross_t2_menu.config(bg=self.CARD, fg=self.FG, activebackground=self.CARD,
-                                    activeforeground=self.FG, highlightthickness=0,
-                                    relief="flat", font=("Segoe UI", 10))
-        self._cross_t2_menu["menu"].config(bg=self.CARD, fg=self.FG)
-        self._cross_t2_menu.pack(side="left", padx=(4, 0))
-
-        # "Best fit" button — scans the full archive and selects the trait(s)
-        # that best match 9:3:3:1 (Dihybrid) or 3:1 (Monohybrid).
-        # Also serves as the pack anchor for Trait 2 re-insertion.
+        # "Best fit" button
         if getattr(self, "_is_mac", False):
             self._cross_best_btn = ttk.Button(
                 cross_ctrl, text="\u27f3 Best fit",
@@ -1283,6 +1211,25 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 command=self._cross_auto_detect)
         self._cross_best_btn.pack(side="left", padx=(16, 0))
 
+        # ── Dihybrid cell-size toggle (+ = enlarge, – = shrink back) ─────────
+        self._punnett_large = False
+        def _toggle_punnett_size():
+            self._punnett_large = not self._punnett_large
+            _punnett_size_btn.config(
+                text="－" if self._punnett_large else "＋")
+            pid_ = getattr(self, "current_pid", None)
+            if pid_:
+                self._render_cross_tab(pid_)
+        _punnett_size_btn = tk.Button(
+            cross_ctrl, text="＋",
+            bg="#1e4d6b", fg=self.FG, relief="flat", bd=0,
+            font=("Segoe UI", 11, "bold"), padx=10, pady=1,
+            command=_toggle_punnett_size)
+        self._punnett_size_btn = _punnett_size_btn
+        # packed/unpacked dynamically in _on_cross_settings_changed; shown only for Dihybrid
+
+        # Title frame: NOT packed here — embedded on the canvas via create_window in draw methods
+        # MUST be created AFTER cross_canvas so it can be a child of the canvas
         _cross_scroll_wrap = tk.Frame(cross_outer, bg=self.PANEL)
         _cross_scroll_wrap.pack(fill="both", expand=True, padx=self.PAD, pady=(0, self.PAD))
         _cross_vsb = tk.Scrollbar(_cross_scroll_wrap, orient="vertical")
@@ -1298,12 +1245,71 @@ class TraitInheritanceExplorer(tk.Toplevel):
         _cross_vsb.config(command=self.cross_canvas.yview)
         self._cross_img_refs = []
 
+        # Title frame is a child of cross_canvas so create_window works reliably
+        _CANVAS_BG = "#0d1f2e"
+        cross_title_frame = tk.Frame(self.cross_canvas, bg=_CANVAS_BG)
+        self._cross_title_frame = cross_title_frame
+        _title_inner = cross_title_frame
+
+        _is_mac = getattr(self, "_is_mac", False)
+        _tf    = ("Segoe UI", 14, "bold")
+        _bg_n  = "#16405a"
+        _bg_h  = "#1e6fa0"
+        _hl_n  = "#2a6080"
+        _hl_h  = "#3a9fca"
+
+        def _make_trait_btn(parent, var):
+            """Return a Menubutton that looks like a title-style button."""
+            if _is_mac:
+                btn = ttk.Menubutton(parent, textvariable=var,
+                                     style="TraitTitle.TMenubutton")
+            else:
+                btn = tk.Menubutton(parent, textvariable=var,
+                                    bg=_bg_n, fg=self.FG,
+                                    activebackground=_bg_h, activeforeground=self.FG,
+                                    font=_tf, relief="flat", bd=0,
+                                    padx=12, pady=5, cursor="hand2",
+                                    highlightthickness=1,
+                                    highlightbackground=_hl_n,
+                                    highlightcolor=_hl_h)
+                btn.bind("<Enter>",
+                         lambda e, b=btn: b.config(bg=_bg_h, highlightbackground=_hl_h))
+                btn.bind("<Leave>",
+                         lambda e, b=btn: b.config(bg=_bg_n, highlightbackground=_hl_n))
+            return btn
+
+        def _build_menu(btn, var):
+            m = tk.Menu(btn, tearoff=0, bg=self.CARD, fg=self.FG,
+                        activebackground="#1e6fa0", activeforeground="#ffffff",
+                        font=("Segoe UI", 11))
+            for _lbl in self._cross_trait_labels:
+                m.add_command(
+                    label=_lbl,
+                    command=lambda v=_lbl: (var.set(v),
+                                            self.after(10, self._on_cross_settings_changed)))
+            btn["menu"] = m
+
+        self._cross_t1 = tk.StringVar(value=self._cross_trait_labels[3])  # Seed Color
+        self._cross_t1_menu = _make_trait_btn(_title_inner, self._cross_t1)
+        _build_menu(self._cross_t1_menu, self._cross_t1)
+        self._cross_t1_menu.pack(side="left")
+
+        self._cross_x_lbl = tk.Label(_title_inner, text=" × ", bg=_CANVAS_BG, fg=self.MUTED,
+                                      font=("Segoe UI", 14, "bold"))
+
+        self._cross_t2 = tk.StringVar(value=self._cross_trait_labels[4])  # Seed Shape
+        self._cross_t2_menu = _make_trait_btn(_title_inner, self._cross_t2)
+        _build_menu(self._cross_t2_menu, self._cross_t2)
+        # _cross_x_lbl and _cross_t2_menu packed/unpacked by _on_cross_settings_changed
+
         # ── Initial window sizing (one-shot) ──────────────────────────────────
         def _fix_sash():
             try:
                 pw.update_idletasks()
-                left_w  = 230
-                total_w = max(1024, left_w + 1060 + 36)   # left + notebook + chrome
+                left_w    = 230   # plant list
+                lineage_w = 500   # fixed lineage pane
+                tabs_w    = 760   # switching tabs pane
+                total_w = max(1024, left_w + lineage_w + tabs_w + 36)
                 pw.sashpos(0, left_w)
                 cur_h = self.winfo_height()
                 self.geometry(f"{total_w}x{max(600, cur_h if cur_h > 1 else 700)}")
@@ -1313,6 +1319,17 @@ class TraitInheritanceExplorer(tk.Toplevel):
             _fix_sash()
             self._layout_done = True
         self.after(50, _fix_sash_once)
+
+        # Stub out removed combo attributes so any residual references don't crash
+        self.combo_pw = None
+        self._combo_sizing_pending = False
+        self.combo_canvas = self.canvas          # fallback: alias to the always-visible lineage canvas
+        self.combo_sibs_inner = None
+        self.combo_ratio_frame = None
+        self.combo_nav_frame = None
+        self.combo_pods_canvas = None
+        self._combo_right = None
+        self._ratio_font_large = False
 
         self._img_refs = []
         self._all_ids, self._ids = [], []
@@ -3608,22 +3625,17 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self.lbl_left_parents.config(text=f"Parents: ♀ #{g('mother_id','?')}  |  ♂ #{g('father_id','?')}")
         self._render_traits(snap)
 
+        root_id = getattr(self, "current_pid", None)
+        # Lineage is always visible — redraw it rooted at root_id (or preview)
+        tgt = root_id if root_id is not None else pid
+        self._draw_canvas_family(tgt)
+        # Update pods in the right-side tab if Pods tab is active
         try:
             tab_idx = self.tie_notebook.index(self.tie_notebook.select())
         except Exception:
             tab_idx = 0
-        root_id = getattr(self, "current_pid", None)
-
-        if tab_idx == 2:
-            self._render_siblings(g('id', pid),
-                                  target_sibs=self.combo_sibs_inner,
-                                  target_ratio=self.combo_ratio_frame)
-            tgt = root_id if root_id is not None else pid
-            self._draw_canvas_family(tgt, target_canvas=self.combo_canvas)
-        else:
+        if tab_idx == 0:   # Pod Seeds
             self._render_siblings(g('id', pid))
-            tgt = root_id if root_id is not None else pid
-            self._draw_canvas_family(tgt)
 
     def _refresh_views(self):
         """Re-render tree and sibling pods on trait-mode change or other triggers."""
@@ -3632,33 +3644,28 @@ class TraitInheritanceExplorer(tk.Toplevel):
             root_id = getattr(self, "current_pid", None)
             prev    = getattr(self, "preview_pid", None)
             try:
-                _tab = self.tie_notebook.index(self.tie_notebook.select())
+                tab_idx = self.tie_notebook.index(self.tie_notebook.select())
             except Exception:
-                _tab = 0
-            # On Lineage/combo: use preview if active; on Pods/Ratio: use _pods_pid
-            if _tab in (0, 2):
-                pid = prev or root_id
-            elif _tab in (1, 4):
+                tab_idx = 0
+
+            # Always use current_pid so we never jump to a different plant.
+            # For pods use _pods_pid if set (e.g. a previewed ancestor), else root.
+            if tab_idx == 0:   # Pod Seeds
                 pid = getattr(self, "_pods_pid", None) or root_id
             else:
-                pid = root_id
+                pid = prev or root_id
 
-            tab_idx = _tab
+            # Guard: never render with None — that could trigger unwanted fallbacks
+            if root_id is None:
+                return
 
-            if tab_idx == 4:
-                self._render_ratio_tab(root_id or pid)
-            elif tab_idx == 2:
-                if root_id is not None:
-                    self._draw_canvas_family(root_id, target_canvas=self.combo_canvas)
-                if pid is not None:
-                    self._render_siblings(pid,
-                                          target_sibs=self.combo_sibs_inner,
-                                          target_ratio=self.combo_ratio_frame)
-            else:
-                if root_id is not None:
-                    self._draw_canvas_family(root_id)
-                if pid is not None:
-                    self._render_siblings(pid)
+            # Lineage is always visible — always refresh it
+            self._draw_canvas_family(root_id)
+
+            if tab_idx == 0 and pid is not None:    # Pod Seeds
+                self._render_siblings(pid)
+            elif tab_idx == 2 and root_id is not None:  # Trait Ratio
+                self._render_ratio_tab(root_id)
         except Exception:
             pass
 
@@ -4069,11 +4076,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                                   tags=(f"node_{pid_str}", "node"))
 
             try:
-                if c is self.combo_canvas:
-                    c.tag_bind("node", "<Button-1>",
-                               lambda e: self._on_canvas_node_click(e, source_canvas=self.combo_canvas))
-                else:
-                    c.tag_bind("node", "<Button-1>", self._on_canvas_node_click)
+                c.tag_bind("node", "<Button-1>", self._on_canvas_node_click)
             except Exception:
                 pass
 
@@ -4351,7 +4354,14 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
         sel = self._get_snap(pid)
         if not sel:
-            tk.Label(pods_row_frame, text="No archived siblings.", bg=self.PANEL, fg=self.MUTED).pack(anchor="w", padx=8, pady=8)
+            tk.Label(pods_row_frame, text="No archived siblings.", bg=self.PANEL, fg=self.MUTED,
+                     font=("Segoe UI", 11)).pack(anchor="w", padx=12, pady=16)
+            # Reveal canvas so the message is visible
+            try:
+                if not is_combo and getattr(self, "_pods_win", None):
+                    self.pods_scroll_canvas.itemconfig(self._pods_win, state="normal")
+            except Exception:
+                pass
             return
 
         # which trait to render in sibling icons
@@ -4384,7 +4394,14 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 pods.setdefault(pidx, []).append((cid, csnap))
 
         if not pods:
-            tk.Label(_sibs_frame, text="No archived siblings.", bg=self.PANEL, fg=self.MUTED).pack(anchor="w", padx=8, pady=8)
+            tk.Label(_sibs_frame, text="No siblings found for this plant.", bg=self.PANEL, fg=self.MUTED,
+                     font=("Segoe UI", 11)).pack(anchor="w", padx=12, pady=16)
+            # Reveal canvas so the message is visible
+            try:
+                if not is_combo and getattr(self, "_pods_win", None):
+                    self.pods_scroll_canvas.itemconfig(self._pods_win, state="normal")
+            except Exception:
+                pass
             return
 
         # ===== Use persistent canvas/row (set up in __init__) =====
@@ -4472,9 +4489,43 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 pod_color_val = ""
             col_bg = self._pod_tint_from_color(pod_color_val)
 
-            # Entire card (title + icons + ratio) uses the tint
-            card = tk.Frame(pods_row, bg=col_bg, highlightthickness=1, highlightbackground="#2b4d59")
-            card.pack(side="left", padx=10, pady=8, fill="y")
+            # ── Rounded card: outer Canvas draws bg, inner Frame holds content ──
+            _CR = 20  # corner radius — pronounced smooth curves
+            _CP = 6   # internal padding
+            card_canvas = tk.Canvas(pods_row, bg=self.PANEL,
+                                     highlightthickness=0, bd=0)
+            card_canvas.pack(side="left", padx=10, pady=8, fill="y")
+            card = tk.Frame(card_canvas, bg=col_bg)
+            card_canvas.create_window(_CP, _CP, anchor="nw", window=card)
+
+            def _redraw_card(event=None, _cc=card_canvas, _cf=card,
+                             _bg=col_bg, _p=_CP, _r=_CR):
+                try:
+                    _cf.update_idletasks()
+                    iw = _cf.winfo_reqwidth()
+                    ih = _cf.winfo_reqheight()
+                    if iw < 2 or ih < 2:
+                        return
+                    w = iw + 2 * _p
+                    h = ih + 2 * _p
+                    _cc.configure(width=w, height=h)
+                    _cc.delete("rrect")
+                    pts = [
+                        _r, 0,  w-_r, 0,
+                        w,  0,  w,    _r,
+                        w,  h-_r, w,  h,
+                        w-_r, h, _r,  h,
+                        0,  h,  0,    h-_r,
+                        0,  _r, 0,    0,
+                    ]
+                    _cc.create_polygon(pts, smooth=True,
+                                       fill=_bg, outline="#2b4d59", width=1,
+                                       tags="rrect")
+                    _cc.tag_lower("rrect")
+                except Exception:
+                    pass
+            card.bind("<Configure>", _redraw_card)
+            card_canvas.after(20, _redraw_card)
 
             tk.Label(card, text=f"Pod #{pidx if pidx is not None else '?'}",
                      bg=col_bg, fg=self.FG, font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=10, pady=(10,6))
@@ -4491,18 +4542,28 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 row = tk.Frame(col, bg=col_bg)
                 row.pack(anchor="w", pady=4)
 
-                canvas_w = 28 if is_combo else 56
-                canvas_h = 28 if is_combo else 56
+                # Load icon first; subsample for small mode BEFORE sizing canvas
+                im = self._icon_for_snap(_sib_trait_key, csnap, sx=self.SCALE_SIB, sy=self.SCALE_SIB)
+                _default_sz = 28 if (is_combo or self._pods_icon_small) else 56
+                if im is not None:
+                    try:
+                        if self._pods_icon_small and not is_combo:
+                            try:
+                                im = im.subsample(2, 2)
+                            except Exception:
+                                pass   # non-PIL image; will render at original size
+                        canvas_w = im.width()
+                        canvas_h = im.height()
+                    except Exception:
+                        canvas_w = canvas_h = _default_sz
+                else:
+                    canvas_w = canvas_h = _default_sz
+
                 c = tk.Canvas(row, width=canvas_w, height=canvas_h, bg=col_bg, highlightthickness=0)
                 c.pack()
-
-                im = self._icon_for_snap(_sib_trait_key, csnap, sx=self.SCALE_SIB, sy=self.SCALE_SIB)
                 img_id = None
 
                 if im is not None:
-                    if is_combo and hasattr(im, "subsample"):
-                        try: im = im.subsample(2, 2)
-                        except Exception: pass
                     img_id = c.create_image(canvas_w // 2, canvas_h // 2, image=im)
                     self._img_refs.append(im)
                 else:
@@ -4562,11 +4623,12 @@ class TraitInheritanceExplorer(tk.Toplevel):
                                    sum(grand_counter.values()), law_parts, compact=True,
                                    title="Sibling ratio")
         else:
-            # Pods tab: show ratio in right panel
+            # Pods tab: render ratio inline in pods_row, right after the last pod card
             try:
-                for w in self.pods_tab_ratio_frame.winfo_children(): w.destroy()
                 ordered_pods = sorted(grand_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
-                self._render_ratio_box(self.pods_tab_ratio_frame, _sib_trait_key, ordered_pods,
+                ratio_inline = tk.Frame(pods_row, bg=self.PANEL)
+                ratio_inline.pack(side="left", padx=(16, 10), pady=8, anchor="n")
+                self._render_ratio_box(ratio_inline, _sib_trait_key, ordered_pods,
                                        sum(grand_counter.values()), law_parts, compact=True)
             except Exception:
                 pass
@@ -4576,13 +4638,21 @@ class TraitInheritanceExplorer(tk.Toplevel):
             pods_row.update_idletasks()
             max_h = 0
             pod_total_w = 0
-            for card in pods_row.winfo_children():
-                h = card.winfo_reqheight()
-                w = card.winfo_reqwidth()
+            for card_canvas in pods_row.winfo_children():
+                # Skip the ratio_inline frame (it's a plain Frame, not a Canvas card)
+                if not isinstance(card_canvas, tk.Canvas):
+                    continue
+                h = card_canvas.winfo_reqheight()
+                w = card_canvas.winfo_reqwidth()
                 if h > max_h: max_h = h
                 pod_total_w += w + 20
             if max_h:
-                pods_canvas.configure(height=max_h + 40)
+                # Don't force canvas taller than needed — let scrollbar handle overflow
+                try:
+                    visible_h = self.pods_scroll_canvas.winfo_height()
+                    pods_canvas.configure(height=max(max_h + 40, visible_h))
+                except Exception:
+                    pods_canvas.configure(height=max_h + 40)
             if is_combo:
                 self._combo_pods_w = pod_total_w
                 # Measure actual total height of combo right column content
@@ -4599,8 +4669,25 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 except Exception:
                     pass
             else:
-                self._pods_content_w = pod_total_w
+                # pod_total_w is only the card canvases; cap to ~5 cards for sane window sizing
+                self._pods_content_w = min(pod_total_w, 5 * 160 + 100)
                 self._pods_content_h = max_h + 160
+                # Propagate vertical scroll to all pod children
+                try:
+                    def _bind_vscroll(w):
+                        def _vw(e):
+                            try:
+                                self.pods_scroll_canvas.yview_scroll(int(-1*(e.delta/120)), "units")
+                            except Exception:
+                                pass
+                        w.bind("<MouseWheel>", _vw, add="+")
+                        w.bind("<Button-4>", lambda e: self.pods_scroll_canvas.yview_scroll(-1,"units"), add="+")
+                        w.bind("<Button-5>", lambda e: self.pods_scroll_canvas.yview_scroll( 1,"units"), add="+")
+                        for child in w.winfo_children():
+                            _bind_vscroll(child)
+                    _bind_vscroll(self.pods_row)
+                except Exception:
+                    pass
         except Exception:
             pass
         # Reveal pods canvas now content is built — prevents flicker
@@ -4698,8 +4785,10 @@ class TraitInheritanceExplorer(tk.Toplevel):
             tk.Label(cell, text=str(count), bg=self.PANEL, fg=self.FG,
                      font=("Segoe UI", 10, "bold")).pack(pady=(2, 0))
 
-    def _render_ratio_box(self, parent, tkey, ordered, total, law_parts, compact=False, title="Total ratio"):
+    def _render_ratio_box(self, parent, tkey, ordered, total, law_parts, compact=False, title="Total ratio", font_scale=1.0):
         """Render the full ratio box + icon/count row into `parent` frame."""
+        def _fs(base): return int(round(base * font_scale))
+
         counts = [c for _, c in ordered]
         if total > 0 and counts:
             if len(counts) == 2 and counts[1] > 0:
@@ -4722,21 +4811,26 @@ class TraitInheritanceExplorer(tk.Toplevel):
         box_pad   = (10, 6) if compact else (30, 12)
         box_ipad  = 8       if compact else 24
         box_ipady = 6       if compact else 12
-        ratio_fs  = 16      if compact else 24
-        pct_fs    = 9       if compact else 10
-        sep_fs    = 12      if compact else 16
-        cnt_fs    = 10      if compact else 12
+        ratio_fs  = _fs(16  if compact else 24)
+        pct_fs    = _fs(9   if compact else 10)
+        sep_fs    = _fs(12  if compact else 16)
+        cnt_fs    = _fs(10  if compact else 12)
+        ttl_fs    = _fs(9   if compact else 11)
         icon_pad  = 4       if compact else 8
         icon_sc   = 1
 
-        tk.Label(parent, text=title,
-                 bg=self.PANEL, fg=self.MUTED,
-                 font=("Segoe UI", 9 if compact else 11)).pack(pady=top_pad)
+        # Wrap everything in a sub-frame so the group is left-aligned
+        # but items inside are centred relative to each other
+        grp = tk.Frame(parent, bg=self.PANEL)
+        grp.pack(anchor="w", padx=(12, 0))
 
-        box = tk.Frame(parent, bg="#12303f",
+        tk.Label(grp, text=title,
+                 bg=self.PANEL, fg=self.MUTED,
+                 font=("Segoe UI", ttl_fs)).pack(pady=top_pad)
+
+        box = tk.Frame(grp, bg="#12303f",
                        highlightthickness=2, highlightbackground="#2a5a7a")
-        box.pack(padx=box_pad[0], pady=(0, box_pad[1]),
-                 ipadx=box_ipad, ipady=box_ipady)
+        box.pack(pady=(0, box_pad[1]), ipadx=box_ipad, ipady=box_ipady)
 
         tk.Label(box, text=ratio_str,
                  bg="#12303f", fg=self.FG,
@@ -4749,9 +4843,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
                      font=("Segoe UI", pct_fs),
                      anchor="center").pack(pady=(2, 4))
 
-        # Icon + count row
+        # Icon + count row — centred within the sub-frame
         if ordered and total > 0:
-            icon_row = tk.Frame(parent, bg=self.PANEL)
+            icon_row = tk.Frame(grp, bg=self.PANEL)
             icon_row.pack(pady=(0, 4))
             self._img_refs = getattr(self, "_img_refs", [])
             for i, (val_name, count) in enumerate(ordered):
@@ -4767,7 +4861,6 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     dummy = {"traits": {tkey: val_name}}
                 try:
                     if tkey == "pod_shape":
-                        # Greyscale pod shape: load from path with PIL
                         s = str(val_name).lower()
                         s = "constricted" if "constrict" in s else ("inflated" if "inflate" in s else s)
                         try:
@@ -4790,16 +4883,15 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 else:
                     tk.Label(cell, text=val_name,
                              bg=self.PANEL, fg=self.MUTED,
-                             font=("Segoe UI", 9)).pack()
+                             font=("Segoe UI", _fs(9))).pack()
                 tk.Label(cell, text=str(count),
                          bg=self.PANEL, fg=self.FG,
                          font=("Segoe UI", cnt_fs, "bold")).pack(pady=(2, 0))
 
         for lp in law_parts:
-            tk.Label(parent, text=lp,
+            tk.Label(grp, text=lp,
                      bg=self.PANEL, fg=self.MUTED,
-                     font=("Segoe UI", 10, "italic"),
-                     anchor="center").pack(fill="x", pady=(4, 0))
+                     font=("Segoe UI", _fs(10), "italic")).pack(pady=(4, 0))
 
     def _collect_segregation_contributors(self, pid, tkey):
         """Replicate the Law 2 family-signature filter for `tkey`.
@@ -4949,6 +5041,16 @@ class TraitInheritanceExplorer(tk.Toplevel):
         families.sort(key=lambda f: -f["n"])
         return dom_pheno, rec_pheno, total_dom, total_rec, families
 
+    def _toggle_ratio_font_size(self):
+        """Toggle Trait Ratio tab between normal and enlarged font sizes."""
+        self._ratio_font_large = not getattr(self, "_ratio_font_large", False)
+        self._ratio_size_btn.config(
+            text="－" if self._ratio_font_large else "＋")
+        pid_ = (getattr(self, "_pods_pid", None) or
+                getattr(self, "current_pid", None))
+        if pid_:
+            self._render_ratio_tab(pid_)
+
     def _render_ratio_tab(self, pid):
         """Populate the Trait Ratio tab: direct siblings → contributing families (with totals) → pooled ratio."""
         frame = self.ratio_tab_frame
@@ -5017,10 +5119,13 @@ class TraitInheritanceExplorer(tk.Toplevel):
             for child in w.winfo_children():
                 _bind_all_children(child, fn)
 
+        _rfs = 1.4 if getattr(self, "_ratio_font_large", False) else 1.0
+        def _fs(base): return int(round(base * _rfs))
+
         SEP_BG     = "#1e3a4a"
-        HDR_FONT   = ("Segoe UI", 11, "bold")
-        NOTE_FONT  = ("Segoe UI", 10)
-        MONO_FONT  = ("Consolas", 10)
+        HDR_FONT   = ("Segoe UI", _fs(11), "bold")
+        NOTE_FONT  = ("Segoe UI", _fs(10))
+        MONO_FONT  = ("Consolas", _fs(10))
         GREEN_NOTE = "#6dbf67"
 
         def _sep():
@@ -5064,7 +5169,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         sib_total = sum(counter.values())
         sib_ordered = sorted(counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
         self._render_ratio_box(sec1, tkey, sib_ordered, sib_total, [],
-                               compact=True, title="Sibling ratio")
+                               compact=True, title="Sibling ratio", font_scale=_rfs)
 
         _sep()
 
@@ -5109,9 +5214,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 ("Ratio",     "e", 90,  False),
             ]
 
-            HDR_ROW_FONT  = ("Segoe UI",  10, "bold")
-            DATA_ROW_FONT = ("Consolas",  11)
-            TOT_ROW_FONT  = ("Segoe UI",  11, "bold")
+            HDR_ROW_FONT  = ("Segoe UI",  _fs(10), "bold")
+            DATA_ROW_FONT = ("Consolas",  _fs(11))
+            TOT_ROW_FONT  = ("Segoe UI",  _fs(11), "bold")
             PAD_X = (6, 6)
 
             # configure column weights so the last column fills available space
@@ -5255,7 +5360,8 @@ class TraitInheritanceExplorer(tk.Toplevel):
             except Exception:
                 pass
             self._render_ratio_box(sec3, tkey, sci_ordered, sci_total,
-                                   sci_law_parts, compact=True, title="Scientific ratio")
+                                   sci_law_parts, compact=True, title="Pooled Ratio",
+                                   font_scale=_rfs)
         else:
             msg = ("Not enough data for this trait in the verified pool yet." if tkey in
                    {"flower_color", "pod_color", "seed_color", "seed_shape", "plant_height"}
@@ -5277,7 +5383,13 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 pass
 
     def _on_tab_changed(self):
-        """Re-render active tab and recalculate window size when tab is switched."""
+        """Re-render active tab when tab is switched.
+
+        Tab indices (notebook only — lineage is always visible in fixed left pane):
+            0 = Pod Seeds
+            1 = Punnett Square
+            2 = Trait Ratio
+        """
         pid = getattr(self, "current_pid", None)
         if pid is None:
             return
@@ -5286,54 +5398,41 @@ class TraitInheritanceExplorer(tk.Toplevel):
         except Exception:
             tab_idx = 0
         self._switch_tab_frame(tab_idx)
-        # Hide the shared trait toolbar on the Punnett Square tab (it has its own selectors)
+        # Hide the shared trait toolbar on Punnett Square (it has its own title selectors)
         try:
-            if tab_idx == 3:
+            if tab_idx == 1:  # Punnett Square
                 self._shared_toolbar.pack_forget()
             else:
-                # Re-pack AFTER the notebook so it stays between the tabs and content area
                 self._shared_toolbar.pack(side="top", fill="x",
                                           padx=self.PAD, pady=(6, 4),
                                           after=self.tie_notebook)
+                # Show tab-specific size toggle button
+                if tab_idx == 0:   # Pod Seeds
+                    self._pods_size_btn.pack(side="left", padx=(12, 0))
+                    self._ratio_size_btn.pack_forget()
+                elif tab_idx == 2:  # Trait Ratio
+                    self._ratio_size_btn.pack(side="left", padx=(12, 0))
+                    self._pods_size_btn.pack_forget()
+                else:
+                    self._pods_size_btn.pack_forget()
+                    self._ratio_size_btn.pack_forget()
         except Exception:
             pass
-        # Leaving Lineage: save the highlighted node, remember it for Pods/Ratio
-        if tab_idx != 0:
-            prev = getattr(self, "preview_pid", None)
-            if prev:
-                self._pods_pid = str(prev)
-                self._saved_preview_pid = str(prev)   # remember for return
-            else:
-                self._pods_pid = str(pid) if pid else None
-                # keep _saved_preview_pid as-is (don't overwrite with None)
-            self.preview_pid = None
-        else:
-            # Returning to Lineage: restore saved highlighted node
-            self.preview_pid = getattr(self, "_saved_preview_pid", None)
-            self._pods_pid = None
-        pods_pid = getattr(self, "_pods_pid", None) or pid
-        if tab_idx == 0:
-            self._draw_canvas_family(pid)
-        elif tab_idx == 1:
+        # Use preview node (clicked ancestor) as pods_pid when available,
+        # but always fall back to current_pid — never leave pods_pid as None
+        # so F0 or any plant without siblings stays selected.
+        prev = getattr(self, "preview_pid", None)
+        pods_pid = str(prev) if prev else (str(pid) if pid else None)
+        self._pods_pid = pods_pid or str(pid)
+        # Lineage is always visible — always redraw it
+        self._draw_canvas_family(pid)
+        if tab_idx == 0:    # Pod Seeds
             self._render_siblings(pods_pid)
-        elif tab_idx == 4:
-            self._render_ratio_tab(pods_pid)
-        elif tab_idx == 3:
-            self._on_cross_settings_changed(_skip_render=True)  # show/hide Trait 2 correctly
+        elif tab_idx == 1:  # Punnett Square
+            self._on_cross_settings_changed(_skip_render=True)
             self._render_cross_tab(pods_pid)
-        else:
-            # Combo tab — render both sides, then do ONE resize after both settle
-            self._combo_sizing_pending = True
-            self._draw_canvas_family(pid, target_canvas=self.combo_canvas)
-            self._render_siblings(pods_pid,
-                                  target_sibs=self.combo_sibs_inner,
-                                  target_ratio=self.combo_ratio_frame)
-            self._combo_sizing_pending = False
-            # Give Tkinter one full event-loop pass to finish geometry, then size.
-            # A second pass at 300 ms catches pod widgets that haven't settled yet
-            # on the first paint (which makes _combo_pods_w come back near-zero).
-            self.after(80, self._auto_resize_window)
-            self.after(300, self._auto_resize_window)
+        elif tab_idx == 2:  # Trait Ratio
+            self._render_ratio_tab(pods_pid)
 
     def _update_combo_scrollregion(self):
         """Set combo main canvas scrollregion from actual inner content bbox."""
@@ -5351,18 +5450,17 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
     def _auto_resize_window(self):
         """Resize window to fit active tab content. Capped at 1024px tall."""
-        if getattr(self, "_combo_sizing_pending", False):
-            return   # let the explicit after(80) handle it
         try:
             self.update_idletasks()
-            LEFT_W   = 230
-            CHROME   = 36
-            PAD      = 60
-            TAB_BAR  = 36
-            TOGGLES  = 34
-            RATIO_H  = 36
-            CHROME_V = 80
-            MAX_H    = 1024
+            LEFT_W      = 230   # plant list pane
+            LINEAGE_W   = 500   # fixed lineage pane (default sash position)
+            CHROME      = 36
+            PAD         = 60
+            TAB_BAR     = 36
+            TOGGLES     = 34
+            RATIO_H     = 36
+            CHROME_V    = 80
+            MAX_H       = 1024
 
             screen_w = self.winfo_screenwidth()
             screen_h = self.winfo_screenheight()
@@ -5372,39 +5470,22 @@ class TraitInheritanceExplorer(tk.Toplevel):
             except Exception:
                 tab_idx = 0
 
-            if tab_idx == 2:
-                # Combo tab: tree + pods side by side
-                tree_w = getattr(self, "_combo_tree_w", getattr(self, "_tree_content_w", 0))
-                tree_h = getattr(self, "_combo_tree_h", getattr(self, "_tree_content_h", 0))
-                pods_w = getattr(self, "_combo_pods_w", getattr(self, "_pods_content_w", 0))
-                pods_h = getattr(self, "_combo_pods_h", getattr(self, "_pods_content_h", 0))
-                notebook_w = max(700, tree_w + pods_w + PAD)
-                notebook_h = max(600, max(tree_h, pods_h) + TAB_BAR + TOGGLES + CHROME_V)
-            elif tab_idx == 0:
-                # Lineage tab: size only to the tree content
-                tree_w = getattr(self, "_tree_content_w", 0)
-                tree_h = getattr(self, "_tree_content_h", 0) + TAB_BAR + TOGGLES + CHROME_V
-                notebook_w = max(700, tree_w + PAD)
-                notebook_h = max(600, tree_h)
+            if tab_idx == 1:
+                # Punnett Square: size tabs_pane to cross canvas scrollregion
+                CROSS_CTRL_H = 46
+                pw_canvas = getattr(self, "_punnett_content_w", 0)
+                ph_canvas = getattr(self, "_punnett_content_h", 0)
+                notebook_w = max(820, pw_canvas + PAD + 30)
+                notebook_h = max(700, ph_canvas + TAB_BAR + CROSS_CTRL_H + CHROME_V)
             else:
-                # Pods / Ratio tabs: size to their own content
+                # Pod Seeds / Trait Ratio: size to pods content
                 pods_w = getattr(self, "_pods_content_w", 0)
                 pods_h = getattr(self, "_pods_content_h", 0) + TAB_BAR + TOGGLES + RATIO_H + CHROME_V
-                _prev_w = getattr(self, "_last_non_combo_w", 0) - LEFT_W - CHROME
+                _prev_w = getattr(self, "_last_non_punnett_w", 0) - LEFT_W - LINEAGE_W - CHROME
                 notebook_w = max(700, pods_w + PAD, _prev_w)
                 notebook_h = max(600, pods_h)
 
-            if tab_idx == 3:
-                # Punnett Square tab: size to the cross canvas scrollregion
-                # (stored after each render in _draw_monohybrid / _draw_dihybrid)
-                pw_canvas = getattr(self, "_punnett_content_w", 0)
-                ph_canvas = getattr(self, "_punnett_content_h", 0)
-                # Add room for the cross-ctrl toolbar (Type/Trait selectors row)
-                CROSS_CTRL_H = 46
-                notebook_w = max(820, pw_canvas + PAD + 30)
-                notebook_h = max(700, ph_canvas + TAB_BAR + CROSS_CTRL_H + CHROME_V)
-
-            total_w = LEFT_W + notebook_w + CHROME
+            total_w = LEFT_W + LINEAGE_W + notebook_w + CHROME
             total_w = max(900, min(total_w, screen_w - 20))
             total_h = max(600, min(notebook_h, MAX_H, screen_h - 60))
 
@@ -5412,24 +5493,14 @@ class TraitInheritanceExplorer(tk.Toplevel):
             cur_y = self.winfo_y()
             self.geometry(f"{total_w}x{total_h}+{cur_x}+{cur_y}")
             self.update_idletasks()
-            # Re-pin the outer left sash (plant list vs notebook)
+            # Re-pin the outer left sash (plant list vs right split)
             for w in self.winfo_children():
                 if isinstance(w, ttk.Panedwindow):
                     w.sashpos(0, LEFT_W)
                     break
-            # Combo tab: resize the right panel width and update combo_canvas height
-            if tab_idx == 2:
-                try:
-                    _ctw = getattr(self, "_combo_tree_w", getattr(self, "_tree_content_w", 400))
-                    _cth = getattr(self, "_combo_tree_h", getattr(self, "_tree_content_h", 400))
-                    self.combo_canvas.configure(width=_ctw, height=_cth)
-                    self.update_idletasks()
-                    self._update_combo_scrollregion()
-                except Exception:
-                    pass
-            if tab_idx != 2:
-                self._last_non_combo_w = total_w
-                self._last_non_combo_h = total_h
+            if tab_idx != 1:
+                self._last_non_punnett_w = total_w
+                self._last_non_punnett_h = total_h
             self._layout_done = True
         except Exception:
             pass
@@ -5450,22 +5521,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self.lbl_left_parents.config(text=f"Parents: ♀ #{g('mother_id','?')}  |  ♂ #{g('father_id','?')}")
         pass  # parents_right removed
         self._render_traits(snap)
+        # Lineage is always visible — always draw it
+        self._draw_canvas_family(g('id', pid))
         try:
             tab_idx = self.tie_notebook.index(self.tie_notebook.select())
         except Exception:
             tab_idx = 0
-        if tab_idx == 4:
-            self._render_ratio_tab(g('id', pid))
-        elif tab_idx == 2:
-            self._render_siblings(g('id', pid),
-                                  target_sibs=self.combo_sibs_inner,
-                                  target_ratio=self.combo_ratio_frame)
-            self._draw_canvas_family(g('id', pid), target_canvas=self.combo_canvas)
-        elif tab_idx == 3:
-            self._render_cross_tab(g('id', pid))
-        else:
+        if tab_idx == 0:    # Pod Seeds
             self._render_siblings(g('id', pid))
-            self._draw_canvas_family(g('id', pid))
+        elif tab_idx == 1:  # Punnett Square
+            self._render_cross_tab(g('id', pid))
+        elif tab_idx == 2:  # Trait Ratio
+            self._render_ratio_tab(g('id', pid))
     # =========================================================================
     # Cross Diagrams tab — Punnett square renderer
     # =========================================================================
@@ -5492,16 +5559,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
     def _on_cross_settings_changed(self, _skip_render=False):
         pid = getattr(self, "current_pid", None)
-        # Show/hide Trait 2 selector depending on mono/dihybrid
+        # Show/hide Trait 2 menu (and × label) in the title frame; size btn in cross_ctrl
         try:
             if self._cross_mode.get() == "Dihybrid":
-                self._cross_t2_lbl.pack(side="left", padx=(16, 0),
-                                        before=self._cross_best_btn)
-                self._cross_t2_menu.pack(side="left", padx=(4, 0),
-                                         before=self._cross_best_btn)
+                self._cross_x_lbl.pack(side="left")
+                self._cross_t2_menu.pack(side="left")
+                self._punnett_size_btn.pack(side="left", padx=(16, 0))
             else:
-                self._cross_t2_lbl.pack_forget()
+                self._cross_x_lbl.pack_forget()
                 self._cross_t2_menu.pack_forget()
+                self._punnett_size_btn.pack_forget()
+                self._punnett_large = False
+                self._punnett_size_btn.config(text="＋")
         except Exception:
             pass
         if _skip_render:
@@ -5512,7 +5581,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             tab_idx = self.tie_notebook.index(self.tie_notebook.select())
         except Exception:
             tab_idx = -1
-        if tab_idx == 3:
+        if tab_idx == 1:
             self._render_cross_tab(pid)
 
 
@@ -5810,34 +5879,56 @@ class TraitInheritanceExplorer(tk.Toplevel):
     def _draw_monohybrid(self, c, siblings, _tv,
                          tk1, d1, r1, dom1, rec1, name1):
         CELL  = 110
-        ML    = 90   # left margin (row headers)
-        MT    = 115  # top margin (col headers) — increased to give title/subtitle room
+        ML    = 90
         PAD   = 20
         FONT  = ("Segoe UI", 11, "bold")
         FONT_S= ("Segoe UI", 10)
-        FONT_G= ("Segoe UI", 14, "bold")   # genotype inside cell
+        FONT_G= ("Segoe UI", 14, "bold")
         FG    = self.FG
         MUTED = self.MUTED
 
-        gametes = [d1, r1]  # both parents assumed Dd (heterozygous)
+        # ── Measure title frame to compute all vertical positions ──────────────
+        TITLE_TOP   = 6    # canvas y where title frame starts
+        TITLE_GAP   = 10   # gap between title bottom and subtitle
+        SUBTITLE_H  = 18   # approximate height of one line of FONT_S text
+        SUBTITLE_GAP= 14   # gap between subtitle bottom and column-header rect top
+        HEADER_H    = 38   # height of monohybrid column-header rect
 
-        # Count siblings by phenotype
+        try:
+            self._cross_title_frame.update_idletasks()
+            title_h = max(self._cross_title_frame.winfo_reqheight(), 30)
+        except Exception:
+            title_h = 44
+
+        subtitle_y = TITLE_TOP + title_h + TITLE_GAP   # anchor="n"
+        MT = subtitle_y + SUBTITLE_H + SUBTITLE_GAP + HEADER_H
+
+        gametes = [d1, r1]
+
         n_dom = sum(1 for s in siblings if _tv(s, tk1) != rec1 and _tv(s, tk1))
         n_rec = sum(1 for s in siblings if _tv(s, tk1) == rec1)
         total = n_dom + n_rec
 
-        W = ML + 2 * CELL + PAD + 60   # extra width so badge + ratio text fits
+        grid_cx = ML + CELL
+        W = ML + 2 * CELL + PAD + 60
         H = MT + 2 * CELL + PAD + 140
 
         c.configure(scrollregion=(0, 0, W, H))
-        # Store for window auto-resize
         self._punnett_content_w = W
         self._punnett_content_h = H
 
-        # Title
-        c.create_text(W // 2, 12, text=f"Monohybrid Cross — {name1}",
-                      fill=FG, font=("Segoe UI", 14, "bold"), anchor="n")
-        c.create_text(W // 2, 38, text=f"Parent × Parent  ({d1}{r1} × {d1}{r1})",
+        # Embed title frame centred above the grid
+        c.delete("punnett_title_win")
+        try:
+            c.create_window(grid_cx, TITLE_TOP, anchor="n",
+                            window=self._cross_title_frame,
+                            tags="punnett_title_win")
+        except Exception:
+            pass
+
+        # Subtitle — positioned exactly below title, above headers
+        c.create_text(grid_cx, subtitle_y,
+                      text=f"Parent \u00d7 Parent  ({d1}{r1} \u00d7 {d1}{r1})",
                       fill=MUTED, font=FONT_S, anchor="n")
 
         # Column headers
@@ -5876,22 +5967,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
                 c.create_rectangle(x0, y0, x1, y1, fill=bg, outline="#2a5060", width=2)
 
-                # Genotype
-                c.create_text(x0 + CELL // 2, y0 + 18, text=geno,
-                               fill=FG if has_data else MUTED, font=FONT)
-
-                # Trait icon
+                # Trait icon — centred in cell
                 try:
                     fake = {"traits": {tk1: pheno}}
                     im = self._icon_for_snap(tk1, fake, sx=1.2, sy=1.2)
                     if im:
-                        c.create_image(x0 + CELL // 2, y0 + CELL // 2 + 8, image=im)
+                        c.create_image(x0 + CELL // 2, y0 + CELL // 2 - 10, image=im)
                         self._cross_img_refs.append(im)
                 except Exception:
                     pass
 
-                # Phenotype label
-                c.create_text(x0 + CELL // 2, y1 - 18, text=pheno.capitalize(),
+                # Phenotype label only (genotype shown in row/col headers)
+                c.create_text(x0 + CELL // 2, y1 - 14, text=pheno.capitalize(),
                                fill=FG if has_data else MUTED, font=FONT_S)
 
         # Count badges on phenotype classes
@@ -5922,9 +6009,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
     def _draw_dihybrid(self, c, siblings, _tv,
                        tk1, d1, r1, dom1, rec1, name1,
                        tk2, d2, r2, dom2, rec2, name2):
-        CELL  = 95
-        ML    = 108  # left margin
-        MT    = 120  # top margin — increased to give title/subtitle clear room
+        _scale  = 1.5 if getattr(self, "_punnett_large", False) else 1
+        CELL  = int(95 * _scale)
+        ML    = 108
         PAD   = 20
         FONT  = ("Segoe UI", 10, "bold")
         FONT_S= ("Segoe UI", 10)
@@ -5932,11 +6019,25 @@ class TraitInheritanceExplorer(tk.Toplevel):
         FG    = self.FG
         MUTED = self.MUTED
 
-        # Gametes for a dihybrid parent (d1d2, d1r2, r1d2, r1r2)
+        # ── Measure title frame to compute all vertical positions ──────────────
+        TITLE_TOP   = 6
+        TITLE_GAP   = 10
+        SUBTITLE_H  = 18
+        SUBTITLE_GAP= 14
+        HEADER_H    = 46   # height of dihybrid column-header rect
+
+        try:
+            self._cross_title_frame.update_idletasks()
+            title_h = max(self._cross_title_frame.winfo_reqheight(), 30)
+        except Exception:
+            title_h = 44
+
+        subtitle_y = TITLE_TOP + title_h + TITLE_GAP
+        MT = subtitle_y + SUBTITLE_H + SUBTITLE_GAP + HEADER_H
+
         gametes = [(d1, d2), (d1, r2), (r1, d2), (r1, r2)]
         gam_labels = [f"{a}{b}" for a, b in gametes]
 
-        # Count siblings per phenotype class: (is_dom1, is_dom2)
         counts = {(True, True): 0, (True, False): 0, (False, True): 0, (False, False): 0}
         total = 0
         for s in siblings:
@@ -5955,24 +6056,28 @@ class TraitInheritanceExplorer(tk.Toplevel):
         expected_ratio = [9, 3, 3, 1]
 
         LEGEND_X = ML + 4 * CELL + 18
-        LEGEND_W = 180   # extra width reserved for the legend column
+        LEGEND_W = int(200 * _scale)
         W = LEGEND_X + LEGEND_W + PAD
         H = MT + 4 * CELL + PAD + 140
 
         c.configure(scrollregion=(0, 0, W, H))
-        # Store for window auto-resize (Punnett tab needs own sizing)
         self._punnett_content_w = W
         self._punnett_content_h = H
 
-        # Title — centred over the grid portion only
         grid_cx = ML + 2 * CELL
-        c.create_text(grid_cx, 12, anchor="n",
-                      text=f"Dihybrid Cross — {name1}  \u00d7  {name2}",
-                      fill=FG, font=("Segoe UI", 14, "bold"))
-        # Parent genotype: use slash notation so multi-char alleles (Le, Gp, Fa) read cleanly
-        # e.g. "LeGp / legp" instead of the old "LeGplegp" concat
+
+        # Embed title frame centred above the grid
+        c.delete("punnett_title_win")
+        try:
+            c.create_window(grid_cx, TITLE_TOP, anchor="n",
+                            window=self._cross_title_frame,
+                            tags="punnett_title_win")
+        except Exception:
+            pass
+
+        # Subtitle — positioned exactly below title, above headers
         parent_gam_str = f"{d1}{d2} / {r1}{r2}"
-        c.create_text(grid_cx, 38, anchor="n",
+        c.create_text(grid_cx, subtitle_y, anchor="n",
                       text=f"Parent \u00d7 Parent  ({parent_gam_str}  \u00d7  {parent_gam_str})",
                       fill=MUTED, font=FONT_S)
 
@@ -6021,24 +6126,20 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 pheno1 = dom1 if is_dom_t1 else rec1
                 pheno2 = dom2 if is_dom_t2 else rec2
 
-                # Top label: trait 1 phenotype + alleles  e.g. "purple – Aa"
-                label1 = f"{pheno1.capitalize()} \u2013 {geno1}"
-                c.create_text(mid_x, y0 + 10, text=label1,
-                               fill=FG if has_data else MUTED,
-                               font=("Segoe UI", 7, "bold"), anchor="center")
+                _fs_label = int(round(max(7, 8 * _scale)))
+                _fs_n     = int(round(max(7, 7 * _scale)))
 
-                # Icons for both traits — shifted up slightly
-                icon_y = y0 + CELL // 2 - 4
+                # Icons for both traits — centred in the cell
+                icon_y   = y0 + CELL // 2 - int(10 * _scale)
+                icon_sx  = 0.75 * _scale
+                icon_off = int(16 * _scale)
                 try:
-                    # Build the fake-snap dict without duplicate-key risk:
-                    # if tk1 IS "flower_color" or "pod_color", the trait value must
-                    # win over the hardcoded defaults, so we assign last.
                     _ft1 = {"pod_color": "green", "flower_color": "purple"}
                     _ft1[tk1] = pheno1
                     fake1 = {"traits": _ft1}
-                    im1 = self._icon_for_snap(tk1, fake1, sx=0.75, sy=0.75)
+                    im1 = self._icon_for_snap(tk1, fake1, sx=icon_sx, sy=icon_sx)
                     if im1:
-                        c.create_image(mid_x - 16, icon_y, image=im1)
+                        c.create_image(mid_x - icon_off, icon_y, image=im1)
                         self._cross_img_refs.append(im1)
                 except Exception:
                     pass
@@ -6046,24 +6147,26 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     _ft2 = {"pod_color": "green", "flower_color": "purple"}
                     _ft2[tk2] = pheno2
                     fake2 = {"traits": _ft2}
-                    im2 = self._icon_for_snap(tk2, fake2, sx=0.75, sy=0.75)
+                    im2 = self._icon_for_snap(tk2, fake2, sx=icon_sx, sy=icon_sx)
                     if im2:
-                        c.create_image(mid_x + 16, icon_y, image=im2)
+                        c.create_image(mid_x + icon_off, icon_y, image=im2)
                         self._cross_img_refs.append(im2)
                 except Exception:
                     pass
 
-                # Below icons: trait 2 phenotype + alleles  e.g. "round – Rr"
-                label2 = f"{pheno2.capitalize()} \u2013 {geno2}"
-                c.create_text(mid_x, y1 - 20, text=label2,
+                # Phenotype labels only (genotype shown in row/col headers)
+                c.create_text(mid_x, y0 + int(10 * _scale), text=pheno1.capitalize(),
                                fill=FG if has_data else MUTED,
-                               font=("Segoe UI", 7, "bold"), anchor="center")
+                               font=("Segoe UI", _fs_label, "bold"), anchor="center")
+                c.create_text(mid_x, y1 - int(22 * _scale), text=pheno2.capitalize(),
+                               fill=FG if has_data else MUTED,
+                               font=("Segoe UI", _fs_label, "bold"), anchor="center")
 
-                # Bottom: n = observed count
+                # Observed count
                 n_text = f"n = {observed}" if has_data else "n = 0"
-                c.create_text(mid_x, y1 - 8, text=n_text,
+                c.create_text(mid_x, y1 - int(8 * _scale), text=n_text,
                                fill=FG if has_data else "#7a9aaa",
-                               font=("Segoe UI", 7), anchor="center")
+                               font=("Segoe UI", _fs_n), anchor="center")
 
         # ── Legend aligned beside the grid ────────────────────────────────────
         # Each of the 4 phenotype classes corresponds to a band of rows in the grid.
@@ -6077,24 +6180,27 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # The row of the grid that produces each class depends on the row gamete, not a fixed map,
         # so we instead spread legend entries evenly across the full grid height, one per CELL.
         lx = LEGEND_X
+        _sw = int(14 * _scale)   # swatch width
+        _sh = int( 6 * _scale)   # swatch half-height above/below center
+        _lfs_name = int(round(max(10, 10 * _scale)))
+        _lfs_note = int(round(max( 9,  9 * _scale)))
         for i, (cls_key, cls_name, exp) in enumerate(
                 zip(pheno_class_keys, pheno_class_names, expected_ratio)):
             observed = counts[cls_key]
             has_data = observed > 0
             col = self._PUNNETT_COLORS[i] if has_data else self._PUNNETT_DIM[i]
-            # Center each legend item at the vertical midpoint of its corresponding row
             ly_center = MT + i * CELL + CELL // 2
             exp_pct = int(round(exp / 16 * 100))
             # colour swatch
-            c.create_rectangle(lx, ly_center - 8, lx + 14, ly_center + 6,
+            c.create_rectangle(lx, ly_center - _sh - 2, lx + _sw, ly_center + _sh,
                                 fill=col, outline="")
-            # phenotype name — slightly larger font
-            c.create_text(lx + 20, ly_center - 6, anchor="w", text=cls_name,
-                          fill=FG if has_data else MUTED, font=("Segoe UI", 10, "bold"))
+            # phenotype name
+            c.create_text(lx + _sw + 6, ly_center - _sh, anchor="w", text=cls_name,
+                          fill=FG if has_data else MUTED, font=("Segoe UI", _lfs_name, "bold"))
             # observed + expected on second line
-            c.create_text(lx + 20, ly_center + 9, anchor="w",
+            c.create_text(lx + _sw + 6, ly_center + _sh, anchor="w",
                           text=f"Observed: {observed}  (exp. ~{exp_pct}%)",
-                          fill=MUTED, font=("Segoe UI", 9))
+                          fill=MUTED, font=("Segoe UI", _lfs_note))
 
         # Ratio summary below grid — left-aligned from grid left edge, with wrap
         cy_summary = MT + 4 * CELL + 28
