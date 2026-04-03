@@ -710,13 +710,462 @@ class GardenApp:
 
         self.render_all()
 
+    # ========================================================================
+    # Snow Cover Management
+    # ========================================================================
+
+    def _update_snow_covers(self):
+        """
+        Gradually update per-tile snow coverage once per simulated hour.
+
+        Design goals
+        ------------
+        - Accumulation: spreads across tiles over ~3–5 hours (not all at once)
+          because each tile has only a ~38 % chance of gaining snow per hour.
+        - Persistence: snow stays until it has been on the ground for at least
+          48 sim-hours (≈ 2 simulation days) *and* temperature is above 4 °C.
+        - Fast melt: ignored when temperature exceeds 8 °C.
+        - Staggered melt: same probabilistic approach, so tiles clear one by one.
+        - Everything is wrapped in try/except so a bug here never breaks the sim.
+        """
+        try:
+            # ── Season change: flush photo cache so new season textures bake ──
+            month  = int(getattr(self.garden, 'month', 4))
+            season = ('spring' if month in (3,4,5) else
+                      'summer' if month in (6,7,8) else
+                      'autumn' if month in (9,10,11) else 'winter')
+            if season != getattr(self, '_bg_last_season', None):
+                self._bg_last_season     = season
+                self._bg_current_season  = season
+                # Reset tile keys so they rebake for the new season.
+                # Do NOT clear _bg_photo_cache — keeping all PhotoImages alive
+                # prevents tkinter from losing references mid-frame (the flash).
+                for tile in self.tiles:
+                    tile._bg_cache_key = None
+            elif not hasattr(self, '_bg_current_season'):
+                self._bg_current_season = season
+
+            # Monotonic sim-hour counter (unique per calendar hour sequence)
+            sim_hour = getattr(self, '_snow_sim_hour', 0)
+            self._snow_sim_hour = sim_hour + 1
+
+            # Current hourly temperature from today's climate curve
+            try:
+                h = int(getattr(self.garden, 'clock_hour', 12)) % 24
+                hours_data = getattr(self.garden, 'target_temps', {}).get('hours', [])
+                temp = float(hours_data[h]) if (hours_data and h < len(hours_data)) else 5.0
+            except Exception:
+                temp = 5.0
+
+            # Is snow currently falling? (garden.weather set by _recompute_weather_for_date)
+            is_snowing = '❄' in str(getattr(self.garden, 'weather', ''))
+
+            ACCUM_MAX_TEMP  = 2.5   # °C — snow accumulates at or below this
+            SLOW_MELT_TEMP  = 4.0   # °C — slow melt starts above this (if old enough)
+            FAST_MELT_TEMP  = 8.0   # °C — fast melt, overrides minimum-age check
+            MIN_SNOW_HOURS  = 48    # sim-hours before borderline-warm melt begins
+
+            for tile in self.tiles:
+                try:
+                    cover      = getattr(tile, 'snow_cover', 0.0)
+                    snow_since = getattr(tile, '_snow_since_hour', None)
+
+                    # Per-tile RNG — different outcome each hour
+                    rng = random.Random(tile.idx * 6271 + sim_hour * 7919)
+
+                    if is_snowing and temp <= ACCUM_MAX_TEMP:
+                        # ── Accumulation phase ──────────────────────────────
+                        # ~38 % chance per hour → most tiles covered in 3-5 h
+                        if rng.random() < 0.38:
+                            cover = min(1.0, cover + tile._snow_rate)
+                            if snow_since is None and cover > 0.05:
+                                tile._snow_since_hour = sim_hour
+
+                    elif cover > 0.0:
+                        # ── Melt phase ──────────────────────────────────────
+                        snow_age = (sim_hour - snow_since) if snow_since is not None else MIN_SNOW_HOURS
+
+                        if temp > FAST_MELT_TEMP:
+                            # Hot: fast staggered melt (ignore minimum age)
+                            if rng.random() < 0.55:
+                                rate = tile._snow_melt_rate * (1.0 + (temp - FAST_MELT_TEMP) * 0.08)
+                                cover = max(0.0, cover - rate)
+
+                        elif temp > SLOW_MELT_TEMP and snow_age >= MIN_SNOW_HOURS:
+                            # Warm enough AND old enough: slow staggered melt
+                            if rng.random() < 0.22:
+                                cover = max(0.0, cover - tile._snow_melt_rate * 0.5)
+
+                        # Cold, or not old enough → snow stays untouched
+
+                        if cover <= 0.0:
+                            tile._snow_since_hour = None   # reset for next snowfall
+
+                    tile.set_snow_cover(cover)
+
+                except Exception:
+                    pass
+
+            # ── Linger expiry: switch tiles from soil back to grass ───────
+            # When _soil_linger_until expires, the mode should change from
+            # 'soil' to 'grass'.  But if lighting is stable, set_soil_color
+            # is never called, so the stale _bg_cache_key is never noticed.
+            # Detect expiry here and force an immediate refresh.
+            for tile in self.tiles:
+                try:
+                    linger = tile._soil_linger_until
+                    if 0 < linger <= sim_hour:
+                        tile._soil_linger_until = 0   # reset so we don't re-fire
+                        tile._bg_cache_key = None
+                        tile.set_soil_color(
+                            getattr(tile, '_last_applied_hex', tile.soil))
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+
+    # ========================================================================
+    # Background Textures (grass / soil)
+    # ========================================================================
+
+    def _load_bg_textures(self):
+        """
+        Pre-bake day/night-tinted PIL Images for all grass and soil variants.
+
+        File discovery
+        ──────────────
+        Soil:   icons/textures/soil1.png … icons/textures/soil9.png  (whichever exist)
+        Grass:  icons/textures/grass1.png … icons/textures/grass9.png  (base / fallback)
+          Seasonal overrides (fall back to base variant if missing):
+            icons/textures/grass_spring1.png … icons/textures/grass_spring9.png
+            icons/textures/grass_summer1.png … icons/textures/grass_summer9.png
+            icons/textures/grass_autumn1.png … icons/textures/grass_autumn9.png
+            icons/textures/grass_winter1.png … icons/textures/grass_winter9.png
+
+        PIL image dict key
+        ──────────────────
+          ('soil',  variant_idx, bucket)           — 0-based variant, bucket 0..100
+          ('grass', season, variant_idx, bucket)   — season: 'spring'/'summer'/…
+          ('snow',  snow_bkt)                      — shared overlay
+
+        PhotoImages are created lazily by tile._try_set_bg_image().
+        The photo cache is cleared when the in-game season changes so only the
+        current season's images stay alive; old ones are garbage collected.
+
+        Stores on self
+        ──────────────
+          _bg_pil_images     — the dict above
+          _bg_photo_cache    — lazy PhotoImage cache
+          _bg_grass_variants — number of grass base variants loaded (int)
+          _bg_soil_variants  — number of soil variants loaded (int)
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            self._bg_pil_images  = {}
+            self._bg_photo_cache = {}
+            self._bg_grass_variants = 0
+            self._bg_soil_variants  = 0
+            return
+
+        try:
+            TS  = TILE_SIZE
+            N   = 101   # buckets 0..100
+            DIR = 'icons/textures'
+            SEASONS = ('spring', 'summer', 'autumn', 'winter')
+            resample = (Image.Resampling.LANCZOS
+                        if hasattr(Image, 'Resampling') else Image.LANCZOS)
+
+            self._bg_pil_images  = {}
+            self._bg_photo_cache = {}
+
+            # ── Helper: load + resize one PNG ────────────────────────────
+            def _load(path):
+                return (Image.open(path).convert('RGBA')
+                                        .resize((TS, TS), resample))
+
+            # ── Sun-tint (must match day/night knobs exactly) ─────────────
+            sun_r, sun_g, sun_b = 0xbf, 0xe3, 0xb0   # "#bfe3b0"
+
+            def _bake(src_rgba, bkt):
+                """Return one day/night-tinted copy of *src_rgba* at *bkt*."""
+                L          = bkt / 100.0
+                night_dark = 0.35 * (1.0 - L)
+                day_bright = 0.08 * L
+                factor     = (1.0 - night_dark) * (1.0 - day_bright)
+                lut_r = bytes(min(255, int(x * factor + sun_r * day_bright))
+                              for x in range(256))
+                lut_g = bytes(min(255, int(x * factor + sun_g * day_bright))
+                              for x in range(256))
+                lut_b = bytes(min(255, int(x * factor + sun_b * day_bright))
+                              for x in range(256))
+                r, g, b, a = src_rgba.split()
+                return Image.merge('RGBA', (r.point(lut_r),
+                                           g.point(lut_g),
+                                           b.point(lut_b), a))
+
+            # ── Load soil numbered fallbacks (soil1.png … soil9.png) ──────
+            soil_numbered = {}
+            for i in range(1, 10):
+                try:
+                    soil_numbered[i - 1] = _load(f"{DIR}/soil{i}.png")
+                except Exception:
+                    pass
+
+            # ── Load seasonal soil and grass ──────────────────────────────
+            # For each mode, scan how many files exist per season (1-9).
+            # _bg_*_variants is set to the MIN count across seasons that have
+            # at least one file — so every tile vi is valid for every season,
+            # with no gap-fill, no modulo trick, and no fallback search needed.
+
+            def _load_mode(mode, seasonal_fmt, numbered_fallbacks, plain_fallback):
+                """
+                Load all seasonal variants for one mode ('grass' or 'soil').
+                Returns (per_season_counts, safe_variant_count).
+                per_season_counts: {season: int}  — actual files loaded per season
+                safe_variant_count: int            — min across populated seasons
+                """
+                per_season = {}   # season -> count of loaded variants
+                for season in SEASONS:
+                    count = 0
+                    for i in range(1, 10):
+                        vi = i - 1
+                        # Try both naming conventions, then numbered fallback, then plain:
+                        #   {mode}_{season}{i}.png  e.g. soil_spring1.png
+                        #   {mode}{i}_{season}.png  e.g. soil1_spring.png
+                        src = None
+                        candidates = [
+                            seasonal_fmt.format(season=season, i=i),
+                            seasonal_fmt.format(season=season, i=i)
+                                .replace(f'_{season}{i}', f'{i}_{season}'),
+                        ]
+                        for path in candidates:
+                            try:
+                                src = _load(path)
+                                break
+                            except Exception:
+                                pass
+                        if src is None:
+                            src = (numbered_fallbacks.get(vi)
+                                   if numbered_fallbacks else None) or plain_fallback
+                        if src is None:
+                            continue
+                        count += 1
+                        for bkt in range(N):
+                            self._bg_pil_images[(mode, season, vi, bkt)] = _bake(src, bkt)
+                    per_season[season] = count
+
+                populated = [c for c in per_season.values() if c > 0]
+                safe = min(populated) if populated else 0
+                return per_season, safe
+
+            # Soil: soil_{season}{i}.png → soil{i}.png → soil.png
+            soil_numbered = {}
+            for i in range(1, 10):
+                try:
+                    soil_numbered[i - 1] = _load(f"{DIR}/soil{i}.png")
+                except Exception:
+                    pass
+            try:
+                soil_plain = _load(f"{DIR}/soil.png")
+            except Exception:
+                soil_plain = None
+
+            soil_counts, safe_soil = _load_mode(
+                'soil',
+                f"{DIR}/soil_{{season}}{{i}}.png",
+                soil_numbered, soil_plain)
+            self._bg_soil_variants  = safe_soil
+            self._bg_soil_counts    = soil_counts
+
+            # Grass: grass_{season}{i}.png → grass.png
+            try:
+                grass_plain = _load(f"{DIR}/grass.png")
+            except Exception:
+                grass_plain = None
+
+            grass_counts, safe_grass = _load_mode(
+                'grass',
+                f"{DIR}/grass_{{season}}{{i}}.png",
+                {}, grass_plain)
+            self._bg_grass_variants = safe_grass
+            self._bg_grass_counts   = grass_counts
+
+            # Snow is handled in _try_set_bg_image by blending the current
+            # season's texture toward the winter texture using snow_cover as
+            # the blend factor.  No pre-baked overlays needed here.
+
+        except Exception:
+            self._bg_pil_images     = {}
+            self._bg_photo_cache    = {}
+            self._bg_grass_variants = 0
+            self._bg_soil_variants  = 0
+            self._bg_grass_counts   = {}
+            self._bg_soil_counts    = {}
+
+    # ========================================================================
+    # Stone Border Decoration
+    # ========================================================================
+
+    def _setup_border_stones(self):
+        """
+        Pre-composite all border stones for each tile into ONE RGBA image
+        using Pillow, then place it as a single create_image per tile.
+
+        Stone size is controlled by self._stone_sw (default 16 px).
+        Call this method again after changing _stone_sw to rebake at the
+        new size.  STEP adapts so stones always tile without gaps.
+        Health/water bars are explicitly raised after baking so they are
+        always visible on top of the stone layer.
+        """
+        try:
+            from PIL import Image, ImageTk
+        except ImportError:
+            return   # Pillow not installed — skip stones silently
+
+        try:
+            TS   = TILE_SIZE
+            SW   = max(2, getattr(self, '_stone_sw', 16))
+            # SW=0 means "hide all stones" — just clear and return
+            if getattr(self, '_stone_sw', 16) <= 0:
+                for tile in self.tiles:
+                    tile.delete('border_stone')
+                self._stone_imgs = []
+                return
+            # STEP must be a divisor of TS so the iteration lands exactly on
+            # tile boundaries (perfect intersections).  Pick the SMALLEST
+            # divisor that is >= SW — stones touch or have a small gap but
+            # NEVER overlap.
+            #   TS=85 divisors: 1, 5, 17, 85
+            #   SW=4  → smallest div ≥ 4 → STEP=5   (1 px gap)   dense
+            #   SW=8  → smallest div ≥ 8 → STEP=17  (9 px gap)   sparse but clean
+            #   SW=16 → smallest div ≥ 16→ STEP=17  (1 px gap)   dense
+            ts_divs = sorted(d for d in range(1, TS + 1) if TS % d == 0)
+            candidates = [d for d in ts_divs if d >= SW]
+            STEP = min(candidates) if candidates else max(ts_divs)
+            half = SW // 2
+            ICON_DIR = getattr(self, '_stone_icon_dir', 'icons')
+
+            # ── Clean up previous run ────────────────────────────────────
+            for lbl in getattr(self, '_stone_labels', []):
+                try:
+                    lbl.destroy()
+                except Exception:
+                    pass
+            self._stone_labels = []
+            for tile in self.tiles:
+                tile.delete('border_stone')
+
+            # ── Load stones as PIL RGBA images, resize to SW×SW ──────────
+            resample = (Image.Resampling.LANCZOS
+                        if hasattr(Image, 'Resampling')
+                        else Image.LANCZOS)
+            stone_pils = []
+            for i in range(1, 10):
+                try:
+                    img = Image.open(f"{ICON_DIR}/stone{i}.png").convert('RGBA')
+                    img = img.resize((SW, SW), resample)
+                    stone_pils.append(img)
+                except Exception:
+                    pass
+
+            if not stone_pils:
+                return
+
+            # ── One transparent RGBA canvas per tile ─────────────────────
+            layers = [Image.new('RGBA', (TS, TS), (0, 0, 0, 0))
+                      for _ in self.tiles]
+
+            def paste(layer, stone, cx, cy):
+                """Alpha-paste *stone* centred at (cx, cy) into *layer*."""
+                layer.paste(stone, (cx - half, cy - half), stone)
+
+            # ── Vertical inner borders ────────────────────────────────────
+            for bc in range(1, COLS):
+                rng = random.Random(bc * 0x1_3A3F)
+                y = 0
+                while y <= ROWS * TS:
+                    stone = rng.choice(stone_pils)
+                    r0 = max(0, (y - half) // TS)
+                    r1 = min(ROWS - 1, (y + half - 1) // TS)
+                    for r in range(r0, r1 + 1):
+                        ly = y - r * TS
+                        paste(layers[r * COLS + (bc - 1)], stone, TS, ly)
+                        paste(layers[r * COLS +  bc     ], stone,  0, ly)
+                    y += STEP
+
+            # ── Horizontal inner borders ──────────────────────────────────
+            for br in range(1, ROWS):
+                rng = random.Random(br * 0x2_B7D1 + 0x5F)
+                x = 0
+                while x <= COLS * TS:
+                    is_inner_vb = (x % TS == 0) and (0 < x < COLS * TS)
+                    if not is_inner_vb:
+                        stone = rng.choice(stone_pils)
+                        c0 = max(0, (x - half) // TS)
+                        c1 = min(COLS - 1, (x + half - 1) // TS)
+                        for c in range(c0, c1 + 1):
+                            lx = x - c * TS
+                            paste(layers[(br - 1) * COLS + c], stone, lx, TS)
+                            paste(layers[ br      * COLS + c], stone, lx,  0)
+                    x += STEP
+
+            # ── Bake each layer → PhotoImage → single canvas item ─────────
+            self._stone_imgs = []
+            for tile in self.tiles:
+                tk_img = ImageTk.PhotoImage(layers[tile.idx])
+                self._stone_imgs.append(tk_img)
+                tile.create_image(0, 0, image=tk_img,
+                                  anchor='nw', tags='border_stone')
+                # Stones sit below the water-bar background in z-order
+                try:
+                    tile.tag_lower('border_stone', tile.wb_bg)
+                except Exception:
+                    pass
+
+            # ── Guarantee bars + sel_rect are always on top ───────────────
+            for tile in self.tiles:
+                try:
+                    tile.tag_raise('water_items')
+                    tile.tag_raise('health_items')
+                    tile.tag_raise('plant_img')
+                    tile.tag_raise('tile_label')
+                    tile.tag_raise('badge_group')
+                    tile.tag_raise('sel_border')
+                    tile._bg_cache_key = None      # force bg image refresh
+                except Exception:
+                    pass
+
+        except Exception:
+            pass   # decorative — never crash the simulation
+
     def _apply_daynight_to_tiles(self):
-        # ── Fast-forward: snap visual_L to target (no animation lag) ──
-        # The animation loop cannot run during FF (main thread is blocked).
-        # Instead of restoring bare colors, we snap to the correct hour
-        # shading each time render_all() fires during FF.
+        # ── Update season cache once per frame ──────────────────────────────
+        # Tiles read _bg_current_season directly for speed. Recomputing it here
+        # (once per frame, not once per tile) means season changes are picked up
+        # immediately even when the sim is paused or a save is loaded.
+        try:
+            _mon = int(getattr(self.garden, 'month', 4))
+            _new_season = ('spring' if _mon in (3,4,5) else
+                           'summer' if _mon in (6,7,8) else
+                           'autumn' if _mon in (9,10,11) else 'winter')
+            if _new_season != getattr(self, '_bg_current_season', None):
+                self._bg_current_season = _new_season
+                # Reset tile keys — do NOT clear _bg_photo_cache (prevents flash)
+                for tile in self.tiles:
+                    tile._bg_cache_key = None
+                self._daynight_last_bucket = None
+        except Exception:
+            pass
+
+        # ── Fast-forward: snap visual_L to target and force full tile refresh ──
         if getattr(self, "fast_forward", False):
-            self._daynight_last_bucket = None  # force a repaint this frame
+            self._daynight_last_bucket = None  # bypass bucket-skip guard
+            # Also reset each tile's texture key so _try_set_bg_image
+            # re-evaluates mode/season/snow on every FF render call.
+            for _t in self.tiles:
+                _t._bg_cache_key = None
 
         # ── Init cache once ──
         if not hasattr(self, "_daynight_cache"):
@@ -824,6 +1273,7 @@ class GardenApp:
                 shaded = c
                 self._daynight_cache[key] = shaded
 
+            tile._lighting_bucket = bucket   # must be set before set_soil_color
             tile.set_soil_color(shaded)
 
     
@@ -1166,6 +1616,7 @@ class GardenApp:
         for tile in self.tiles:
             if tile.plant is not None:
                 tile.plant = None
+                self._set_soil_linger(tile)
                 count += 1
         try:
             self._toast(f"Removed {count} plants from the grid.")
@@ -1381,6 +1832,36 @@ class GardenApp:
             # Fallback: simple approximation
             return self.garden.day_of_month + (self.garden.month - 1) * 30 + (self.garden.year - 1856) * 365
 
+    def _force_tile_soil(self, slot):
+        """
+        Immediately switch tile *slot* to soil texture and re-render its icon.
+        Works even when the simulation is paused because it calls set_soil_color
+        directly rather than going through the day/night loop (which skips
+        unchanged lighting buckets).
+        """
+        try:
+            tile = self.tiles[slot]
+            tile._bg_cache_key      = None
+            tile._soil_linger_until = 0
+            tile._lighting_bucket   = getattr(self, '_daynight_last_bucket', 100) or 100
+            tile._render_state      = None   # force full re-render
+            tile.set_soil_color(getattr(tile, '_last_applied_hex', tile.soil))
+            tile.render()
+        except Exception:
+            pass
+
+    def _set_soil_linger(self, tile, min_h=2, max_h=12):
+        """
+        After a plant is removed from *tile*, keep its soil texture for a
+        random number of sim-hours before switching back to grass.
+        Also clears _bg_cache_key so the next frame re-evaluates mode.
+        """
+        sim_hour = getattr(self, '_snow_sim_hour', 0)
+        rng = random.Random(tile.idx * 9973 + sim_hour)
+        tile._soil_linger_until = sim_hour + rng.randint(min_h, max_h)
+        tile._bg_cache_key = None
+        tile._render_state = None   # force re-render to pick up mode change
+
     def _cleanup_old_dead_plants(self):
         """Remove dead plants that have been dead for 2-3 days."""
         import random
@@ -1413,8 +1894,9 @@ class GardenApp:
                 should_remove = (days_dead >= 3) or (random.random() < 0.5)
                 
                 if should_remove:
-                    # Clear the tile
+                    # Clear the tile and start soil-linger countdown
                     tile.plant = None
+                    self._set_soil_linger(tile)
                     removed_count += 1
                     # Unregister from garden
                     try:
@@ -1483,7 +1965,7 @@ class GardenApp:
             
             # Update temperature button state when hour changes (+ auto-record if enabled)
             try:
-                current_hour = int(getattr(self.garden, 'clock_hour', 6))
+                current_hour = int(getattr(self.garden, 'clock_hour', 8))
                 last_hour = getattr(self, "_last_temp_check_hour", None)
 
                 if last_hour is None:
@@ -1496,6 +1978,12 @@ class GardenApp:
                     try:
                         if self.wildlife is not None:
                             self.wildlife.tick()
+                    except Exception:
+                        pass
+
+                    # Snow cover — gradual, staggered per tile
+                    try:
+                        self._update_snow_covers()
                     except Exception:
                         pass
 
@@ -1884,6 +2372,7 @@ class GardenApp:
 
             self.tiles[index].plant = p
             self.available_seeds -= 1
+            self._force_tile_soil(index)
             self._toast("Starter seed planted.")
             self.render_all()
 
@@ -2231,6 +2720,38 @@ class GardenApp:
             label="Garden size wizard…",
             command=self._on_grid_wizard
         )
+
+        # ── Stone Border Size ──────────────────────────────────────────
+        game_menu.add_separator()
+        self._stone_size_var = tk.IntVar(value=4)
+
+        def _set_stone_size(px):
+            self._stone_sw = px
+            self._stone_size_var.set(px)
+            self._setup_border_stones()
+
+        stone_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
+        stone_menu.add_radiobutton(
+            label="Full  (16 px)",
+            variable=self._stone_size_var, value=16,
+            command=lambda: _set_stone_size(16)
+        )
+        stone_menu.add_radiobutton(
+            label="Half  (8 px)",
+            variable=self._stone_size_var, value=8,
+            command=lambda: _set_stone_size(8)
+        )
+        stone_menu.add_radiobutton(
+            label="Quarter  (4 px)",
+            variable=self._stone_size_var, value=4,
+            command=lambda: _set_stone_size(4)
+        )
+        stone_menu.add_separator()
+        stone_menu.add_command(
+            label="Hide stones",
+            command=lambda: _set_stone_size(0)
+        )
+        game_menu.add_cascade(label="Stone Border Size ▸", menu=stone_menu)
 
         self.menubar.add_cascade(label="Game Settings", menu=game_menu)
 
@@ -2686,16 +3207,34 @@ class GardenApp:
             'HEALTH_BAR_H': HEALTH_BAR_H
         }
 
+        # Load grass/soil background textures (pre-bakes 101 lighting levels)
+        self._load_bg_textures()
+        # Seed the season cache so tiles never read a missing key on frame 1
+        _m = int(getattr(getattr(self, 'garden', None), 'month', 4) or 4)
+        self._bg_current_season = ('spring' if _m in (3,4,5) else
+                                   'summer' if _m in (6,7,8) else
+                                   'autumn' if _m in (9,10,11) else 'winter')
+        self._bg_last_season = self._bg_current_season
+
         self.tiles: List[TileCanvas] = [] 
         for idx in range(GRID_SIZE):
             soil = random.choice(SOIL_COLORS)
-            
-            # Create the custom widget
             tile = TileCanvas(self.grid_frame, idx, self, soil, None, tile_configs)
-            # Position it
-            tile.grid(row=idx // TILES_PER_ROW, column=idx % TILES_PER_ROW, padx=2, pady=2)
-            # Store the single object
+            tile.grid(row=idx // TILES_PER_ROW, column=idx % TILES_PER_ROW, padx=0, pady=0)
             self.tiles.append(tile)
+
+        # Prime texture images on every tile immediately so they never show
+        # the solid-colour fallback while waiting for the first animation tick.
+        try:
+            for tile in self.tiles:
+                tile._lighting_bucket = 100   # assume full daylight at startup
+                tile.set_soil_color(tile.soil)
+        except Exception:
+            pass
+
+        # Place stone images along border lines once the grid geometry is ready
+        self._stone_sw = 4    # default: quarter size
+        self.root.after(250, self._setup_border_stones)
 
         # ---------- Mendelian laws row (below the grid in right_panel) ----------
         self.law_row = tk.Frame(right_panel, bg=self.grid_bg, padx=0, pady=8)
@@ -2809,7 +3348,7 @@ class GardenApp:
             yr = getattr(self.garden, 'year', 1856)
             dom = getattr(self.garden, 'day_of_month', getattr(self.garden, 'day', 1))
             wx = getattr(self.garden, 'weather', '')
-            hh = getattr(self.garden, 'clock_hour', 6)
+            hh = getattr(self.garden, 'clock_hour', 8)
             mm = getattr(self.garden, 'clock_minute', 0)
             tmp = f"{getattr(self.garden, 'temp', 0.0):.1f}°C" if hasattr(self.garden, 'temp') else ''
             self.header_label.configure(text=f"📅 {mon} {yr} — Day {dom} — { _fmt_clock(hh,mm) } — {wx}  {tmp}")
@@ -2856,15 +3395,15 @@ class GardenApp:
         #     return
 
         # --- multi-selection set (may be empty) ---
+        selected_idx = getattr(self, "selected_index", None)
         sel_set = getattr(self, "multi_selected_indices", None) or set()
 
         for i, tile in enumerate(self.tiles):
-            # Determine selection state (single + multi-select)
-            is_sel = (getattr(self, "selected_index", None) == i) or (i in sel_set)
+            is_sel = (selected_idx == i) or (i in sel_set)
             tile.selected = is_sel
 
             # Ensure the tile icon exists for this plant before rendering
-            if tile.plant is not None and getattr(tile.plant, "alive", True):
+            if tile.plant is not None and tile.plant.__dict__.get("alive", True):
                 self._ensure_tile_icon(tile.plant, selected=is_sel)
 
             tile.render()
@@ -2875,7 +3414,7 @@ class GardenApp:
             mon = mon_names[getattr(self.garden, 'month', 4)-1] if 1 <= getattr(self.garden, 'month', 4) <= 12 else str(getattr(self.garden, 'month', 4))
             dom = getattr(self.garden, 'day_of_month', getattr(self.garden, 'day', 1))
             yr  = getattr(self.garden, 'year', 1856)
-            hh  = getattr(self.garden, 'clock_hour', 6)
+            hh  = getattr(self.garden, 'clock_hour', 8)
             mm  = getattr(self.garden, 'clock_minute', 0)
             wx  = getattr(self.garden, 'weather', '')
             tmp = f"{getattr(self.garden, 'temp', 0.0):.1f}°C" if hasattr(self.garden, 'temp') else ''
@@ -3280,7 +3819,7 @@ class GardenApp:
                 id=random.randint(100000, 999999),
                 name=f"Anther {i+1}/{n_anthers} from #{plant.id} (Day {today})",
                 source_plant=plant,
-                collection_time=getattr(self.garden, "clock_hour", 6),
+                collection_time=getattr(self.garden, "clock_hour", 8),
             )
 
             # IDs / source
@@ -4491,10 +5030,10 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_next_phase(self):
-        old_hour = int(getattr(self.garden, 'clock_hour', 6))
+        old_hour = int(getattr(self.garden, 'clock_hour', 8))
         self.garden.next_phase()
         self._daynight_last_advance = time.time()  # smooth day/night interpolation
-        new_hour = int(getattr(self.garden, 'clock_hour', 6))
+        new_hour = int(getattr(self.garden, 'clock_hour', 8))
         
         # Clean up old dead plants
         try:
@@ -4653,6 +5192,7 @@ class GardenApp:
 
             self.tiles[idx].plant = None
             self.tiles[idx].plant = None
+            self._set_soil_linger(self.tiles[idx])
             removed += 1
 
         if removed == 1:
@@ -5280,6 +5820,13 @@ class GardenApp:
                 pass
 
         self.tiles[slot].plant = p
+        # Force soil texture + icon refresh immediately (works even when paused)
+        self._force_tile_soil(slot)
+        # Advance one sim-hour after planting (deferred to avoid re-entrancy)
+        try:
+            self.root.after(1, self._on_next_phase)
+        except Exception:
+            pass
 
         # 2) Ensure minimal F0 snapshots exist for parents (from _on_seed_selected)
         mid = getattr(p, "mother_id", None)
@@ -5330,7 +5877,19 @@ class GardenApp:
             if pid0 in (None, "", -1):
                 return
             key_str = str(int(pid0)) if str(pid0).isdigit() else str(pid0)
-            if key_str not in plants:
+            # Check if we already have a rich snapshot (with traits)
+            existing = plants.get(key_str, {})
+            has_traits = bool(existing.get("traits")) if isinstance(existing, dict) else False
+            if has_traits:
+                return   # already has a full entry — nothing to do
+            # Try to find the live plant on a tile so we can include its traits
+            live = next(
+                (t.plant for t in self.tiles
+                 if t.plant is not None and str(getattr(t.plant, 'id', '')) == key_str),
+                None)
+            if live is not None:
+                self.archive_snapshot(live)
+            elif key_str not in plants:
                 self.archive_snapshot({"id": pid0, "generation": gen0})
 
         _ensure_min(mid, "F0")
@@ -5896,7 +6455,17 @@ class GardenApp:
                 self.garden.next_phase()
             except Exception:
                 pass
-            
+
+            # Snow accumulation / melt — same logic as normal mode.
+            # Runs every sim-hour so FF snow state is correct.
+            # Because render_all fires every N hours, multiple steps execute
+            # between redraws → snow appears/melts in visible jumps (no slow
+            # animation), which is the right feel for fast-forward.
+            try:
+                self._update_snow_covers()
+            except Exception:
+                pass
+
             # Clean up old dead plants
             try:
                 self._cleanup_old_dead_plants()
@@ -6703,7 +7272,7 @@ class GardenApp:
         self.garden.day = garden_data.get('day', 1)
         self.garden.phase_index = garden_data.get('phase_index', 0)
         self.garden.phase = garden_data.get('phase', 'morning')
-        self.garden.clock_hour = garden_data.get('clock_hour', 6)
+        self.garden.clock_hour = garden_data.get('clock_hour', 8)
         self.garden.year = garden_data.get('year', 1856)
         self.garden.month = garden_data.get('month', 4)
         self.garden.day_of_month = garden_data.get('day_of_month', 1)
@@ -6738,9 +7307,24 @@ class GardenApp:
             self.lineage_store['plants'] = lineage_store_data.get('plants', {})
         else:
             self.lineage_store['plants'] = {}
-        # Merge archive into lineage_store (lineage_store is the union used by TIE)
+        # Merge archive into lineage_store, preferring entries that have traits
         for k, v in self.archive.get('plants', {}).items():
-            self.lineage_store['plants'].setdefault(str(k), v)
+            sk = str(k)
+            existing = self.lineage_store['plants'].get(sk)
+            if existing is None:
+                self.lineage_store['plants'][sk] = v
+            elif (not existing.get("traits")
+                  and isinstance(v, dict) and v.get("traits")):
+                self.lineage_store['plants'][sk] = v
+
+        # ── One-time trait repair for pre-fix save files ─────────────────────
+        # archive_snapshot previously overwrote rich traits with {} when
+        # _ensure_min was called for a removed plant. Repair by inferring
+        # each trait-less entry's traits from its children's stored data.
+        try:
+            self._repair_traitless_archive_entries()
+        except Exception:
+            pass
 
         # Restore Mendelian law progress flags
         law_flags = save_data.get('law_flags', {})
@@ -7689,12 +8273,19 @@ class GardenApp:
             self.archive._archive_backfill_cross_parents(self)
         except Exception:
             pass
-        # merge archive => lineage_store (additive: never overwrite a richer entry)
+        # merge archive => lineage_store, preferring entries that have traits
         try:
             if "lineage_store" in dir(self):
                 pls = self.lineage_store.setdefault("plants", {})
                 for k, v in (getattr(self, "archive", {}).get("plants", {}) or {}).items():
-                    pls.setdefault(str(k), v)
+                    sk = str(k)
+                    existing = pls.get(sk)
+                    if existing is None:
+                        pls[sk] = v
+                    elif (not existing.get("traits")
+                          and isinstance(v, dict) and v.get("traits")):
+                        # Overwrite only if existing is trait-less and new entry has traits
+                        pls[sk] = v
         except Exception:
             pass
 
@@ -7772,6 +8363,115 @@ class GardenApp:
     def open_history_archive_browser(self, parent_window, default_pid=None):
         # Simple wrapper used by the Genetics window button.
         TraitInheritanceExplorer(parent_window, self, default_pid=default_pid)
+
+    def _repair_traitless_archive_entries(self):
+        """
+        One-time repair for saves where archive_snapshot previously overwrote
+        rich traits with {} (the pre-fix bug triggered by _ensure_min for
+        plants no longer on tiles).
+
+        Strategy — four passes in order:
+        1. Live tiles: if the plant is still alive/dead on a tile, re-archive it.
+        2. Children's stored traits: F0/F1 parents can often be reconstructed
+           from a child's stored mother/father alleles in the genotype.
+        3. Genotype inference: if the entry has a genotype but no traits,
+           derive traits from genotype via infer_genotype_from_traits reverse.
+        4. Mark still-missing entries with a placeholder so the TIE at least
+           shows a '?' icon rather than a blank circle.
+        """
+        try:
+            plants = self.archive.get('plants', {})
+            if not isinstance(plants, dict):
+                return
+
+            # ── Pass 1: re-archive live/dead plants still on tiles ────────────
+            for tile in getattr(self, 'tiles', []):
+                p = getattr(tile, 'plant', None)
+                if p is None:
+                    continue
+                pid_s = str(getattr(p, 'id', ''))
+                if not pid_s:
+                    continue
+                entry = plants.get(pid_s, {})
+                if not entry.get('traits') and getattr(p, 'traits', None):
+                    self.archive_snapshot(p)
+
+            # ── Pass 2: infer parent traits from children's genotype entries ──
+            # Children store mother/father alleles under 'genotype' in some
+            # export formats. More reliably: use the child's own traits and
+            # Mendel logic — if ALL children of a parent share a trait value,
+            # that parent likely expressed that trait.
+            # Build child → parent mapping
+            child_of = {}   # parent_pid_s → [child_snap, ...]
+            for snap in plants.values():
+                if not isinstance(snap, dict):
+                    continue
+                for pk in ('mother_id', 'father_id'):
+                    par = snap.get(pk)
+                    if par is not None:
+                        child_of.setdefault(str(par), []).append(snap)
+
+            TRAITS = ('flower_color', 'seed_color', 'seed_shape',
+                      'plant_height', 'pod_color', 'pod_shape', 'flower_position')
+
+            for pid_s, entry in plants.items():
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get('traits'):
+                    continue   # already has traits — skip
+
+                children = child_of.get(pid_s, [])
+                if not children:
+                    continue
+
+                inferred = {}
+                for trait in TRAITS:
+                    vals = set()
+                    for ch in children:
+                        ch_traits = ch.get('traits', {})
+                        if isinstance(ch_traits, dict):
+                            v = ch_traits.get(trait)
+                            if v:
+                                vals.add(str(v).lower())
+                    # If all children agree → safe to infer for parent
+                    if len(vals) == 1:
+                        inferred[trait] = vals.pop()
+
+                if inferred:
+                    # ── Ensure pod_color and pod_shape are inferred as a pair ──
+                    # The icon lookup needs both: pod_{color}_{shape}_64.png.
+                    # If one is inferred but not the other, fill with the
+                    # Mendelian dominant default (inflated, green) so the
+                    # combined icon path always resolves to a real file.
+                    if 'pod_shape' in inferred and 'pod_color' not in inferred:
+                        inferred['pod_color'] = 'green'   # Gp dominant
+                    if 'pod_color' in inferred and 'pod_shape' not in inferred:
+                        inferred['pod_shape'] = 'inflated'  # P dominant
+
+                    entry['traits'] = inferred
+                    # Also propagate into lineage_store
+                    ls_entry = self.lineage_store.get('plants', {}).get(pid_s, {})
+                    if isinstance(ls_entry, dict) and not ls_entry.get('traits'):
+                        ls_entry['traits'] = inferred
+            # ── Pass 3: derive traits from stored genotype ───────────────────
+            for pid_s, entry in plants.items():
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get('traits'):
+                    continue
+                geno = entry.get('genotype')
+                if not isinstance(geno, dict) or not geno:
+                    continue
+                try:
+                    from genetics import infer_traits_from_genotype
+                    derived = infer_traits_from_genotype(geno)
+                    if derived:
+                        entry['traits'] = derived
+                except Exception:
+                    pass   # genetics module may not expose this helper
+
+        except Exception:
+            pass   # repair is best-effort — never crash on load
 
     def _set_day_length(self, secs, reschedule=True):
         """Compatibility wrapper: old UI calls _set_day_length(), v2 uses _set_day_length_patched()."""
@@ -7904,6 +8604,16 @@ class GardenApp:
             pid = g(plant, "id", None)
             if pid is None:
                 return False
+            # If plant is a minimal dict (no traits), try to find the live plant
+            # on a tile and use it instead — this gives TIE nodes their trait icons.
+            if isinstance(plant, dict) and not plant.get("traits"):
+                live = next(
+                    (t.plant for t in getattr(self, 'tiles', [])
+                     if t.plant is not None
+                     and str(getattr(t.plant, 'id', '')) == str(pid)),
+                    None)
+                if live is not None:
+                    plant = live
             snap = {
                 "id": pid,
                 "generation": g(plant, "generation", g(plant, "gen", "F?")),
@@ -7937,7 +8647,13 @@ class GardenApp:
             existing = plants.get(str(pid))
             if isinstance(existing, dict):
                 merged = dict(existing)
-                merged.update(snap)   # new snap wins on conflicts, but old fields survive
+                merged.update(snap)
+                # Never overwrite rich traits/genotype with empty ones —
+                # a minimal snapshot (e.g. from _ensure_min) must not blank out
+                # a previously stored full entry.
+                for field in ("traits", "genotype", "ancestry", "paternal_ancestry"):
+                    if not snap.get(field) and existing.get(field):
+                        merged[field] = existing[field]
                 snap = merged
             plants[str(pid)] = snap   # always string key — consistent with seed_archive_from_live
             return True

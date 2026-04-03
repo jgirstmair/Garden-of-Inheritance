@@ -5,8 +5,50 @@ Provides the TileCanvas widget for displaying individual garden plots.
 Each tile shows a plant's icon, health bar, water bar, and status badges.
 """
 
+import random
 import tkinter as tk
 from plant import Plant
+
+try:
+    from PIL import Image as _PilImage, ImageTk as _PilImageTk
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
+
+
+def _find_base_image(pil_imgs, mode, season, vi, bucket):
+    """
+    Return the best available PIL image for (mode, season, vi, bucket).
+
+    Fallback order (most-specific to least):
+      1. Exact (mode, season, vi, bucket)
+      2. Same season, nearest lower vi
+      3. Any other season, same vi
+      4. Any other season, nearest lower vi
+    Returns None only if pil_imgs has nothing at all for this mode.
+    """
+    # 1. Exact match
+    img = pil_imgs.get((mode, season, vi, bucket))
+    if img is not None:
+        return img
+    # 2. Same season, nearest lower vi
+    for v in range(vi - 1, -1, -1):
+        img = pil_imgs.get((mode, season, v, bucket))
+        if img is not None:
+            return img
+    # 3 & 4. Other seasons
+    _SEASON_ORDER = ('spring', 'summer', 'autumn', 'winter')
+    for s in _SEASON_ORDER:
+        if s == season:
+            continue
+        img = pil_imgs.get((mode, s, vi, bucket))
+        if img is not None:
+            return img
+        for v in range(vi - 1, -1, -1):
+            img = pil_imgs.get((mode, s, v, bucket))
+            if img is not None:
+                return img
+    return None
 
 
 # ============================================================================
@@ -98,14 +140,35 @@ class TileCanvas(tk.Canvas):
         
         self.selected = selected
         
-        # Initialize canvas
+        # Texture background state
+        self._lighting_bucket = 100   # 0=night … 100=full day; set by day/night loop
+        self._bg_cache_key    = None  # last baked cache key
+        self._bg_grass_vi     = None  # grass variant index — assigned lazily
+        self._bg_soil_vi      = None  # soil variant index — assigned lazily
+        self._soil_linger_until = 0   # sim-hour until which soil texture lingers after plant removal
+        self._render_state    = None  # cached render state tuple for dirty-flag skip
+
+        # Snow coverage (0.0 = bare soil, 1.0 = fully snow-covered).
+        # Managed externally by the app via set_snow_cover().
+        self.snow_cover = 0.0
+        # The last raw (pre-snow-blend) colour passed to set_soil_color().
+        # Needed so snow re-blends correctly when snow_cover changes between
+        # day/night animation frames.
+        self._last_applied_hex = soil_color
+        
+        # Per-tile snow parameters (lazy random, seeded by idx)
+        _rng = random.Random(self.idx * 4999 + 83)
+        self._snow_rate       = _rng.uniform(0.06, 0.16)   # accumulation per triggered hour
+        self._snow_melt_rate  = _rng.uniform(0.04, 0.12)   # melt per triggered hour
+        self._snow_since_hour = None                        # sim-hour when this tile first got snow
+        
+        # Initialize canvas — no highlight border; selection shown via sel_rect
         super().__init__(
             parent,
             width=self.w,
             height=self.h,
             bg=self.soil,
-            highlightthickness=4,
-            highlightbackground="gray",
+            highlightthickness=0,
             bd=0,
             relief="flat"
         )
@@ -128,12 +191,23 @@ class TileCanvas(tk.Canvas):
         self.render()
     
     def _create_background(self):
-        """Create the soil background rectangle."""
+        """Create the soil background rectangle and texture image slot."""
+        # Solid-colour fallback (always present, hidden by bg_img_item when textures load)
         self.bg_rect = self.create_rectangle(
             0, 0, self.w, self.h,
             fill=self.soil,
             outline="", width=0,
             tags="bg"
+        )
+        # Texture image sits on top of bg_rect; starts empty (shows bg_rect through)
+        self.bg_img_item = self.create_image(0, 0, anchor='nw', tags='bg_img')
+
+        # Selection border drawn as an inset rectangle (replaces highlightthickness).
+        # Invisible by default; outline set to darkorange when selected.
+        self.sel_rect = self.create_rectangle(
+            1, 1, self.w - 1, self.h - 1,
+            outline="", width=3,
+            tags="sel_border"
         )
     
     def _create_water_bar(self):
@@ -193,10 +267,10 @@ class TileCanvas(tk.Canvas):
         )
     
     def _create_label(self):
-        """Create the status label (plant ID or "free"/"dead")."""
+        """Create the status label (plant ID or dead)."""
         label_gap = max(6, self.health_thick // 2)
         label_pad = int(self.configs.get("LABEL_PAD", 0))
-        
+
         label_y = int(
             self.hb_y_start
             - label_gap
@@ -204,13 +278,14 @@ class TileCanvas(tk.Canvas):
             + label_pad
             + 6
         )
-        
+        self._label_y = label_y
+
         self.label_item = self.create_text(
             self.w // 2 + self.water_thick // 2,
             label_y,
             text="",
             font=("Segoe UI", 9, "bold"),
-            fill="#1f1f1f",
+            fill="#ffffff",
             tags=("tile_label",)
         )
     
@@ -304,65 +379,92 @@ class TileCanvas(tk.Canvas):
     # ========================================================================
     # Rendering
     # ========================================================================
-    
+
+    def _get_render_state(self):
+        """
+        Return a hashable tuple that encodes everything visible on this tile.
+        render() compares this against _render_state and skips if unchanged.
+        """
+        p = self.plant
+        if p is None:
+            return (None, self.selected)
+        alive = p.__dict__.get('alive', True)
+        if not alive:
+            return ('dead', id(p), self.selected)
+        return (
+            id(p),
+            p.__dict__.get('stage', 0),
+            p.__dict__.get('health', 100) // 5,   # 5-pt buckets avoid per-point redraws
+            p.__dict__.get('water',  0)  // 5,
+            id(p.__dict__.get('img_obj', None)),   # icon object identity
+            bool(p.__dict__.get('pending_cross', False)),
+            bool(p.__dict__.get('emasculated',   False)),
+            bool(p.__dict__.get('anthers_available_today', False)),
+            self.selected,
+        )
+
     def render(self):
         """
         Render the tile based on current plant state.
-        
-        Handles three cases:
-        1. Empty plot (no plant)
-        2. Dead plant
-        3. Living plant (with bars, badges, icon)
+
+        Dirty-flag guard: compares a state tuple against the last render.
+        Skips all tkinter calls when nothing has changed — eliminates the
+        majority of render work during stable simulation.
         """
-        # Update selection border
+        state = self._get_render_state()
+        if state == self._render_state:
+            return
+        self._render_state = state
+
+        # Selection border — only raise when visible (tag_raise is expensive)
         try:
-            border_color = "darkorange" if self.selected else self.soil
-            self.config(
-                highlightbackground=border_color,
-                highlightcolor=border_color
-            )
+            if self.selected:
+                self.itemconfig(self.sel_rect, outline="darkorange")
+                self.tag_raise(self.sel_rect)
+            else:
+                self.itemconfig(self.sel_rect, outline="")
         except Exception:
             pass
-        
-        # Hide all dynamic elements by default
+
+        # Hide bars and badges by default using explicit IDs (much faster than tags)
         try:
-            self.itemconfig("water_items", state="hidden")
-            self.itemconfig("health_items", state="hidden")
+            self.itemconfig(self.wb_bg,  state="hidden")
+            self.itemconfig(self.wb_fill, state="hidden")
+        except Exception:
+            pass
+        try:
+            self.itemconfig(self.hb_bg,  state="hidden")
+            self.itemconfig(self.hb_fill, state="hidden")
+        except Exception:
+            pass
+        try:
             self.itemconfig("badge_group", state="hidden")
         except Exception:
             pass
-        
+
         # Empty plot
         if self.plant is None:
             self._render_empty()
             return
-        
+
         # Dead plant
-        if not getattr(self.plant, "alive", True):
+        if not self.plant.__dict__.get('alive', True):
             self._render_dead()
             return
-        
+
         # Living plant
         self._render_alive()
     
     def _render_empty(self):
-        """Render an empty plot."""
+        """Render an empty plot — label only, no icon (seedling is the first stage)."""
         try:
-            self.itemconfig(self.label_item, text="free", state="normal")
+            self.itemconfig(self.label_item, text="", state="hidden")
         except Exception:
             pass
-        
-        if self.empty_img is not None:
-            try:
-                self.itemconfig("plant_img", state="normal")
-                self.itemconfig(self.img_item, image=self.empty_img)
-            except Exception:
-                pass
-        else:
-            try:
-                self.itemconfig("plant_img", state="hidden")
-            except Exception:
-                pass
+        try:
+            self.itemconfig("plant_img", state="hidden")
+        except Exception:
+            pass
     
     def _render_dead(self):
         """Render a dead plant."""
@@ -392,11 +494,13 @@ class TileCanvas(tk.Canvas):
         except Exception:
             pass
         
-        # Show bars and icon
+        # Show bars and icon using explicit IDs (faster than tag lookup)
         try:
-            self.itemconfig("water_items", state="normal")
-            self.itemconfig("health_items", state="normal")
-            self.itemconfig("plant_img", state="normal")
+            self.itemconfig(self.wb_bg,   state="normal")
+            self.itemconfig(self.wb_fill,  state="normal")
+            self.itemconfig(self.hb_bg,   state="normal")
+            self.itemconfig(self.hb_fill,  state="normal")
+            self.itemconfig("plant_img",   state="normal")
         except Exception:
             pass
         
@@ -537,38 +641,181 @@ class TileCanvas(tk.Canvas):
     
     def set_soil_color(self, soil_hex: str):
         """
-        Change the soil background color.
-        
-        Args:
-            soil_hex: Hex color string (e.g., "#7f9f7a")
+        Change the soil background colour.
+
+        Fast path: when a texture image is active it covers bg_rect, wb_bg,
+        hb_bg, and the canvas bg entirely — so we skip all those itemconfigure
+        calls and only pay for the image lookup/swap.
+
+        Slow path (no textures / PIL missing): solid colour + snow blend,
+        with a hex-change guard so bar updates only fire when the colour
+        actually changes.
         """
-        self.soil = soil_hex
-        
-        # Update background elements
+        self._last_applied_hex = soil_hex
+
+        if self._try_set_bg_image():
+            # Texture active — nothing else to update
+            self.soil = soil_hex
+            return
+
+        # ── Fallback: solid colour + snow blend ───────────────────────────
+        display = self._blend_snow(soil_hex)
+        if display == getattr(self, '_last_display_hex', None):
+            return   # colour unchanged — skip all tkinter calls
+        self._last_display_hex = display
+        self.soil = display
+
         try:
-            self.itemconfigure(self.bg_rect, fill=soil_hex)
+            self.itemconfigure(self.bg_rect, fill=display)
         except Exception:
             pass
-        
         try:
             if hasattr(self, "wb_bg"):
-                self.itemconfigure(self.wb_bg, fill=soil_hex)
+                self.itemconfigure(self.wb_bg, fill=display)
             if hasattr(self, "hb_bg"):
-                self.itemconfigure(self.hb_bg, fill=soil_hex)
+                self.itemconfigure(self.hb_bg, fill=display)
         except Exception:
             pass
-        
         try:
-            self.configure(bg=soil_hex)
+            self.configure(bg=display)
         except Exception:
             pass
-        
-        # Update selection border (if not selected)
+
+    def _try_set_bg_image(self) -> bool:
+        """
+        Look up (or lazily bake) the PhotoImage for the current
+        (mode, season, variant, lighting_bucket, snow_bucket) and swap it
+        onto bg_img_item.  Returns True on success, False if not ready.
+
+        Hot-path optimisations
+        ──────────────────────
+        • PIL imported at module level — no per-call import overhead.
+        • Season read from app._bg_current_season (set once per sim-hour by
+          _update_snow_covers) — not recomputed per tile per frame.
+        • Early-exit on unchanged key — zero tkinter calls in the common case.
+        • Variant indices assigned once at first call per tile.
+        """
+        if not _PIL_AVAILABLE:
+            return False
+
         try:
-            if not self.selected:
-                self.config(
-                    highlightbackground=soil_hex,
-                    highlightcolor=soil_hex
-                )
+            app = self.app
+            cache    = app.__dict__.get('_bg_photo_cache')
+            pil_imgs = app.__dict__.get('_bg_pil_images')
+            if not pil_imgs:   # None or empty — textures not loaded
+                return False
+
+            # ── Assign per-tile variant indices once ──────────────────────
+            if self._bg_grass_vi is None:
+                n_g = max(1, app.__dict__.get('_bg_grass_variants', 1))
+                n_s = max(1, app.__dict__.get('_bg_soil_variants',  1))
+                rng = random.Random(self.idx * 31337)
+                self._bg_grass_vi = rng.randint(0, n_g - 1)
+                self._bg_soil_vi  = rng.randint(0, n_s - 1)
+
+            # ── Mode and variant ──────────────────────────────────────────
+            plant = self.plant
+            plant_alive = plant is not None and plant.__dict__.get('alive', True)
+            plant_dead  = plant is not None and not plant.__dict__.get('alive', True)
+            linger      = self._soil_linger_until
+            use_soil    = plant_alive or plant_dead or (linger > app.__dict__.get('_snow_sim_hour', 0))
+            if use_soil:
+                mode = 'soil';  vi = self._bg_soil_vi
+            else:
+                mode = 'grass'; vi = self._bg_grass_vi
+
+            # ── Season ────────────────────────────────────────────────────
+            season      = app.__dict__.get('_bg_current_season', 'spring')
+            snow_bkt    = min(7, round(self.snow_cover * 7))
+
+            # Winter always shows autumn textures as its base — winter textures
+            # only appear when it's actually snowing (on any season).
+            base_season = 'autumn' if season == 'winter' else season
+
+            # When winter falls back to autumn, limit to grass_autumn1-5 /
+            # soil_autumn1-5 so the heavier autumn variants don't appear
+            # in winter. Cap vi to 4 (0-indexed → files 1-5).
+            if season == 'winter':
+                vi = min(vi, 4)
+
+            bucket = self._lighting_bucket
+
+            key = (mode, base_season, vi, bucket, snow_bkt)
+            if key == self._bg_cache_key:
+                return True   # nothing changed — zero tkinter calls
+
+            # ── Lazily bake PhotoImage ────────────────────────────────────
+            if cache is None:
+                cache = {}
+                app._bg_photo_cache = cache
+
+            if key not in cache:
+                base = _find_base_image(pil_imgs, mode, base_season, vi, bucket)
+                if base is None:
+                    return False
+
+                if snow_bkt > 0:
+                    # Snow on any season blends from base toward winter textures.
+                    t = (snow_bkt / 7.0) ** 0.75
+                    winter_tex = _find_base_image(pil_imgs, mode, 'winter', vi, bucket)
+                    if winter_tex is not None:
+                        img = _PilImage.blend(
+                            base.convert('RGBA'),
+                            winter_tex.convert('RGBA'), t)
+                    else:
+                        img = base
+                else:
+                    img = base
+                cache[key] = _PilImageTk.PhotoImage(img)
+
+            self.itemconfig(self.bg_img_item, image=cache[key])
+            self._bg_cache_key = key
+            return True
+
         except Exception:
-            pass
+            return False
+    # ========================================================================
+    # Snow System
+    # ========================================================================
+
+    def _blend_snow(self, soil_hex: str) -> str:
+        """
+        Blend *soil_hex* toward a cold blue-white based on self.snow_cover.
+
+        The snow colour is slightly blue-white (not pure white) so it looks
+        like packed snow on soil rather than a blank tile.  A mild gamma
+        curve makes coverage visible early.
+        """
+        cover = self.snow_cover
+        if cover <= 0.0:
+            return soil_hex
+        try:
+            h = soil_hex.lstrip("#")
+            r = int(h[0:2], 16)
+            g = int(h[2:4], 16)
+            b = int(h[4:6], 16)
+            # Snow target: cold blue-white, with per-tile subtle variation
+            sr, sg, sb = 238, 244, 255
+            t = cover ** 0.75          # gamma: visible at low coverage too
+            nr = int(r + (sr - r) * t)
+            ng = int(g + (sg - g) * t)
+            nb = int(b + (sb - b) * t)
+            return f"#{nr:02x}{ng:02x}{nb:02x}"
+        except Exception:
+            return soil_hex
+
+    def set_snow_cover(self, cover: float):
+        """
+        Update snow coverage (0.0–1.0) and refresh tile colours.
+
+        Called each simulated hour by the garden app.  Uses the last colour
+        the day/night system passed to set_soil_color() so snow blends
+        correctly on top of whatever lighting is active.
+        """
+        cover = max(0.0, min(1.0, float(cover)))
+        if abs(cover - self.snow_cover) < 0.004:
+            return                                 # skip trivial updates
+        self.snow_cover = cover
+        self._bg_cache_key = None                  # force image rebake with new snow level
+        last = getattr(self, "_last_applied_hex", self.soil.lstrip("#") and self.soil)
+        self.set_soil_color(last)                  # re-composite with new cover

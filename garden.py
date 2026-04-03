@@ -65,7 +65,7 @@ class GardenEnvironment:
         self.day = 1
         self.phase_index = 0
         self.phase = PHASES[0]
-        self.clock_hour = 6
+        self.clock_hour = 8
         
         # Calendar
         self.year = 1856
@@ -355,12 +355,16 @@ class GardenEnvironment:
         
         # Handle precipitation overrides
         try:
-            if state.get('rain_today'):
+            hours_data = state.get('hours', [])
+            current_temp = float(hours_data[time_slot]) if (hours_data and time_slot < len(hours_data)) else 0.0
+
+            # Snow day but current hour is warm enough for rain → fall as rain
+            if state.get('rain_today') or (state.get('snow_today') and current_temp > 3.0):
                 icon = '⛈' if state.get('thunder_today') else '🌧'
                 self.weather = self._night_icon_adjust(icon, sim_date, time_slot)
                 return
-            
-            if state.get('snow_today'):
+
+            if state.get('snow_today') and current_temp <= 3.0:
                 icon = '❄️'
                 self.weather = self._night_icon_adjust(icon, sim_date, time_slot)
                 return
