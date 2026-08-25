@@ -1096,6 +1096,39 @@ class MendelianLawWizard(tk.Toplevel):
                     pass
 
         if not discovered:
+            # Pod Shape special case: if the player picked it and it's the two
+            # underlying genes (P, V) both still segregating in this cross,
+            # give the specific epistasis explanation instead of the generic
+            # "not enough evidence" message — the ratio can look close to
+            # 3:1 by chance even though it isn't a valid single-gene test.
+            sel_traits_now = set()
+            try:
+                if law_num in (1, 2):
+                    sel_traits_now = {self._sels[0]["dominant"][0]}
+                elif law_num == 3:
+                    sel_traits_now = {self._sels[0]["dominant"][0], self._sels[1]["dominant"][0]}
+            except Exception:
+                sel_traits_now = set()
+            pod_note = res.get("pod_shape_note")
+            if pod_note and "pod_shape" in sel_traits_now:
+                self._show_result(False, pod_note)
+                return
+
+            # Same idea, but for the "ratio looks right, lineage unconfirmed"
+            # case: the raw sibling pool (what the Punnett Square tab shows)
+            # passed the numeric threshold, but this family can't be
+            # confirmed to trace back to true-breeding grandparents.
+            if law_num == 2 and len(sel_traits_now) == 1:
+                note = (res.get("law2_lineage_notes") or {}).get(next(iter(sel_traits_now)))
+                if note:
+                    self._show_result(False, note)
+                    return
+            elif law_num == 3 and len(sel_traits_now) == 2:
+                note = (res.get("law3_lineage_notes") or {}).get(frozenset(sel_traits_now))
+                if note:
+                    self._show_result(False, note)
+                    return
+
             # Build a helpful explanation
             msgs = {
                 1: (
@@ -1234,6 +1267,29 @@ class MendelianLawWizard(tk.Toplevel):
                     )
 
         if trait_mismatch:
+            # If the mismatch involves Pod Shape specifically and we have a
+            # diagnostic for why it can't be credited (two genes still
+            # segregating), show that instead of the generic "wrong trait"
+            # message — it's the actually useful explanation here.
+            try:
+                mismatch_traits = set()
+                if law_num in (1, 2):
+                    mismatch_traits = {self._sels[0]["dominant"][0]}
+                elif law_num == 3:
+                    mismatch_traits = {self._sels[0]["dominant"][0], self._sels[1]["dominant"][0]}
+                pod_note = res.get("pod_shape_note")
+                if pod_note and "pod_shape" in mismatch_traits:
+                    mismatch_msg = pod_note
+                elif law_num == 2 and len(mismatch_traits) == 1:
+                    note = (res.get("law2_lineage_notes") or {}).get(next(iter(mismatch_traits)))
+                    if note:
+                        mismatch_msg = note
+                elif law_num == 3 and len(mismatch_traits) == 2:
+                    note = (res.get("law3_lineage_notes") or {}).get(frozenset(mismatch_traits))
+                    if note:
+                        mismatch_msg = note
+            except Exception:
+                pass
             self._show_result(False, mismatch_msg)
             return
 

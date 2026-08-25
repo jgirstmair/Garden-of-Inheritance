@@ -70,7 +70,7 @@ from pathlib import Path
 from typing import List, Set
 
 # --- Third-Party / Installed Modules ---
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageFilter, ImageTk
 import tkinter as tk
 from tkinter import (
     colorchooser,
@@ -881,9 +881,19 @@ class GardenApp:
             self._bg_photo_cache = {}
 
             # ── Helper: load + resize one PNG ────────────────────────────
+            # Blur (if any) is applied once, right here, before the 101
+            # day/night-tinted variants are baked below — so the per-tile,
+            # per-frame render path (tile._try_set_bg_image) never touches
+            # PIL at all and pays zero extra cost for this setting.
+            blur_radius = _texture_blur_radius_for_pct(
+                getattr(self, "_texture_blur_pct", 0))
+
             def _load(path):
-                return (Image.open(path).convert('RGBA')
+                img = (Image.open(path).convert('RGBA')
                                         .resize((TS, TS), resample))
+                if blur_radius > 0:
+                    img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+                return img
 
             # ── Sun-tint (must match day/night knobs exactly) ─────────────
             sun_r, sun_g, sun_b = 0xbf, 0xe3, 0xb0   # "#bfe3b0"
@@ -1003,6 +1013,60 @@ class GardenApp:
             self._bg_soil_variants  = 0
             self._bg_grass_counts   = {}
             self._bg_soil_counts    = {}
+
+    def _set_texture_blur(self, pct):
+        """
+        Change the background texture blur amount (Game Settings ▸
+        Background Texture Blur) and re-bake textures at the new setting.
+
+        Cost: this re-runs the one-time pre-bake (_load_bg_textures), which
+        loads ~9 soil + up to 9 grass source images per season and blurs
+        each once — not per-tile, not per-frame. The existing PhotoImage
+        cache is stale afterward (it held un-blurred pixels) so it's
+        cleared; tiles then lazily re-bake just the PhotoImages they
+        actually need, same as any other texture change (e.g. season
+        change already works this way).
+        """
+        try:
+            pct = int(pct)
+        except Exception:
+            pct = 0
+        if pct not in TEXTURE_BLUR_PRESETS:
+            pct = 0
+
+        self._texture_blur_pct = pct
+        try:
+            self._texture_blur_var.set(pct)
+        except Exception:
+            pass
+        _save_texture_blur_pct(pct)
+
+        # Re-bake PIL source textures at the new blur radius.
+        self._load_bg_textures()
+
+        # Old PhotoImages were baked from the un-blurred (or differently
+        # blurred) PIL images — drop them so tiles rebuild on next draw.
+        self._bg_photo_cache = {}
+        try:
+            for tile in getattr(self, "tiles", []) or []:
+                tile._bg_cache_key = None
+        except Exception:
+            pass
+
+        # Refresh immediately rather than waiting for the next sim tick,
+        # so the change is visible right away (same pattern used at
+        # startup to prime tile textures).
+        try:
+            for tile in getattr(self, "tiles", []) or []:
+                tile.set_soil_color(tile.soil)
+        except Exception:
+            pass
+
+        try:
+            label = "off" if pct == 0 else f"{pct}%"
+            self._toast(f"Background texture blur: {label}")
+        except Exception:
+            pass
 
     # ========================================================================
     # Stone Border Decoration
@@ -2355,6 +2419,8 @@ class GardenApp:
                 except Exception:
                     pass
                 return False
+            if not self._night_gate_sowing():
+                return False
             if getattr(self, "available_seeds", 0) <= 0:
                 self._toast("No starter seeds left.")
                 return False
@@ -2397,6 +2463,8 @@ class GardenApp:
 
         # Season check
         if not self._season_gate_sowing():
+            return False
+        if not self._night_gate_sowing():
             return False
 
         # Create and place the plant through the unified helper
@@ -2482,6 +2550,7 @@ class GardenApp:
             self._toast("No seeds available in this group.", level="warn"); return
         
         planted = 0
+        self._last_night_block_reason = None
         for slot in region:
             if planted >= avail: break
             # Clear dead plant if present, then plant
@@ -2494,6 +2563,9 @@ class GardenApp:
                     planted += 1
         
         self._toast(f"Planted {planted} seed(s) in area.", level="info")
+        reason = getattr(self, "_last_night_block_reason", None)
+        if reason:
+            self.root.after(3000, lambda r=reason: self._toast(f"No sowing right now — {r}", level="warn"))
         self.render_all()
 
     def _on_plant_n_from_group(self, kind, match_fn, max_count):
@@ -2522,6 +2594,7 @@ class GardenApp:
         to_plant = min(max_count, avail, len(region))
         
         planted = 0
+        self._last_night_block_reason = None
         for slot in region:
             if planted >= to_plant: break
             # Clear dead plant if present, then plant
@@ -2534,6 +2607,9 @@ class GardenApp:
                     planted += 1
         
         self._toast(f"Planted {planted} seed(s).", level="info")
+        reason = getattr(self, "_last_night_block_reason", None)
+        if reason:
+            self.root.after(3000, lambda r=reason: self._toast(f"No sowing right now — {r}", level="warn"))
         self.render_all()
 
     def _on_plant_seed_from_group(self, kind, match_fn):
@@ -2723,7 +2799,7 @@ class GardenApp:
 
         # ── Stone Border Size ──────────────────────────────────────────
         game_menu.add_separator()
-        self._stone_size_var = tk.IntVar(value=4)
+        self._stone_size_var = tk.IntVar(value=0)   # default: no stones
 
         def _set_stone_size(px):
             self._stone_sw = px
@@ -2752,6 +2828,25 @@ class GardenApp:
             command=lambda: _set_stone_size(0)
         )
         game_menu.add_cascade(label="Stone Border Size ▸", menu=stone_menu)
+
+        # ── Background Texture Blur ────────────────────────────────────
+        # Softens the grass/soil tile textures so they're less visually
+        # distracting from the plants. Applied once when textures are
+        # pre-baked (see _load_bg_textures) — never per-frame — so it has
+        # no effect on simulation or render performance.
+        game_menu.add_separator()
+        self._texture_blur_var = tk.IntVar(value=getattr(self, "_texture_blur_pct", 0))
+
+        blur_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
+        for pct in TEXTURE_BLUR_PRESETS:
+            label = "Off" if pct == 0 else f"{pct}%"
+            blur_menu.add_radiobutton(
+                label=label,
+                variable=self._texture_blur_var,
+                value=pct,
+                command=lambda p=pct: self._set_texture_blur(p)
+            )
+        game_menu.add_cascade(label="Background Texture Blur ▸", menu=blur_menu)
 
         self.menubar.add_cascade(label="Game Settings", menu=game_menu)
 
@@ -3208,6 +3303,7 @@ class GardenApp:
         }
 
         # Load grass/soil background textures (pre-bakes 101 lighting levels)
+        self._texture_blur_pct = _load_texture_blur_pct()
         self._load_bg_textures()
         # Seed the season cache so tiles never read a missing key on frame 1
         _m = int(getattr(getattr(self, 'garden', None), 'month', 4) or 4)
@@ -3233,7 +3329,7 @@ class GardenApp:
             pass
 
         # Place stone images along border lines once the grid geometry is ready
-        self._stone_sw = 4    # default: quarter size
+        self._stone_sw = 0    # default: no stones
         self.root.after(250, self._setup_border_stones)
 
         # ---------- Mendelian laws row (below the grid in right_panel) ----------
@@ -3855,11 +3951,19 @@ class GardenApp:
             pass
 
     def _apply_pollen(self, packet):
-        """Apply selected pollen to the currently selected plant (with interactive dialog)."""
+        """Apply selected pollen to the currently selected plant (with interactive dialog).
+
+        Returns True once validation has passed and pollination has been
+        handed off (either applied immediately or via the interactive
+        stigma dialog); False if a validation check rejected the attempt.
+        Callers such as the pollen chooser popup use this to decide
+        whether to close themselves — validation failures keep the picker
+        open so the player can try a different pollen or recipient.
+        """
 
         if packet is None:
             self._toast("No pollen selected.")
-            return
+            return False
 
         packet_obj = packet  # keep original for inventory removal
 
@@ -3882,25 +3986,25 @@ class GardenApp:
 
         if not plant or not getattr(plant, "alive", True):
             self._toast("Select a living recipient plant first.")
-            return
+            return False
 
         if getattr(plant, "stage", None) != 5:
             self._toast("Recipient must be flowering (Stage 5).")
-            return
+            return False
 
         if getattr(self.garden, "phase", None) not in ("morning", "noon"):
             self._toast("Apply pollen in morning or noon.")
-            return
+            return False
 
         # --- viability check BEFORE consuming ---
         today = self._today()
         try:
             if int(packet.get("expires_day", -1)) != int(today):
                 self._toast("This pollen is no longer viable.")
-                return
+                return False
         except Exception:
             self._toast("This pollen is no longer viable.")
-            return
+            return False
 
         # --- All checks passed, now show interactive pollination dialog ---
         
@@ -3988,6 +4092,11 @@ class GardenApp:
             # Fallback if dialog fails - apply directly
             print(f"Pollination dialog failed: {e}, applying directly")
             on_pollination_complete(True)
+
+        # All validation passed and we handed off to (or bypassed) the
+        # interactive dialog — signal success to the caller (e.g. the
+        # pollen chooser popup, which closes itself on a successful pick).
+        return True
    
     # ---------- Events ----------
     def _open_tie_for_selected(self, event=None):
@@ -5822,9 +5931,13 @@ class GardenApp:
         self.tiles[slot].plant = p
         # Force soil texture + icon refresh immediately (works even when paused)
         self._force_tile_soil(slot)
-        # Advance one sim-hour after planting (deferred to avoid re-entrancy)
+        # Advance one sim-hour after planting (deferred to avoid re-entrancy).
+        # Realistic-difficulty only: on Mendel-era conditions, sowing a seed
+        # genuinely took time out of the day. On Casual/Moderate, planting
+        # stays instantaneous.
         try:
-            self.root.after(1, self._on_next_phase)
+            if str(getattr(self, "_season_mode", "off")).lower() == "enforce":
+                self.root.after(1, self._on_next_phase)
         except Exception:
             pass
 
@@ -5933,6 +6046,8 @@ class GardenApp:
                 self._toast("Sowing blocked by season rules.", level="warn")
             except Exception:
                 pass
+            return
+        if not self._night_gate_sowing():
             return
 
         # Actually plant the harvested seed into this slot
@@ -8202,6 +8317,50 @@ class GardenApp:
         msg = messages.get(new_mode, f"Difficulty: {new_mode}")
         self._toast(msg)
 
+    def _night_gate_sowing(self):
+        """
+        Realistic-difficulty only: block sowing outside Gregor's working
+        hours. On "Realistic — Full Mendel-era conditions" the garden goes
+        quiet in the evening — Gregor needs dinner, study time, and sleep
+        like anyone else. Returns True if sowing is allowed right now;
+        otherwise shows an explanatory toast and returns False. Always
+        returns True (no-op) on Casual/Moderate difficulty.
+
+        Also records the block reason on self._last_night_block_reason (or
+        clears it to None on success), so a caller that plants in bulk and
+        wraps this in its own "Planted N seed(s)" toast can show that
+        summary first and then queue the Gregor explanation right after,
+        instead of the two toasts stomping on each other.
+        """
+        try:
+            if str(getattr(self, "_season_mode", "off")).lower() != "enforce":
+                self._last_night_block_reason = None
+                return True
+
+            hour = int(getattr(self.garden, "clock_hour", 8)) % 24
+
+            if hour == 19:
+                reason = "Gregor is having dinner."
+            elif 20 <= hour <= 22:
+                reason = "Gregor is studying."
+            elif hour == 23:
+                reason = "Gregor is preparing for bed."
+            elif 0 <= hour < 6:
+                reason = "Gregor is asleep."
+            else:
+                self._last_night_block_reason = None
+                return True
+
+            self._last_night_block_reason = reason
+            try:
+                self._toast(f"No sowing right now — {reason}", level="warn")
+            except Exception:
+                pass
+            return False
+        except Exception:
+            # A bug in the night gate should never block sowing entirely
+            return True
+
     def _season_gate_sowing(self):
         """
         Returns True if sowing is allowed under the current season model; otherwise
@@ -8660,6 +8819,87 @@ class GardenApp:
         except Exception:
             return False
 
+
+
+# ============================================================================
+# Display Settings (texture blur, etc.)
+#
+# Kept in a separate file from the grid config, since _save_grid_config's
+# file gets deleted whenever the "show dialog next time" box is checked —
+# that lifecycle has nothing to do with display preferences like blur.
+# ============================================================================
+
+# Texture blur presets exposed in the menu. Values are percentages of
+# MAX_TEXTURE_BLUR_RADIUS (in source-image pixels), applied once when the
+# background textures are pre-baked — never per-frame — so changing this
+# has no impact on simulation/render performance.
+TEXTURE_BLUR_PRESETS = (0, 10, 20, 30, 40)
+MAX_TEXTURE_BLUR_RADIUS = 5.0   # PIL GaussianBlur radius at 100% (only 0-40% exposed in UI)
+DEFAULT_TEXTURE_BLUR_PCT = 10   # used only when no settings file exists yet
+
+
+def _texture_blur_radius_for_pct(pct):
+    """Map a blur percentage (0-100) to a PIL GaussianBlur radius in pixels."""
+    try:
+        pct = max(0, min(100, float(pct)))
+    except Exception:
+        pct = 0.0
+    return (pct / 100.0) * MAX_TEXTURE_BLUR_RADIUS
+
+
+def _display_settings_path():
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base = os.getcwd()
+    return os.path.join(base, "mendel_garden_display_settings.json")
+
+
+def _load_display_settings():
+    """Load persisted display settings. Always returns a dict (empty on any failure)."""
+    path = _display_settings_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        # Broken file → ignore & use defaults, same policy as grid config
+        return {}
+
+
+def _save_display_settings(settings):
+    path = _display_settings_path()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(settings, f)
+    except Exception:
+        # Failing to save a display preference should never kill the app
+        pass
+
+
+def _load_texture_blur_pct():
+    """Return the persisted texture blur percentage, snapped to the nearest preset.
+
+    Falls back to DEFAULT_TEXTURE_BLUR_PCT (not 0) when no settings file exists
+    yet, so a fresh install starts with the softened-texture look rather than
+    the old sharp default.
+    """
+    settings = _load_display_settings()
+    try:
+        pct = int(settings.get("texture_blur_pct", DEFAULT_TEXTURE_BLUR_PCT))
+    except Exception:
+        pct = DEFAULT_TEXTURE_BLUR_PCT
+    if pct not in TEXTURE_BLUR_PRESETS:
+        pct = min(TEXTURE_BLUR_PRESETS, key=lambda p: abs(p - pct))
+    return pct
+
+
+def _save_texture_blur_pct(pct):
+    settings = _load_display_settings()
+    settings["texture_blur_pct"] = int(pct)
+    _save_display_settings(settings)
 
 
 def _grid_config_path():

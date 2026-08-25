@@ -1203,11 +1203,23 @@ class PollenChooserPopup(Toplevel):
         def _use():
             p = pkt_placeholder[0]
             if p and self.app and callable(getattr(self.app, "_apply_pollen", None)):
-                self.app._apply_pollen(p)
-                try:
-                    self._render()
-                except Exception:
-                    pass
+                applied = self.app._apply_pollen(p)
+                if applied:
+                    # Pollen was accepted (recipient valid, in season, viable) and
+                    # handed off to the pollination flow — close the picker so the
+                    # player isn't left staring at a stale list.
+                    try:
+                        self.destroy()
+                    except Exception:
+                        pass
+                else:
+                    # Validation rejected it (e.g. recipient not flowering, wrong
+                    # phase, pollen expired) — keep the picker open, just refresh
+                    # so any now-stale packets drop out of the list.
+                    try:
+                        self._render()
+                    except Exception:
+                        pass
 
         info_row = tk.Frame(card)
         info_row.pack(fill="x", pady=(4, 0))

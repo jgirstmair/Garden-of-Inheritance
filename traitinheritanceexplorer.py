@@ -262,6 +262,83 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
 
         return tuple(sorted([_canon(m_pair), _canon(f_pair)]))
 
+    # ---- Pod Shape special case: two-gene (P, V) duplicate-recessive epistasis ----
+    # Pod shape isn't governed by a single gene like the other traits: a plant
+    # shows 'inflated' only with a dominant allele at BOTH P and V, and shows
+    # 'constricted' if it's homozygous recessive at EITHER one (see
+    # phenotype_from_genotype in Garden-of-Inheritance.py). True dihybrid
+    # segregation of both genes gives ~9:7 in F2, not the classic 3:1 — so it
+    # can only be tested as an ordinary single-locus trait for Law 1/2/3 when
+    # one of the two genes happens to be fixed homozygous-dominant across the
+    # relevant cross (leaving only the other gene actually varying).
+    def _pod_shape_effective_locus(m_snap, f_snap):
+        """Return 'P' or 'V' if pod shape behaves as a single-locus trait for
+        this specific cross (one gene fixed homozygous-dominant in both
+        parents), or None if both genes are still segregating (true
+        epistasis — not a valid single-locus test)."""
+        m_geno = _geno_from_snap_law2(m_snap)
+        f_geno = _geno_from_snap_law2(f_snap)
+        if not isinstance(m_geno, dict) or not isinstance(f_geno, dict):
+            return None
+
+        def _fixed_dominant(locus):
+            mp, fp = m_geno.get(locus), f_geno.get(locus)
+            if not (isinstance(mp, (list, tuple)) and len(mp) >= 2):
+                return False
+            if not (isinstance(fp, (list, tuple)) and len(fp) >= 2):
+                return False
+            return mp[0] == mp[1] == locus and fp[0] == fp[1] == locus
+
+        p_fixed = _fixed_dominant('P')
+        v_fixed = _fixed_dominant('V')
+        if p_fixed and not v_fixed:
+            return 'V'
+        if v_fixed and not p_fixed:
+            return 'P'
+        return None   # both segregating (true epistasis), or neither varying
+
+    def _pod_shape_epistasis_note(m_snap, f_snap):
+        """Short explanation for the wizard when Pod Shape can't be credited.
+
+        Two distinct cases, told apart explicitly rather than collapsed into
+        one message:
+          - genotype data IS available and shows both genes (P, V) still
+            segregating → explain the true 9:7 epistasis.
+          - genotype data is missing entirely (common for ancestors from
+            older saves, or plants archived before genotype was captured)
+            → say so plainly instead of silently falling back to the
+            generic "not enough evidence" message, which looked identical
+            to this feature simply not existing. We deliberately do NOT
+            guess a genotype from phenotype here: a 'constricted' plant
+            could be pp__, __vv, or ppvv, and there's no way to tell which
+            from phenotype alone — inventing one would just be a coin flip
+            dressed up as an explanation.
+        """
+        m_geno = _geno_from_snap_law2(m_snap)
+        f_geno = _geno_from_snap_law2(f_snap)
+        have_full_geno = bool(m_geno.get('P') and m_geno.get('V') and f_geno.get('P') and f_geno.get('V'))
+
+        if not have_full_geno:
+            return (
+                "Pod Shape can't be tested here because this cross doesn't have "
+                "recorded genotype data for both underlying genes (P and V) — "
+                "likely because these plants are from before genotype tracking, "
+                "or an older saved garden. Try again with a more recent cross; "
+                "plants bred from now on will have this recorded."
+            )
+
+        if _pod_shape_effective_locus(m_snap, f_snap) is not None:
+            return None
+
+        return (
+            "Pod Shape is controlled by two separate genes here, not one — a pod "
+            "is only 'inflated' if it carries a dominant copy of BOTH genes, and "
+            "'constricted' if it's fully recessive at EITHER one. In this cross "
+            "both genes are still varying, so the expected ratio is closer to "
+            "9:7, not 3:1 — that's why it won't demonstrate simple single-gene "
+            "segregation even if the numbers look close to 3:1."
+        )
+
     revealed = bool(getattr(app, "_genotype_revealed", False))
 
     law1_discovered = False
@@ -292,9 +369,13 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
         "seed_shape":    "R",
         "plant_height":  "Le",
     }
-    law_trait_keys = ["flower_color", "pod_color", "seed_color", "seed_shape", "plant_height"]
+    law_trait_keys = ["flower_color", "pod_color", "seed_color", "seed_shape", "plant_height", "pod_shape"]
 
     arch_plants = plants
+
+    # Hoisted so they're safely available later (note computation) even when
+    # the Law 1 block below is skipped (revealed=True or parents missing).
+    mother_snap = father_snap = None
 
     # ---------------- Law 1 (Dominance) ----------------
     if not revealed:
@@ -325,6 +406,8 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
                     continue
 
                 loc = trait_to_locus.get(tk)
+                if not loc and tk == "pod_shape":
+                    loc = _pod_shape_effective_locus(mother_snap, father_snap)
                 if not loc:
                     continue
 
@@ -473,6 +556,8 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
         # need a valid heterozygous locus with opposite homozygous grandparents and enough F2
         for tk in law_trait_keys:
             loc = trait_to_locus.get(tk)
+            if not loc and tk == "pod_shape":
+                loc = _pod_shape_effective_locus(gp_m, gp_f)
             if not loc:
                 continue
 
@@ -563,6 +648,72 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
                 law2_all_valid_ratios[tk] = law2_ratio_str
                 # don't break — collect all valid traits
 
+    def _raw_sibling_phenotypes(mid_, fid_, keys):
+        """Collect phenotype value(s) for every direct child of (mid_, fid_) —
+        the exact same simple rule the Punnett Square tab uses (same
+        immediate parents, no verification that those parents themselves
+        trace back to true-breeding founders). Used only for the diagnostic
+        notes below, never for crediting a law.
+
+        keys: a single trait key (str) or a tuple of trait keys — returns a
+        list of single values or a list of tuples to match.
+        """
+        single = isinstance(keys, str)
+        key_tuple = (keys,) if single else tuple(keys)
+        out = []
+        if mid_ in (None, "", -1) or fid_ in (None, "", -1):
+            return out
+        for _cid, cs in arch_plants.items():
+            if isinstance(cs, dict) and not cs.get("alive", True):
+                continue
+            cm, cf = _parents_from_snapshot(cs if isinstance(cs, dict) else {})
+            if not (str(cm) == str(mid_) and str(cf) == str(fid_)):
+                continue
+            try:
+                ctraits = cs.get("traits", {}) if isinstance(cs, dict) else getattr(cs, "traits", {}) or {}
+            except Exception:
+                ctraits = {}
+            vals = tuple(str(ctraits.get(k, "")).strip().lower() for k in key_tuple)
+            if any(not v for v in vals):
+                continue
+            out.append(vals[0] if single else vals)
+        return out
+
+    law2_lineage_notes = {}   # trait_key -> note (raw ratio looked right, lineage unconfirmed)
+    law3_lineage_notes = {}   # frozenset({tk1,tk2}) -> note
+
+    # ---------------- Law 2 diagnostic: raw sibling ratio vs. lineage ------
+    # For any trait that DIDN'T get credited above, check the same simple
+    # sibling pool the Punnett Square tab uses (no true-breeding-lineage
+    # check). If that raw ratio would actually pass, the reason it didn't
+    # unlock isn't the numbers — it's that this family can't be confirmed
+    # to trace back to true-breeding grandparents. Surfacing that avoids the
+    # confusing "looks right in the Punnett tab, wizard still says no" gap.
+    if not revealed and mid not in (None, "", -1) and fid not in (None, "", -1):
+        credited_law2 = {t for t, _ in law2_all_valid}
+        for tk in law_trait_keys:
+            if tk in credited_law2:
+                continue
+            raw_vals = _raw_sibling_phenotypes(mid, fid, tk)
+            raw_n = len(raw_vals)
+            if raw_n < LAW2_MIN_N:
+                continue
+            uniq = set(raw_vals)
+            if len(uniq) != 2:
+                continue
+            counts = {v: raw_vals.count(v) for v in uniq}
+            top_val, top_n = max(counts.items(), key=lambda kv: kv[1])
+            frac = top_n / float(raw_n)
+            if LAW2_DOM_FRAC_MIN <= frac <= LAW2_DOM_FRAC_MAX:
+                trait_label = tk.replace("_", " ")
+                law2_lineage_notes[tk] = (
+                    f"Your direct siblings for '{trait_label}' show a ratio close to 3:1 "
+                    f"(N = {raw_n}), but this family can't be confirmed to trace back to "
+                    f"true-breeding grandparents (homozygous, opposite alleles). Segregation "
+                    f"requires a controlled cross starting from pure-breeding parental lines — "
+                    f"not just any siblings that happen to show the right numbers."
+                )
+
     # ---------------- Law 3 (Independent Assortment) ----------------
     if not revealed and parent_snap and gp_m and gp_f and arch_plants and not law3_discovered:
         parent_geno = _geno_from_snap_law2(parent_snap)
@@ -594,15 +745,30 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
         from itertools import combinations
         from collections import Counter
 
-        candidate_traits = [tk for tk in law_trait_keys if tk in (parent_traits or {}) and trait_to_locus.get(tk)]
+        candidate_traits = [
+            tk for tk in law_trait_keys
+            if tk in (parent_traits or {}) and (
+                trait_to_locus.get(tk) or
+                (tk == "pod_shape" and _pod_shape_effective_locus(gp_m, gp_f))
+            )
+        ]
 
         for tk1, tk2 in combinations(candidate_traits, 2):
             if {"pod_color", "seed_shape"} == {tk1, tk2}:
                 continue
 
             loc1 = trait_to_locus.get(tk1)
+            if not loc1 and tk1 == "pod_shape":
+                loc1 = _pod_shape_effective_locus(gp_m, gp_f)
             loc2 = trait_to_locus.get(tk2)
+            if not loc2 and tk2 == "pod_shape":
+                loc2 = _pod_shape_effective_locus(gp_m, gp_f)
             if not loc1 or not loc2:
+                continue
+            # V (one of pod shape's two genes) is genetically linked to Le
+            # (plant height) in this model — not independently assorting,
+            # so this pairing can't demonstrate Law 3 even when it resolves.
+            if {loc1, loc2} == {'V', 'Le'}:
                 continue
 
             pair1 = parent_geno.get(loc1)
@@ -707,10 +873,70 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
 
                 # don't break — keep scanning to collect all valid pairs
 
+    # ---------------- Law 3 diagnostic: raw sibling ratio vs. lineage ------
+    # Same idea as the Law 2 diagnostic above: check the simple sibling pool
+    # (same immediate parents, no true-breeding-lineage verification — what
+    # the Punnett Square tab shows) for any pair that didn't get credited.
+    # If the raw chi-square would actually pass, the block is the unconfirmed
+    # lineage, not the ratio — worth saying so explicitly.
+    if not revealed and mid not in (None, "", -1) and fid not in (None, "", -1):
+        from itertools import combinations as _combinations
+        from collections import Counter as _Counter
+        try:
+            f1_traits = dict((_get_arch_snap(mid) or {}).get("traits", {}) or {})
+        except Exception:
+            f1_traits = {}
+        credited_pairs = {frozenset(p) for p in law3_all_valid_pairs}
+        for tk1, tk2 in _combinations(law_trait_keys, 2):
+            if {"pod_color", "seed_shape"} == {tk1, tk2}:
+                continue
+            if frozenset({tk1, tk2}) in credited_pairs:
+                continue
+            dom1 = str(f1_traits.get(tk1, "")).strip().lower()
+            dom2 = str(f1_traits.get(tk2, "")).strip().lower()
+            if not dom1 or not dom2:
+                continue
+            raw_pairs = _raw_sibling_phenotypes(mid, fid, (tk1, tk2))
+            total = len(raw_pairs)
+            if total < LAW3_MIN_N:
+                continue
+            combo_counts = _Counter()
+            for ph1, ph2 in raw_pairs:
+                a = "D" if ph1 == dom1 else "r"
+                b = "D" if ph2 == dom2 else "r"
+                combo_counts[(a, b)] += 1
+            needed_keys = [("D", "D"), ("D", "r"), ("r", "D"), ("r", "r")]
+            if any(combo_counts[k] == 0 for k in needed_keys):
+                continue
+            expected_ratios = {("D", "D"): 9, ("D", "r"): 3, ("r", "D"): 3, ("r", "r"): 1}
+            chi2 = 0.0
+            for k in needed_keys:
+                obs = combo_counts[k]
+                exp = expected_ratios[k] * (total / 16.0)
+                if exp > 0:
+                    chi2 += ((obs - exp) ** 2) / exp
+            if chi2 <= LAW3_CHI2_MAX:
+                label1 = tk1.replace("_", " ")
+                label2 = tk2.replace("_", " ")
+                law3_lineage_notes[frozenset({tk1, tk2})] = (
+                    f"Your direct siblings for '{label1}' and '{label2}' show a ratio close "
+                    f"to 9:3:3:1 (N = {total}), but this family can't be confirmed to trace "
+                    f"back to true-breeding grandparents (homozygous, opposite alleles at "
+                    f"both genes). Independent Assortment requires a controlled cross "
+                    f"starting from pure-breeding parental lines — not just any siblings "
+                    f"that happen to show the right numbers."
+                )
+
     # ---------------- Apply discoveries to app + UI ----------------
+    # NOTE: gated on `allow_credit` (in addition to `revealed`) so that callers
+    # which only want to *detect* laws for display/export purposes -- without
+    # unlocking them -- can pass allow_credit=False and get a side-effect-free
+    # result. Without this, any call (including the wizard's pre-check call)
+    # would silently credit the law before the player confirmed their trait
+    # selection.
     new = []
 
-    if not revealed:
+    if not revealed and allow_credit:
         if law1_discovered and not getattr(app, "law1_ever_discovered", False) \
                 and (target_law is None or target_law == 1):
             setattr(app, "law1_ever_discovered", True)
@@ -746,7 +972,7 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
 
     # Push ratio info to the main app for the top-bar UI
     try:
-        if not revealed:
+        if not revealed and allow_credit:
             if law2_discovered:
                 if not law2_ratio_str:
                     # best-effort fallback
@@ -761,7 +987,7 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
 
     # Stash law ratio info into the archive snapshot
     try:
-        if isinstance(snap, dict):
+        if not revealed and allow_credit and isinstance(snap, dict):
             if law2_discovered and law2_ratio_str:
                 snap["law2_ratio"] = law2_ratio_str
                 if law2_trait_name:
@@ -773,6 +999,21 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
     except Exception:
         pass
 
+    # Pod Shape diagnostic: only meaningful when the player is actually
+    # testing pod_shape and it didn't qualify. Use whichever cross is
+    # relevant to the law being tested — grandparents (founding true-breeding
+    # lines) for Law 2/3, immediate parents for Law 1 or when no target law
+    # was specified.
+    pod_shape_note = None
+    try:
+        if not revealed:
+            if target_law in (2, 3) and gp_m and gp_f:
+                pod_shape_note = _pod_shape_epistasis_note(gp_m, gp_f)
+            elif mother_snap and father_snap:
+                pod_shape_note = _pod_shape_epistasis_note(mother_snap, father_snap)
+    except Exception:
+        pod_shape_note = None
+
     return {
         "law1": bool(law1_discovered),
         "law2": bool(law2_discovered),
@@ -782,13 +1023,26 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
         "law1_trait": law1_trait_name if law1_discovered else None,
         "law1_dominant_value": law1_dominant_value if law1_discovered else None,
         "law1_all_valid": law1_all_valid if law1_discovered else [],
+        "law1_reason": law1_reason if law1_discovered else "",
         "law2_trait": law2_trait_name if law2_discovered else None,
         "law2_dominant_value": law2_dominant_value if law2_discovered else None,
         "law2_all_valid": law2_all_valid if law2_discovered else [],
         "law2_all_valid_ratios": law2_all_valid_ratios if law2_discovered else {},
+        "law2_reason": law2_reason if law2_discovered else "",
         "law3_traits": tuple(law3_trait_pair) if (law3_discovered and law3_trait_pair) else None,
         "law3_all_valid_pairs": law3_all_valid_pairs if law3_discovered else [],
         "law3_all_valid_pairs_ratios": law3_all_valid_pairs_ratios if law3_discovered else {},
+        "law3_reason": law3_reason if law3_discovered else "",
+        # short explanation for the wizard when the player picked Pod Shape
+        # and it failed because both underlying genes (P, V) are still
+        # segregating in this cross (true 9:7 epistasis, not 3:1) — None
+        # when not applicable (different trait, or pod shape did qualify).
+        "pod_shape_note": pod_shape_note,
+        # trait_key -> explanation when raw sibling ratio looked right but
+        # the true-breeding-lineage requirement is what actually blocked it
+        "law2_lineage_notes": law2_lineage_notes,
+        # frozenset({tk1,tk2}) -> same idea, for Law 3 trait pairs
+        "law3_lineage_notes": law3_lineage_notes,
     }
 
 # =============================================================================
@@ -863,6 +1117,19 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self.title("Trait Inheritance Explorer")
         self.configure(bg=self.BG)
         self.minsize(1024, 600)
+
+        # ── Auto-resize debouncing ──────────────────────────────────────────
+        # Several render paths (lineage tree, Pod Seeds cards, Punnett square)
+        # each independently ask for a window resize once their content is
+        # ready, via self._schedule_auto_resize(delay). A single plant/tab
+        # switch can trigger 2+ of these in quick succession (tree redraw +
+        # active-tab redraw), which used to mean the window visibly resized
+        # more than once per selection as each pass re-measured content and
+        # called self.geometry(...). _schedule_auto_resize cancels any
+        # still-pending resize before scheduling a new one, so only the last
+        # request in a burst actually runs — one resize, using the most
+        # up-to-date measurements, instead of several stacked ones.
+        self._resize_after_id = None
 
         if not hasattr(self.app, "archive") or not isinstance(getattr(self.app, "archive", None), dict):
             self.app.archive = {"plants": {}}
@@ -2200,947 +2467,49 @@ class TraitInheritanceExplorer(tk.Toplevel):
         _add_line(f"Ancestry     : {ancestry}")
         _add_line(f"Paternal anc.: {paternal_ancestry}")
 
-        def _law1_cross_signature_for_trait(m_snap, f_snap, locus):
-            """
-            Return a canonical 'cross type' signature for a Law 1 test:
-            - both parents homozygous at this locus
-            - homozygous for DIFFERENT alleles (e.g. AA vs aa)
-            - ignore concrete plant IDs and ♂/♀ order
-            """
-            m_geno = _geno_from_snap(m_snap)
-            f_geno = _geno_from_snap(f_snap)
-            if not isinstance(m_geno, dict) or not isinstance(f_geno, dict):
-                return None
-
-            m_pair = m_geno.get(locus)
-            f_pair = f_geno.get(locus)
-            if not (isinstance(m_pair, (list, tuple)) and len(m_pair) >= 2):
-                return None
-            if not (isinstance(f_pair, (list, tuple)) and len(f_pair) >= 2):
-                return None
-
-            m_a1, m_a2 = m_pair[0], m_pair[1]
-            f_a1, f_a2 = f_pair[0], f_pair[1]
-
-            # both parents homozygous
-            if not (m_a1 == m_a2 and f_a1 == f_a2):
-                return None
-            # alleles must differ
-            if m_a1 == f_a1:
-                return None
-
-            def _canon(pair):
-                a1, a2 = pair[0], pair[1]
-                return "".join(sorted([str(a1), str(a2)]))
-
-            # order-independent: AA×aa == aa×AA
-            return tuple(sorted([_canon(m_pair), _canon(f_pair)]))
-
-        # --- Genotype reveal / cheat status ---------------------------------
+        # --- Mendelian law detection: delegate to the shared function --------
+        # This used to be an ~800-line copy-pasted reimplementation of the wizard's
+        # detection logic (sibling counting, family-signature matching, Law 2/3
+        # ratio tests, and now the Pod Shape two-gene epistasis handling). It had
+        # drifted from the wizard's version in several ways in the past. Calling
+        # test_mendelian_laws() directly guarantees the export reports exactly
+        # what the wizard would detect for the same plant.
         app = getattr(self, "app", None)
+        revealed = bool(getattr(app, "_genotype_revealed", False)) if app is not None else False
+
+        law_res = {}
         if app is not None:
-            revealed = bool(getattr(app, "_genotype_revealed", False))
-        else:
-            revealed = False
-
-        # --- Law 1 (Dominance) detection for THIS plant --------------------
-        law1_discovered = False
-        law1_reason = ""
-        law1_all_valid = []          # (trait_key, dominant_value) pairs
-
-        # --- Law 2 (Segregation) detection for THIS plant ------------------
-        law2_discovered = False
-        law2_reason = ""
-        law2_ratio_str = ""      # e.g. "3,21:1"
-        law2_trait_name = ""     # human-readable trait label
-        law2_all_valid = []          # (trait_key, dominant_value) pairs
-        law2_all_valid_ratios = {}   # trait_key -> ratio string
-
-        # --- Law 3 (Independent Assortment) detection for THIS plant -------
-        law3_discovered = False
-        law3_reason = ""
-        law3_ratio_str = ""      # e.g. "45:14:15:6" or "9:3:3:1"
-        law3_trait_pair = ()     # (trait_label1, trait_label2)
-        law3_all_valid_pairs = []         # (tk1, tk2) pairs
-        law3_all_valid_pairs_ratios = {}  # frozenset({tk1,tk2}) -> ratio string
-
-
-
-        # Only consider if the player did NOT use the genotype reveal cheat.
-        if not revealed:
-            # Try to get parent snapshots from the archive
             try:
-                mother_snap = _get_arch_snap(mid)
+                from traitinheritanceexplorer import test_mendelian_laws
+                # allow_credit=False: export is informational only and must not
+                # unlock a law behind the wizard's back.
+                law_res = test_mendelian_laws(
+                    app,
+                    archive=getattr(app, "archive", None),
+                    pid=pid,
+                    allow_credit=False,
+                    toast=False,
+                ) or {}
             except Exception:
-                mother_snap = None
-            try:
-                father_snap = _get_arch_snap(fid)
-            except Exception:
-                father_snap = None
-
-            # We only credit Law of Dominance if:
-            # - both parents are known
-            # - they are not the same plant (i.e. a true cross, not selfing)
-            if mother_snap and father_snap and mid not in (None, "", -1) and fid not in (None, "", -1) and str(mid) != str(fid):
-                # Phenotypes for parents + child
-                try:
-                    m_traits = dict(mother_snap.get("traits", {}) or {}) if isinstance(mother_snap, dict) else dict(getattr(mother_snap, "traits", {}) or {})
-                except Exception:
-                    m_traits = {}
-                try:
-                    f_traits = dict(father_snap.get("traits", {}) or {}) if isinstance(father_snap, dict) else dict(getattr(father_snap, "traits", {}) or {})
-                except Exception:
-                    f_traits = {}
-
-                # Helper: safely extract genotype dict from any snapshot/proxy
-                def _geno_from_snap(s):
-                    try:
-                        if isinstance(s, dict):
-                            g = s.get("genotype") or {}
-                        else:
-                            g = getattr(s, "genotype", None) or {}
-                    except Exception:
-                        g = {}
-                    return dict(g) if isinstance(g, dict) else {}
-
-                m_geno = _geno_from_snap(mother_snap)
-                f_geno = _geno_from_snap(father_snap)
-
-                # Trait → locus mapping (single-locus traits only)
-                trait_to_locus = {
-                    "flower_color":  "A",
-                    "pod_color":     "Gp",
-                    "seed_color":    "I",
-                    "seed_shape":    "R",
-                    "plant_height":  "Le",
-                }
-
-                # Traits we care about (same as in sibling analysis)
-                law_trait_keys = ["flower_color", "pod_color", "seed_color", "seed_shape", "plant_height"]
-
-                # For sibling counting we need access to the whole archive
-                app_obj = getattr(self, "app", None)
-                try:
-                    arch = getattr(app_obj, "archive", {}) if app_obj else {}
-                    arch_plants = arch.get("plants", {}) if isinstance(arch, dict) else {}
-                    if not isinstance(arch_plants, dict):
-                        arch_plants = {}
-                except Exception:
-                    arch_plants = {}
-
-                def _g_from_snap(s, key, default=None):
-                    if isinstance(s, dict):
-                        return s.get(key, default)
-                    try:
-                        return getattr(s, key, default)
-                    except Exception:
-                        return default
-
-                # Normalize parent IDs for comparison
-                mid_norm = str(mid)
-                fid_norm = str(fid)
-
-                dominant_candidates = []
-
-                for tk in law_trait_keys:
-                    cv = str(traits.get(tk, "")).strip()
-                    mv = str(m_traits.get(tk, "")).strip()
-                    fv = str(f_traits.get(tk, "")).strip()
-
-                    # --- 1) Phenotypic dominance pattern --------------------
-                    # - both parents have a clear phenotype
-                    # - phenotypes are different
-                    # - the child matches EXACTLY one of them
-                    if not (cv and mv and fv and mv != fv and (cv == mv or cv == fv)):
-                        continue
-
-                    # --- 2) Parents must be homozygous for different alleles at the locus ---
-                    loc = trait_to_locus.get(tk)
-                    if not loc:
-                        continue
-
-                    # Get the cross signature for THIS plant's parents
-                    cross_sig = _law1_cross_signature_for_trait(mother_snap, father_snap, loc)
-                    if cross_sig is None:
-                        # parents aren’t pure opposite at this locus
-                        continue
-
-
-                    m_pair = m_geno.get(loc)
-                    f_pair = f_geno.get(loc)
-
-                    # Need valid allele pairs
-                    if not (isinstance(m_pair, (list, tuple)) and len(m_pair) >= 2 and
-                            isinstance(f_pair, (list, tuple)) and len(f_pair) >= 2):
-                        continue
-
-                    m_a1, m_a2 = m_pair[0], m_pair[1]
-                    f_a1, f_a2 = f_pair[0], f_pair[1]
-
-                    # Both parents homozygous (AA vs aa, LeLe vs lele, etc.)
-                    if not (m_a1 == m_a2 and f_a1 == f_a2):
-                        continue
-
-                    # And homozygous for *different* alleles (AA vs aa, not AA vs AA)
-                    if m_a1 == f_a1:
-                        continue
-
-                    # Count all F1 from the same genetic cross type, alive only
-                    same_pheno_total = 0
-
-                    for cid, csnap in arch_plants.items():
-                        # ✅ Only living plants count
-                        if not csnap.get("alive", True):
-                            continue
-
-                        # Must have both parents recorded
-                        smid = _g_from_snap(csnap, "mother_id", None)
-                        sfid = _g_from_snap(csnap, "father_id", None)
-                        if smid in (None, "", -1) or sfid in (None, "", -1):
-                            continue
-
-                        # Get those parents’ snapshots
-                        m_snap2 = _get_arch_snap(smid)
-                        f_snap2 = _get_arch_snap(sfid)
-                        if not m_snap2 or not f_snap2:
-                            continue
-
-                        # Same genetic cross type?
-                        sig2 = _law1_cross_signature_for_trait(m_snap2, f_snap2, loc)
-                        if sig2 is None or sig2 != cross_sig:
-                            continue
-
-                        # Same trait, same phenotype as this plant?
-                        try:
-                            s_traits = csnap.get("traits", {}) if isinstance(csnap, dict) else getattr(csnap, "traits", {}) or {}
-                        except Exception:
-                            s_traits = {}
-                        sv = str(s_traits.get(tk, "")).strip()
-
-                        if sv == cv:  # cv = current plant’s phenotype for tk
-                            same_pheno_total += 1
-
-
-                    # Need at least 15 plant with the same phenotype
-                    if same_pheno_total < LAW1_MIN_F1:
-                        continue
-
-
-                    # Record this trait as a valid Law-1 candidate
-                    dominant_candidates.append((tk, cv, mv, fv, same_pheno_total))
-
-                if dominant_candidates:
-                    law1_discovered = True
-                    # Take the first trait as an example for the explanation
-                    tk, cv, mv, fv, sib_count = dominant_candidates[0]
-                    trait_label = tk.replace("_", " ")
-                    law1_reason = (
-                        f"Observed in cross #{mid} × #{fid} for trait '{trait_label}': "
-                        f"parents {mv} × {fv} → offspring {cv} "
-                        f"in at least {sib_count + 1} F1 plants (including this plant), "
-                        f"from true-breeding parental lines."
-                    )
-
-        def _law2_family_signature(parent_snap, gp_m, gp_f, locus):
-            """
-            Signature for a Law 2 experiment:
-            - F1 is heterozygous at 'locus'
-            - Grandparents are homozygous at 'locus'
-            
-            Note: Grandparents may have same or different alleles (AA×AA, aa×aa, or AA×aa).
-            Mendel established true-breeding lines via selfing before crossing them.
-            """
-            parent_geno = _geno_from_snap_law2(parent_snap)
-            if not isinstance(parent_geno, dict):
-                return None
-            p_pair = parent_geno.get(locus)
-            if not (isinstance(p_pair, (list, tuple)) and len(p_pair) >= 2):
-                return None
-            pa1, pa2 = p_pair[0], p_pair[1]
-
-            # F1 must be heterozygous
-            if pa1 == pa2:
-                return None
-
-            gm_geno = _geno_from_snap_law2(gp_m)
-            gf_geno = _geno_from_snap_law2(gp_f)
-            if not isinstance(gm_geno, dict) or not isinstance(gf_geno, dict):
-                return None
-
-            m_pair = gm_geno.get(locus)
-            f_pair = gf_geno.get(locus)
-            if not (isinstance(m_pair, (list, tuple)) and len(m_pair) >= 2):
-                return None
-            if not (isinstance(f_pair, (list, tuple)) and len(f_pair) >= 2):
-                return None
-
-            m_a1, m_a2 = m_pair[0], m_pair[1]
-            f_a1, f_a2 = f_pair[0], f_pair[1]
-
-            # Grandparents must be homozygous
-            if not (m_a1 == m_a2 and f_a1 == f_a2):
-                return None
-            # REMOVED: if m_a1 == f_a1: return None
-            # This check rejected selfed true-breeding lines (e.g., AA × AA).
-            # Mendel's method: self-pollinate to establish homozygous lines,
-            # then cross them. As long as parent is heterozygous and grandparents
-            # are homozygous, we have valid segregation.
-
-            def _canon(pair):
-                a1, a2 = pair[0], pair[1]
-                return "".join(sorted([str(a1), str(a2)]))
-
-            return tuple(sorted([_canon(m_pair), _canon(f_pair)]))
-
-        # --------------------------------------------------------------------
-        # --- Law 2 (Segregation) detection (builds on Law 1 F1) --------
-        # ✅ Accept both:
-        #   - classic selfing:   Aa x Aa where mother==father (same plant)
-        #   - Mendel-style F1 sib mating: Aa x Aa where mother!=father but same true-breeding origin
-        try:
-            has_parents = (mid not in (None, "", -1) and fid not in (None, "", -1))
-        except Exception:
-            has_parents = False
-
-        parent_snap_m = _get_arch_snap(mid) if has_parents else None
-        parent_snap_f = _get_arch_snap(fid) if has_parents else None
-
-        if parent_snap_m and parent_snap_f:
-            # Use mother as the "reference F1" for dominant phenotype labels etc.
-            parent_snap = parent_snap_m
-            other_parent_snap = parent_snap_f
-
-            # Parent traits (reference)
-            try:
-                if isinstance(parent_snap, dict):
-                    parent_traits = dict(parent_snap.get("traits", {}) or {})
-                else:
-                    parent_traits = dict(getattr(parent_snap, "traits", {}) or {})
-            except Exception:
-                parent_traits = {}
-
-            # Helper: get genotype dict from any snapshot/proxy
-            def _geno_from_snap_law2(s):
-                try:
-                    if isinstance(s, dict):
-                        g = s.get("genotype") or {}
-                    else:
-                        g = getattr(s, "genotype", {}) or {}
-                except Exception:
-                    g = {}
-                if not isinstance(g, dict):
-                    return {}
-                return g
-
-            # Helper: grandparents of ANY snapshot (parents of that snapshot)
-            def _get_grandparents_of(psnap):
-                try:
-                    pmid_x, pfid_x = self._parents_from_snapshot(psnap)
-                except Exception:
-                    pmid_x = _g(psnap, "mother_id", None)
-                    pfid_x = _g(psnap, "father_id", None)
-
-                return _get_arch_snap(pmid_x), _get_arch_snap(pfid_x)
-
-            # Grandparents of BOTH parents (needed to verify "same experiment family")
-            gp_m, gp_f = _get_grandparents_of(parent_snap)
-            gp_m_other, gp_f_other = _get_grandparents_of(other_parent_snap)
-
-            # Trait → locus mapping and trait list (as in Law 1)
-            trait_to_locus = {
-                "flower_color":   "A",
-                "pod_color":      "Gp",
-                "seed_color":     "I",
-                "seed_shape":     "R",
-                "plant_height":   "Le",
-            }
-
-            law_trait_keys = [
-                "flower_color",
-                "pod_color",
-                "seed_color",
-                "seed_shape",
-                "plant_height",
-            ]
-
-            # Pick the trait whose dominant fraction is *closest* to 3:1
-            best_law2_delta = None
-            best_law2_payload = None
-
-            if parent_snap:
-                # Parent traits (F1 phenotype)
-                try:
-                    if isinstance(parent_snap, dict):
-                        parent_traits = dict(parent_snap.get("traits", {}) or {})
-                    else:
-                        parent_traits = dict(getattr(parent_snap, "traits", {}) or {})
-                except Exception:
-                    parent_traits = {}
-
-                # Helper: get genotype dict from any snapshot/proxy
-                def _geno_from_snap_law2(s):
-                    try:
-                        if isinstance(s, dict):
-                            g = s.get("genotype") or {}
-                        else:
-                            g = getattr(s, "genotype", None) or {}
-                    except Exception:
-                        g = {}
-                    return dict(g) if isinstance(g, dict) else {}
-
-                parent_geno = _geno_from_snap_law2(parent_snap)
-
-                # Grandparents of the current plant (parents of the F1)
-                try:
-                    pmid, pfid = self._parents_from_snapshot(parent_snap)
-                except Exception:
-                    pmid, pfid = (
-                        _g(parent_snap, "mother_id", None),
-                        _g(parent_snap, "father_id", None),
-                    )
-
-                gp_m = _get_arch_snap(pmid)
-                gp_f = _get_arch_snap(pfid)
-
-                # Trait → locus mapping and trait list (as in Law 1)
-                trait_to_locus = {
-                    "flower_color":  "A",
-                    "pod_color":     "Gp",
-                    "seed_color":    "I",
-                    "seed_shape":    "R",
-                    "plant_height":  "Le",
-                }
-                law_trait_keys = [
-                    "flower_color",
-                    "pod_color",
-                    "seed_color",
-                    "seed_shape",
-                    "plant_height",
-                ]
-
-                # Pick the trait whose dominant fraction is *closest* to 3:1
-                best_law2_delta = None
-                best_law2_payload = None
-
-                for tk in law_trait_keys:
-                    loc = trait_to_locus.get(tk)
-                    if not loc:
-                        continue
-
-                    # Parent (F1) must be heterozygous at this locus
-                    pair_p = parent_geno.get(loc)
-                    if not (isinstance(pair_p, (list, tuple)) and len(pair_p) >= 2):
-                        continue
-                    if len(set(pair_p[:2])) != 2:
-                        continue  # not Aa
-
-                    # Build a canonical Law-2 family signature (F1 + grandparents)
-                    fam_sig = _law2_family_signature(parent_snap, gp_m, gp_f, loc)
-                    fam_sig_other = _law2_family_signature(other_parent_snap, gp_m_other, gp_f_other, loc)
-
-                    # ✅ Require BOTH parents to be valid F1 (Aa) from the same AA×aa setup
-                    if fam_sig is None or fam_sig_other is None or fam_sig_other != fam_sig:
-                        continue
-
-                    # Grandparents must be true-breeding for opposite alleles (AA vs aa)
-                    ok_grand = False
-                    if gp_m and gp_f:
-                        gm_geno = _geno_from_snap_law2(gp_m)
-                        gf_geno = _geno_from_snap_law2(gp_f)
-                        m_pair = gm_geno.get(loc)
-                        f_pair = gf_geno.get(loc)
-                        if (
-                            isinstance(m_pair, (list, tuple)) and len(m_pair) >= 2
-                            and isinstance(f_pair, (list, tuple)) and len(f_pair) >= 2
-                        ):
-                            m_a1, m_a2 = m_pair[0], m_pair[1]
-                            f_a1, f_a2 = f_pair[0], f_pair[1]
-                            if m_a1 == m_a2 and f_a1 == f_a2 and m_a1 != f_a1:
-                                ok_grand = True
-                    if not ok_grand:
-                        continue
-
-                    # Count F2 siblings for this trait
-                    counts_counter = Counter()
-                    if arch_plants:
-                        for sid, csnap2 in arch_plants.items():
-
-                            # ✅ only living F2 plants count
-                            if not csnap2.get("alive", True):
-                                continue
-
-                            # Who are the parents of this candidate F2?
-                            try:
-                                smid2, sfid2 = self._parents_from_snapshot(csnap2)
-                            except Exception:
-                                smid2, sfid2 = (
-                                    _g(csnap2, "mother_id", None),
-                                    _g(csnap2, "father_id", None),
-                                )
-
-                            # ✅ Allow Aa×Aa where mother!=father (F1 sibling mating),
-                            # as long as BOTH parents belong to the same Law-2 family signature.
-                            if smid2 is None or sfid2 is None:
-                                continue
-
-                            f1_m = _get_arch_snap(smid2)
-                            f1_f = _get_arch_snap(sfid2)
-                            if not f1_m or not f1_f:
-                                continue
-
-                            # optionally: only count F2 from living F1
-                            if not f1_m.get("alive", True) or not f1_f.get("alive", True):
-                                continue
-
-                            gp_m2a, gp_f2a = _get_grandparents_of(f1_m)
-                            gp_m2b, gp_f2b = _get_grandparents_of(f1_f)
-                            if not gp_m2a or not gp_f2a or not gp_m2b or not gp_f2b:
-                                continue
-
-                            fam_sig2a = _law2_family_signature(f1_m, gp_m2a, gp_f2a, loc)
-                            fam_sig2b = _law2_family_signature(f1_f, gp_m2b, gp_f2b, loc)
-
-                            if (
-                                fam_sig2a is None or fam_sig2b is None
-                                or fam_sig2a != fam_sig or fam_sig2b != fam_sig
-                            ):
-                                continue
-
-                            # Now we know this F2 belongs to the same experiment type ⇒ count it
-                            sv2 = _trait_from_snap(csnap2, tk)
-                            if sv2 is None:
-                                continue
-                            val_norm = str(sv2).strip().lower()
-                            if not val_norm:
-                                continue
-                            counts_counter[val_norm] += 1
-
-                    total = sum(int(c) for c in counts_counter.values())
-                    if total < LAW2_MIN_N:
-                        continue
-
-                    nonzero = [
-                        (str(val).strip().lower(), int(c))
-                        for val, c in counts_counter.items()
-                        if c > 0
-                    ]
-                    if len(nonzero) != 2:
-                        continue
-
-                    norm_counts = {}
-                    for val_norm, c in nonzero:
-                        norm_counts[val_norm] = norm_counts.get(val_norm, 0) + c
-
-                    dom_pheno = str(parent_traits.get(tk, "")).strip().lower()
-                    dom_count = norm_counts.get(dom_pheno, 0)
-                    if dom_count <= 0:
-                        # fall back: whichever phenotype is more frequent is "dominant"
-                        dom_pheno, dom_count = max(norm_counts.items(), key=lambda kv: kv[1])
-
-                    rec_pheno = [v for v in norm_counts.keys() if v != dom_pheno]
-                    if not rec_pheno:
-                        continue
-                    rec_pheno = rec_pheno[0]
-                    rec_count = norm_counts.get(rec_pheno, 0)
-                    if rec_count <= 0:
-                        continue
-
-                    n_used = dom_count + rec_count
-                    frac_dom = dom_count / float(n_used)
-
-                    # Only accept reasonably 3:1-ish families (75–85% dom)
-                    #   if not (0.75 <= frac_dom <= 0.85):
-
-                    # morerelaxed
-                    if not (LAW2_DOM_FRAC_MIN <= frac_dom <= LAW2_DOM_FRAC_MAX):
-                        continue
-
-                    # Distance from the ideal 3:1 (= 75% dominant)
-                    delta = abs(frac_dom - 0.75)
-
-                    payload = {
-                        "tk": tk,
-                        "trait_label": tk.replace("_", " "),
-                        "dom_pheno": dom_pheno,
-                        "rec_pheno": rec_pheno,
-                        "norm_counts": dict(norm_counts),
-                        "frac_dom": frac_dom,
-                        "n_used": n_used,
-                    }
-
-                    if best_law2_delta is None or delta < best_law2_delta:
-                        best_law2_delta = delta
-                        best_law2_payload = payload
-
-                # After scanning all traits, credit Law 2 for the *best* 3:1 case, if any
-                if best_law2_payload is not None:
-                    law2_discovered = True
-
-                    tk = best_law2_payload["tk"]
-                    trait_label = best_law2_payload["trait_label"]
-                    dom_pheno = best_law2_payload["dom_pheno"]
-                    rec_pheno = best_law2_payload["rec_pheno"]
-                    norm_counts = best_law2_payload["norm_counts"]
-                    frac_dom = best_law2_payload["frac_dom"]
-                    n_used = best_law2_payload["n_used"]
-
-                    # Use the same ratio formatting as Trait Inheritance Explorer, but WITHOUT percentages
-                    vals = list(norm_counts.values())
-
-                    law2_ratio_str = ""
-                    if vals:
-                        if len(vals) == 2:
-                            a, b = vals
-                            # Make sure a is the larger count
-                            if a < b:
-                                a, b = b, a
-                            if b > 0:
-                                x = round(a / b, 2)   # e.g. 81/26 → 3.12
-                                x_str = f"{x:.2f}".replace(".", ",")
-                                law2_ratio_str = f"{x_str}:1"
-                            else:
-                                law2_ratio_str = f"{a}:{b}"
-                        else:
-                            law2_ratio_str = ":".join(str(v) for v in vals)
-
-                    law2_trait_name = tk  # store raw key so wizard can compare directly
-                    law2_dominant_value = dom_pheno
-                    law2_all_valid.append((tk, dom_pheno))
-                    law2_all_valid_ratios[tk] = law2_ratio_str
-
-                    # parent_id no longer always exists if Law2 is based on F1 sibling crosses (mid != fid)
-                    try:
-                        if str(mid) == str(fid):
-                            parent_label = f"{mid}"          # selfing case
-                            cross_label  = f"selfed F1 plant #{parent_label}"
-                        else:
-                            parent_label = f"{mid}×{fid}"    # sib-mating case
-                            cross_label  = f"F1 cross #{parent_label}"
-                    except Exception:
-                        cross_label = "F1 cross #?"
-
-                    law2_reason = (
-                        f"Observed in F2 offspring of {cross_label} for trait '{trait_label}': "
-                        f"dominant '{dom_pheno}' vs recessive '{rec_pheno}' "
-                        f"in approx. {frac_dom*100:.0f}% : {(1.0-frac_dom)*100:.0f}% "
-                        f"(N = {n_used}), following a cross of true-breeding parental lines in the previous generation."
-                    )
-
-                    def _law3_family_signature(parent_snap, gp_m, gp_f, loc1, loc2):
-                        """
-                        Signature for a Law 3 dihybrid experiment:
-                        - F1 (parent_snap) is heterozygous at both loci (AaBb)
-                        - Grandparents (gp_m, gp_f) are true-breeding for opposite alleles
-                          at both loci (AA BB vs aa bb)
-                        Returns a canonical signature tuple, or None if the setup is invalid.
-                        """
-                        gm_geno = _geno_from_snap_law2(gp_m)
-                        gf_geno = _geno_from_snap_law2(gp_f)
-                        parent_geno_local = _geno_from_snap_law2(parent_snap)
-
-                        if not (isinstance(gm_geno, dict) and isinstance(gf_geno, dict) and isinstance(parent_geno_local, dict)):
-                            return None
-
-                        p1 = parent_geno_local.get(loc1)
-                        p2 = parent_geno_local.get(loc2)
-
-                        def _is_het(pair):
-                            return isinstance(pair, (list, tuple)) and len(pair) >= 2 and pair[0] != pair[1]
-
-                        # F1 must be heterozygous at both loci (Aa, Bb)
-                        if not (_is_het(p1) and _is_het(p2)):
-                            return None
-
-                        m1 = gm_geno.get(loc1); f1 = gf_geno.get(loc1)
-                        m2 = gm_geno.get(loc2); f2 = gf_geno.get(loc2)
-
-                        def _is_pure_opp(a_pair, b_pair):
-                            if not (isinstance(a_pair, (list, tuple)) and len(a_pair) >= 2):
-                                return False
-                            if not (isinstance(b_pair, (list, tuple)) and len(b_pair) >= 2):
-                                return False
-                            a1, a2 = a_pair[0], a_pair[1]
-                            b1, b2 = b_pair[0], b_pair[1]
-                            return a1 == a2 and b1 == b2 and a1 != b1
-
-                        # Grandparents must be AA vs aa at each locus
-                        if not (_is_pure_opp(m1, f1) and _is_pure_opp(m2, f2)):
-                            return None
-
-                        def _canon(pair):
-                            a1, a2 = pair[0], pair[1]
-                            return "".join(sorted([str(a1), str(a2)]))
-
-                        key1 = tuple(sorted([_canon(m1), _canon(f1)]))
-                        key2 = tuple(sorted([_canon(m2), _canon(f2)]))
-
-                        # include locus names so we don't mix e.g. A/B families with I/Le families
-                        return tuple(sorted([(loc1, key1), (loc2, key2)]))
-
-                    # --- Law 3 (Independent Assortment) detection: dihybrid F2 9:3:3:1 ---
-                    # Only try if we can use the same archive + parent info we already have.
-                    if not law3_discovered and gp_m and gp_f and arch_plants:
-
-                        # Helper: “dominant phenotype” = F1 parent’s phenotype for that trait
-                        parent_traits = parent_traits or {}
-                        N_MIN_LAW3 = LAW3_MIN_N  # need a decent F2 sample size
-
-                        # Only use trait pairs that:
-                        #  - exist on the parent
-                        #  - are not *actually linked* in pea genetics
-                        candidate_traits = [
-                        tk for tk in law_trait_keys
-                        if tk in parent_traits and trait_to_locus.get(tk)
-                    ]
-
-                        for tk1, tk2 in combinations(candidate_traits, 2):
-                            # Skip the known linked pair in peas: pod_color (Gp) and seed_shape (R)
-                            # → they are on the same chromosome and do *not* assort independently.
-                            if {"pod_color", "seed_shape"} == {tk1, tk2}:
-                                continue
-
-                            # 🔧 NEW: map traits to loci and guard against missing loci
-                            loc1 = trait_to_locus.get(tk1)
-                            loc2 = trait_to_locus.get(tk2)
-                            if not loc1 or not loc2:
-                                continue
-
-                            # F1 (parent) must be heterozygous at BOTH loci
-                            pair1 = parent_geno.get(loc1)
-                            pair2 = parent_geno.get(loc2)
-                            if not (isinstance(pair1, (list, tuple)) and len(pair1) >= 2 and
-                                    isinstance(pair2, (list, tuple)) and len(pair2) >= 2):
-                                continue
-                            if len(set(pair1[:2])) != 2 or len(set(pair2[:2])) != 2:
-                                # not AaBb
-                                continue
-
-                            # Construct dihybrid family signature for this trait pair
-                            fam_sig = _law3_family_signature(parent_snap, gp_m, gp_f, loc1, loc2)
-                            if fam_sig is None:
-                                # F1 not AaBb or grandparents not AA/aa BB/bb → not a valid Law-3 setup
-                                continue
-
-                            # Collect F2 siblings from this selfed F1, classify by two traits
-                            combo_counts = Counter()
-
-                            dom1 = str(parent_traits.get(tk1, "")).strip().lower()
-                            dom2 = str(parent_traits.get(tk2, "")).strip().lower()
-
-                            for cid2, csnap2 in arch_plants.items():
-                                # ✅ only living F2 plants
-                                if not csnap2.get("alive", True):
-                                    continue
-
-                                # parents of this F2
-                                try:
-                                    smid2, sfid2 = self._parents_from_snapshot(csnap2)
-                                except Exception:
-                                    smid2, sfid2 = (
-                                        _g(csnap2, "mother_id", None),
-                                        _g(csnap2, "father_id", None),
-                                    )
-
-                                # ✅ Allow AaBb×AaBb where mother!=father, as long as BOTH parents
-                                # belong to the same dihybrid family signature.
-                                if smid2 is None or sfid2 is None:
-                                    continue
-
-                                f1_m = _get_arch_snap(smid2)
-                                f1_f = _get_arch_snap(sfid2)
-                                if not f1_m or not f1_f:
-                                    continue
-
-                                if not f1_m.get("alive", True) or not f1_f.get("alive", True):
-                                    continue
-
-                                gp_m2a, gp_f2a = _get_grandparents_of(f1_m)
-                                gp_m2b, gp_f2b = _get_grandparents_of(f1_f)
-                                if not gp_m2a or not gp_f2a or not gp_m2b or not gp_f2b:
-                                    continue
-
-                                fam_sig2a = _law3_family_signature(f1_m, gp_m2a, gp_f2a, loc1, loc2)
-                                fam_sig2b = _law3_family_signature(f1_f, gp_m2b, gp_f2b, loc1, loc2)
-
-                                if (
-                                    fam_sig2a is None or fam_sig2b is None
-                                    or fam_sig2a != fam_sig or fam_sig2b != fam_sig
-                                ):
-                                    continue
-
-                                # Now we know this F2 belongs to the same dihybrid experiment type
-                                v1 = _trait_from_snap(csnap2, tk1)
-                                v2 = _trait_from_snap(csnap2, tk2)
-                                if v1 is None or v2 is None:
-                                    continue
-
-                                p1 = str(v1).strip().lower()
-                                p2 = str(v2).strip().lower()
-                                if not p1 or not p2:
-                                    continue
-
-                                c1 = "D" if p1 == dom1 else "r"
-                                c2 = "D" if p2 == dom2 else "r"
-                                combo_counts[(c1, c2)] += 1
-
-
-                            total = sum(combo_counts.values())
-                            if total < N_MIN_LAW3:
-                                continue
-
-                            # Need all 4 classes present
-                            needed_keys = [("D","D"), ("D","r"), ("r","D"), ("r","r")]
-                            if any(combo_counts[k] == 0 for k in needed_keys):
-                                continue
-
-                            # Compare to an ideal 9:3:3:1 via a simple chi-square test
-                            expected_ratios = {("D","D"): 9, ("D","r"): 3, ("r","D"): 3, ("r","r"): 1}
-                            chi2 = 0.0
-                            for k in needed_keys:
-                                obs = combo_counts[k]
-                                exp = expected_ratios[k] * (total / 16.0)
-                                if exp <= 0:
-                                    continue
-                                diff = obs - exp
-                                chi2 += (diff * diff) / exp
-
-                            # df = 3 → critical χ²(0.05) ≈ 7.8; we’ll be a bit generous
-                            if chi2 <= LAW3_CHI2_MAX:
-                                law3_discovered = True
-                                trait_label1 = tk1.replace("_", " ")
-                                trait_label2 = tk2.replace("_", " ")
-
-                                # New Law 3 ratio formatting: scale counts to 16 total (Mendel-style)
-                                try:
-                                    vals = [combo_counts[k] for k in needed_keys]  # [DD, Dr, rD, rr]
-                                    total = sum(vals)
-
-                                    if total > 0:
-                                        # Scale each class so that the sum of the four entries is 16 (like 9:3:3:1)
-                                        scaled = [(v / total) * 16.0 for v in vals]
-
-                                        # One decimal place, using decimal comma
-                                        pretty_parts = [
-                                            f"{x:.1f}".replace(".", ",")
-                                            for x in scaled
-                                        ]
-
-                                        law3_ratio_str = " : ".join(pretty_parts) + " (scaled to 16)"
-
-                                    else:
-                                        law3_ratio_str = ""
-
-                                    law3_trait_pair = (trait_label1, trait_label2)
-
-                                except Exception:
-                                    law3_ratio_str = ""
-                                    law3_trait_pair = (trait_label1, trait_label2)
-
-                                # parent_id may not exist (Law3 can be detected from AaBb×AaBb where mother != father)
-                                try:
-                                    if str(mid) == str(fid):
-                                        cross_label = f"selfed F1 plant #{mid}"
-                                    else:
-                                        cross_label = f"F1 cross #{mid}×{fid}"
-                                except Exception:
-                                    cross_label = "F1 cross #?"
-
-                                law3_reason = (
-                                    f"Observed in dihybrid F2 offspring of {cross_label} "
-                                    f"for traits '{trait_label1}' and '{trait_label2}': "
-                                    f"the four phenotype combinations (dom/dom, dom/rec, rec/dom, rec/rec) "
-                                    f"appear in an approximately 9:3:3:1 ratio (N = {total})."
-                                )
-
-                                law3_all_valid_pairs.append((tk1, tk2))
-                                law3_all_valid_pairs_ratios[frozenset({tk1, tk2})] = law3_ratio_str
-                                # don't break — collect all valid pairs
-
-                        # end for (tk1, tk2)
-
-        # --- Update global “ever discovered” flags on GardenApp for UI + feedback ---
-        app = getattr(self, "app", None)
-        if app is not None and not revealed:
-            # Law 1
-            if law1_discovered and not getattr(app, "law1_ever_discovered", False):
-                app.law1_ever_discovered = True
-                app.law1_first_plant = pid
-                try:
-                    app._toast(f"Law 1 (Dominance) discovered from plant #{pid}!", level="info")
-                except Exception:
-                    pass
-
-            # Law 2
-            if law2_discovered and not getattr(app, "law2_ever_discovered", False):
-                app.law2_ever_discovered = True
-                app.law2_first_plant = pid
-                try:
-                    app._toast(f"Law 2 (Segregation) discovered from plant #{pid}!", level="info")
-                except Exception:
-                    pass
-
-            # Law 3
-            if law3_discovered and not getattr(app, "law3_ever_discovered", False):
-                app.law3_ever_discovered = True
-                app.law3_first_plant = pid
-                try:
-                    app._toast(f"Law 3 (Independent Assortment) discovered from plant #{pid}!", level="info")
-                except Exception:
-                    pass
-        
-        # --- Push law ratio info to the main app for the top-bar UI ---
-        try:
-            app = getattr(self, "app", None)
-            if app is not None and not revealed:
-
-                # Law 2 ratio in UI
-                if law2_discovered:
-                    # If the fancy formatter failed for some reason, keep at least *something*
-                    if not law2_ratio_str:
-                        vals = list(norm_counts.values()) if 'norm_counts' in locals() else []
-                        if len(vals) == 2:
-                            law2_ratio_str = f"{vals[0]}:{vals[1]}"
-                        elif vals:
-                            law2_ratio_str = ":".join(str(v) for v in vals)
-                        else:
-                            law2_ratio_str = "Ratio __:__"
-
-                    setattr(app, "law2_ratio_ui", law2_ratio_str)
-
-
-                # Law 3 ratio in UI
-                if law3_discovered and law3_ratio_str:
-                    setattr(app, "law3_ratio_ui", law3_ratio_str)
-
-                # Refresh the display
-                if hasattr(app, "_update_law_status_label"):
-                    app._update_law_status_label()
-
-        except Exception:
-            pass
-
-        # --- Stash law ratio info directly into the archive snapshot for this plant ---
-        try:
-            if isinstance(snap, dict):
-                if law2_discovered and law2_ratio_str:
-                    snap["law2_ratio"] = law2_ratio_str
-                    if law2_trait_name:
-                        snap["law2_trait"] = law2_trait_name
-                if law3_discovered and law3_ratio_str:
-                    snap["law3_ratio"] = law3_ratio_str
-                    if law3_trait_pair:
-                        snap["law3_traits"] = f"{law3_trait_pair[0]} × {law3_trait_pair[1]}"
-            else:
-                if law2_discovered and law2_ratio_str:
-                    setattr(snap, "law2_ratio", law2_ratio_str)
-                    if law2_trait_name:
-                        setattr(snap, "law2_trait", law2_trait_name)
-                if law3_discovered and law3_ratio_str:
-                    setattr(snap, "law3_ratio", law3_ratio_str)
-                    if law3_trait_pair:
-                        setattr(snap, "law3_traits", f"{law3_trait_pair[0]} × {law3_trait_pair[1]}")
-        except Exception:
-            pass
+                law_res = {}
+
+        law1_discovered = bool(law_res.get("law1"))
+        law1_reason     = law_res.get("law1_reason") or ""
+
+        law2_discovered = bool(law_res.get("law2"))
+        law2_reason     = law_res.get("law2_reason") or ""
+        law2_trait_name = law_res.get("law2_trait") or ""
+        law2_ratio_str  = (law_res.get("law2_all_valid_ratios") or {}).get(law2_trait_name, "") if law2_discovered else ""
+
+        law3_discovered = bool(law_res.get("law3"))
+        law3_reason     = law_res.get("law3_reason") or ""
+        law3_trait_pair = law_res.get("law3_traits") or ()   # human-readable labels, e.g. ("flower color", "pod color")
+        law3_ratio_str  = ""
+        if law3_discovered:
+            _pairs = law_res.get("law3_all_valid_pairs") or []
+            _ratios = law_res.get("law3_all_valid_pairs_ratios") or {}
+            if _pairs:
+                law3_ratio_str = _ratios.get(frozenset(_pairs[0]), "")
 
         # --- Write genotype & Mendelian-law blocks to text ------------------
         _add_line("")
@@ -3640,13 +3009,20 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # Lineage is always visible — redraw it rooted at root_id (or preview)
         tgt = root_id if root_id is not None else pid
         self._draw_canvas_family(tgt)
-        # Update pods in the right-side tab if Pods tab is active
+        # Update the active right-side tab to the clicked node — was previously
+        # only wired up for Pod Seeds, so clicking a lineage node while on
+        # Punnett Square or Trait Ratio left those tabs showing stale content
+        # until you switched tabs (or picked from the list) to force a redraw.
         try:
             tab_idx = self.tie_notebook.index(self.tie_notebook.select())
         except Exception:
             tab_idx = 0
         if tab_idx == 0:   # Pod Seeds
             self._render_siblings(g('id', pid))
+        elif tab_idx == 1:  # Punnett Square
+            self._render_cross_tab(g('id', pid))
+        elif tab_idx == 2:  # Trait Ratio
+            self._render_ratio_tab(g('id', pid))
 
     def _refresh_views(self):
         """Re-render tree and sibling pods on trait-mode change or other triggers."""
@@ -3932,7 +3308,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 self._tree_content_w = int(actual_max_x + x_pad + 80)
                 self._tree_content_h = int(content_h)
                 # Resize window to fit the tree — lineage tab has no other resize trigger
-                self.after(80, self._auto_resize_window)
+                self._schedule_auto_resize(80)
 
             # ── Title ─────────────────────────────────────────────────────────
             c.create_text(12, 12, anchor="nw", text="Lineage",
@@ -4726,7 +4102,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                             self._pods_win, state="normal")
                     except Exception:
                         pass
-                    self.after(200, self._auto_resize_window)
+                    self._schedule_auto_resize(200)
 
                 self.after(120, _reveal)
                 return   # skip the synchronous reveal and resize below
@@ -4746,7 +4122,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             pass
         # For combo, trigger resize now (non-combo exits early via return above)
         if is_combo:
-            self.after(200, self._auto_resize_window)
+            self._schedule_auto_resize(200)
 
     def _greyscale_icon_from_path(self, path, sx=1, sy=1):
         """Load an icon from file path, convert to greyscale, return PhotoImage or None."""
@@ -5492,6 +4868,30 @@ class TraitInheritanceExplorer(tk.Toplevel):
         except Exception:
             pass
 
+    def _schedule_auto_resize(self, delay_ms):
+        """Debounced scheduler for _auto_resize_window.
+
+        Cancels any resize that's still waiting to fire and schedules a new
+        one at delay_ms. Called from several render paths (lineage tree,
+        Pod Seeds cards, Punnett square) that can each request a resize
+        within the same selection/tab-change — coalescing them means only
+        the last, most-complete measurement actually resizes the window,
+        instead of each request resizing it in turn.
+        """
+        try:
+            if self._resize_after_id is not None:
+                self.after_cancel(self._resize_after_id)
+        except Exception:
+            pass
+        try:
+            self._resize_after_id = self.after(delay_ms, self._run_scheduled_auto_resize)
+        except Exception:
+            self._resize_after_id = None
+
+    def _run_scheduled_auto_resize(self):
+        self._resize_after_id = None
+        self._auto_resize_window()
+
     def _auto_resize_window(self):
         """Resize window to fit active tab content. Capped at 1024px tall."""
         try:
@@ -5934,7 +5334,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                                   tk1, d1, r1, dom1, rec1, name1)
 
         # Resize window to fit the newly rendered Punnett canvas
-        self.after(60, self._auto_resize_window)
+        self._schedule_auto_resize(60)
 
     # ── Monohybrid 2×2 ───────────────────────────────────────────────────────
 
