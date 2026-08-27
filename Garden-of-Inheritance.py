@@ -617,6 +617,11 @@ class GardenApp:
     def _test_mendelian_laws_now(self):
         """Open the Mendelian Law Unlock wizard."""
         try:
+            if getattr(self, "_plant_cursor_active", False):
+                self._stop_plant_cursor_mode()
+        except Exception:
+            pass
+        try:
             # Ensure archive is current
             try:
                 self._seed_archive_safe()
@@ -1509,6 +1514,16 @@ class GardenApp:
         self._drag_start_y = None
         self._dragging_select = False
 
+        # --- click-to-plant cursor mode (shovel follows mouse, click a tile
+        # to plant one seed there, repeats until seeds run out or cancelled) ---
+        self._plant_cursor_active = False
+        self._plant_cursor_kind = None
+        self._plant_cursor_match_fn = None
+        self._plant_cursor_remaining = 0
+        self._plant_cursor_overlay = None
+        self._plant_cursor_motion_bind_id = None
+        self._plant_cursor_click_bind_id = None
+
         # Anchor for keyboard Shift+Arrow range selection
         self._kb_anchor_index = None
 
@@ -2364,7 +2379,7 @@ class GardenApp:
         starters = int(getattr(self, "available_seeds", 0) or 0)
         groups.append(
             ('S', None, None, starters,
-             f"Starter seeds (F0) — x{starters}",
+             f"Starters (F0) — x{starters}",
              lambda s: False)
         )
 
@@ -2439,7 +2454,7 @@ class GardenApp:
             self.tiles[index].plant = p
             self.available_seeds -= 1
             self._force_tile_soil(index)
-            self._toast("Starter seed planted.")
+            self._toast(f"Starter seed planted. ({self.available_seeds} left)")
             self.render_all()
 
             return True
@@ -2486,7 +2501,14 @@ class GardenApp:
             pass
 
         # UI feedback
-        self._toast(f"Planted → {p.generation}")
+        try:
+            remaining_of_kind = sum(1 for s in self.harvest_inventory if match_fn(s))
+        except Exception:
+            remaining_of_kind = None
+        if remaining_of_kind is not None:
+            self._toast(f"Planted → {p.generation} ({remaining_of_kind} left)")
+        else:
+            self._toast(f"Planted → {p.generation}")
         self.render_all()
 
         return True
@@ -2527,17 +2549,61 @@ class GardenApp:
 # ============================================================================
 # Event Handlers
 # ============================================================================
+    def _resolve_planting_start_index(self):
+        """
+        Pick a sensible starting tile for bulk/area/single planting when the
+        current selection isn't directly usable:
+          - selected tile is free (empty/dead) -> use it as-is
+          - selected tile is occupied by a living plant -> use the nearest
+            free tile to it instead
+          - nothing selected at all (e.g. simulator just started) -> use
+            the grid's central tile, or the nearest free tile to the
+            center if that one's occupied
+        Returns None only if the entire grid is completely full.
+        """
+        def _is_free(i):
+            pl = self.tiles[i].plant
+            return pl is None or not getattr(pl, 'alive', True)
+
+        idx = getattr(self, "selected_index", None)
+
+        if idx is None:
+            cols = getattr(self.garden, "cols", TILES_PER_ROW)
+            rows = getattr(self.garden, "rows", max(1, len(self.tiles) // cols))
+            idx = (rows // 2) * cols + (cols // 2)
+            idx = max(0, min(idx, len(self.tiles) - 1))
+
+        if not (0 <= idx < len(self.tiles)):
+            idx = 0 if self.tiles else None
+        if idx is None:
+            return None
+
+        if _is_free(idx):
+            return idx
+
+        # Occupied (or the central fallback happened to be occupied) —
+        # search outward for the nearest free tile.
+        seen = {idx}
+        q = [idx]
+        while q:
+            cur = q.pop(0)
+            for nb in self._neighbors4(cur):
+                if nb in seen:
+                    continue
+                seen.add(nb)
+                if _is_free(nb):
+                    return nb
+                q.append(nb)
+        return None
+
     def _on_plant_area_from_group(self, kind, match_fn):
         """Plant seeds in a contiguous area, automatically replacing dead plants."""
-        idx = self.selected_index
+        try:
+            idx = self._resolve_planting_start_index()
+        except Exception:
+            idx = None
         if idx is None:
-            self._toast("Select a tile first.", level="warn"); return
-        
-        # Check if starting tile is available (empty or dead plant)
-        pl = self.tiles[idx].plant
-        if pl is not None and getattr(pl, 'alive', True):
-            self._toast("Select an empty tile or dead plant to start planting.", level="warn")
-            return
+            self._toast("No free plots available.", level="warn"); return
         
         # Get region including dead plants
         region = self._contiguous_empty_region(idx) or [idx]
@@ -2570,15 +2636,12 @@ class GardenApp:
 
     def _on_plant_n_from_group(self, kind, match_fn, max_count):
         """Plant up to max_count seeds in a contiguous area, automatically replacing dead plants."""
-        idx = self.selected_index
+        try:
+            idx = self._resolve_planting_start_index()
+        except Exception:
+            idx = None
         if idx is None:
-            self._toast("Select a tile first.", level="warn"); return
-        
-        # Check if starting tile is available (empty or dead plant)
-        pl = self.tiles[idx].plant
-        if pl is not None and getattr(pl, 'alive', True):
-            self._toast("Select an empty tile or dead plant to start planting.", level="warn")
-            return
+            self._toast("No free plots available.", level="warn"); return
         
         # Get region including dead plants
         region = self._contiguous_empty_region(idx) or [idx]
@@ -2614,17 +2677,15 @@ class GardenApp:
 
     def _on_plant_seed_from_group(self, kind, match_fn):
         """Plant a single seed from a group, automatically replacing dead plants."""
-        idx = self.selected_index
+        try:
+            idx = self._resolve_planting_start_index()
+        except Exception:
+            idx = None
         if idx is None:
-            self._toast("Select a tile first.", level="warn"); return
-        
-        # Allow planting on empty tiles or dead plants
-        pl = self.tiles[idx].plant
-        if pl is not None and getattr(pl, 'alive', True):
-            self._toast("Select an empty tile or dead plant to plant.", level="warn")
-            return
+            self._toast("No free plots available.", level="warn"); return
         
         # Clear dead plant if present
+        pl = self.tiles[idx].plant
         if pl is not None and not getattr(pl, "alive", True):
             self.tiles[idx].plant = None
         
@@ -2635,17 +2696,53 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_plant_seed_quick(self):
-        """Open grouped seed chooser for the currently selected tile (empty or dead → empty)."""
-        if len(self.selected_tiles) == 0:
-            self._toast("Select a tile first.", level="warn")
-            return
+        """Open grouped seed chooser for the currently selected tile if it's
+        free. If nothing is selected, or the selected tile has a living
+        plant on it, just grab any available free plot elsewhere in the
+        grid instead of blocking the player with a warning."""
+        # Pressing Plant while click-to-plant mode is active should behave
+        # exactly like Escape/right-click happened first, not leave the
+        # crosshair and tile-intercepting stuck on underneath this window.
+        # Doing this explicitly here (rather than relying solely on the
+        # global click watcher) guarantees it regardless of Tk event-order
+        # quirks across platforms.
+        try:
+            if getattr(self, "_plant_cursor_active", False):
+                self._stop_plant_cursor_mode()
+        except Exception:
+            pass
+        # self.selected_tiles is only ever created lazily inside certain
+        # right-click paths — not guaranteed to exist yet. The canonical,
+        # always-initialized selection state is multi_selected_indices /
+        # selected_index (set in __init__), so build the tile list from
+        # those instead of the fragile cached attribute.
+        sel_indices = getattr(self, "multi_selected_indices", None) or set()
+        if not sel_indices and getattr(self, "selected_index", None) is not None:
+            sel_indices = {self.selected_index}
 
-        plantable_tiles = [t for t in self.selected_tiles 
+        selected_tiles = []
+        if sel_indices:
+            try:
+                selected_tiles = [self.tiles[i] for i in sel_indices if 0 <= i < len(self.tiles)]
+            except Exception:
+                selected_tiles = []
+
+        plantable_tiles = [t for t in selected_tiles
                            if t.plant is None or not getattr(t.plant, 'alive', True)]
 
-        if len(plantable_tiles) == 0:
-            self._toast("Select an empty tile to plant.", level="warn")
-            return
+        if not plantable_tiles:
+            # Nothing selected, or the current selection is occupied — grab
+            # any free (empty or dead) plot elsewhere in the grid instead.
+            free_tile = next(
+                (t for t in self.tiles
+                 if t.plant is None or not getattr(t.plant, 'alive', True)),
+                None
+            )
+            if free_tile is None:
+                self._toast("No free plots available.", level="warn")
+                return
+            plantable_tiles = [free_tile]
+
         # Do I need to remove dead plants first? -> probably not, just overwrite
         self.choose_seed_for_tiles(plantable_tiles)
 
@@ -4804,8 +4901,315 @@ class GardenApp:
 # ============================================================================
 # Event Handlers
 # ============================================================================
+    # ========================================================================
+    # Click-to-plant cursor mode
+    # ========================================================================
+
+    def _start_plant_cursor_mode(self, kind, match_fn):
+        """
+        Enter click-to-plant mode for a given seed group: the shovel icon
+        follows the mouse (with the remaining seed count next to it), and
+        clicking any empty garden tile plants one seed there via the same
+        `_plant_one_from_group` path "Plant (n)"/"Plant ALL" already use —
+        so season gating, night gating, and dead-plant clearing all just
+        work without duplicating that logic here.
+
+        Clicking the shovel button again for the same kind cancels; picking
+        a different kind while already active switches to it.
+        """
+        try:
+            if kind == 'S':
+                # Starter seeds are a plain counter, not discrete inventory
+                # items — match_fn is always a dummy `lambda s: False` here
+                # (see _get_seed_groups), so counting via match_fn would
+                # always come out zero. Use the same source
+                # _plant_one_from_group itself uses for starters.
+                remaining = int(getattr(self, "available_seeds", 0) or 0)
+            else:
+                remaining = sum(1 for s in self.harvest_inventory if match_fn(s))
+        except Exception:
+            remaining = 0
+
+        if remaining <= 0:
+            self._toast("No seeds available to plant.", level="warn")
+            return
+
+        # Toggle off if reactivating the same kind
+        if self._plant_cursor_active and self._plant_cursor_kind == kind:
+            self._stop_plant_cursor_mode()
+            return
+
+        # Switching kinds mid-mode — tear down the old one first
+        if self._plant_cursor_active:
+            self._stop_plant_cursor_mode()
+
+        self._plant_cursor_active = True
+        self._plant_cursor_kind = kind
+        self._plant_cursor_match_fn = match_fn
+        self._plant_cursor_remaining = remaining
+
+        # Use a real, always-visible system cursor (crosshair) rather than
+        # hiding the cursor entirely — the floating shovel+count badge is a
+        # supplement, not a replacement. If the badge ever fails to render
+        # or drops out of view, the crosshair still shows where you're
+        # about to click; a hidden system cursor would leave nothing
+        # visible at all in that case.
+        try:
+            self.root.config(cursor="crosshair")
+        except Exception:
+            pass
+
+        self._build_plant_cursor_overlay()
+        self._update_plant_cursor_label()
+
+        try:
+            self._plant_cursor_motion_bind_id = self.root.bind_all(
+                "<Motion>", self._on_plant_cursor_motion, add="+")
+        except Exception:
+            self._plant_cursor_motion_bind_id = None
+
+        try:
+            self._plant_cursor_click_bind_id = self.root.bind_all(
+                "<Button-1>", self._on_global_click_during_plant_cursor, add="+")
+        except Exception:
+            self._plant_cursor_click_bind_id = None
+
+        try:
+            self.root.bind("<Escape>", self._on_plant_cursor_escape, add="+")
+        except Exception:
+            pass
+
+        self._toast(f"Click a tile to plant — {remaining} seed(s) left. Esc or right-click to cancel.")
+
+    def _on_global_click_during_plant_cursor(self, event):
+        """
+        If click-to-plant mode is active and the click lands on anything
+        other than a garden tile (any other button, menu, panel, etc.),
+        exit the mode first — as if Escape or a right-click had happened —
+        so the click behaves like an ordinary button press instead of
+        leaving cursor mode stuck active underneath whatever just opened.
+        Tile clicks are deliberately excluded: those are what cursor mode
+        is for, and are already handled by _on_tile_left_press.
+        """
+        if not self._plant_cursor_active:
+            return
+        widget = getattr(event, "widget", None)
+        if isinstance(widget, TileCanvas):
+            return
+        if widget is not None and self._plant_cursor_overlay is not None:
+            try:
+                if str(widget).startswith(str(self._plant_cursor_overlay)):
+                    return
+            except Exception:
+                pass
+        self._stop_plant_cursor_mode()
+
+    def _build_plant_cursor_overlay(self):
+        """Small borderless window showing the shovel icon + remaining count,
+        repositioned to follow the mouse in _on_plant_cursor_motion.
+
+        Kept deliberately conservative after two rounds of platform-specific
+        breakage:
+          - v1 used -transparentcolor (Windows-only color-key transparency)
+            to avoid a background box -- this silently made the whole badge
+            invisible on Windows.
+          - v2 dropped transparency but moved the window off-screen with
+            negative coordinates ("+-2000+-2000") to hide it, and toggled
+            -topmost off/on on every single mouse-move to keep it in front --
+            negative coordinates appear to get clamped to the screen corner
+            on Windows (explains a flash in the top-left), and rapidly
+            toggling -topmost on an overrideredirect window is a known cause
+            of it vanishing for good on Windows.
+        This version uses the standard, well-supported Tk mechanism for
+        show/hide (withdraw/deiconify) instead of off-screen coordinates,
+        and only ever calls .lift() to reassert stacking -- no attribute
+        toggling on every mouse move.
+        """
+        try:
+            if self._plant_cursor_overlay is not None:
+                self._plant_cursor_overlay.destroy()
+        except Exception:
+            pass
+
+        try:
+            overlay = tk.Toplevel(self.root)
+            overlay.overrideredirect(True)
+            try:
+                overlay.attributes("-topmost", True)
+            except Exception:
+                pass
+
+            bg_color = "#fdf6e3"  # plain light badge, no transparency
+            overlay.configure(bg=bg_color)
+
+            # Reload the icon fresh every time rather than caching it on
+            # self. A PhotoImage that was displayed on widgets under a now-
+            # destroyed Toplevel can come back blank when attached to a
+            # widget under a brand-new Toplevel, even though the Python
+            # object itself is still alive — this is exactly the "works
+            # the first time, just a crosshair on the second" symptom.
+            # Reloading the file each time (a tiny PNG) sidesteps that
+            # entirely and keeps a reference on the overlay itself so it
+            # isn't garbage-collected out from under the Label.
+            try:
+                icon_img = tk.PhotoImage(file=os.path.join(ICONS_DIR, "shovel.png"))
+            except Exception:
+                icon_img = None
+            overlay._shovel_icon_ref = icon_img  # keep alive as long as overlay exists
+
+            row = tk.Frame(overlay, bg=bg_color, highlightbackground="#8a6d3b",
+                            highlightthickness=1)
+            row.pack()
+            if icon_img is not None:
+                tk.Label(row, image=icon_img, bg=bg_color).pack(
+                    side="left", padx=(3, 0), pady=2)
+            self._plant_cursor_count_label = tk.Label(
+                row, text="", bg=bg_color, fg="#3a2a12",
+                font=("Segoe UI", 12, "bold"))
+            self._plant_cursor_count_label.pack(side="left", padx=(3, 5), pady=2)
+
+            # Start withdrawn until the first motion event confirms the
+            # mouse is actually over the garden grid.
+            overlay.withdraw()
+
+            self._plant_cursor_overlay = overlay
+        except Exception:
+            self._plant_cursor_overlay = None
+
+    def _update_plant_cursor_label(self):
+        try:
+            self._plant_cursor_count_label.configure(text=str(self._plant_cursor_remaining))
+        except Exception:
+            pass
+
+    def _reassert_plant_cursor_topmost(self):
+        """Lift the overlay back above the main window.
+
+        Deliberately just .lift() -- toggling -topmost off/on repeatedly
+        (the previous approach) turned out to be a real cause of the
+        overlay vanishing for good on Windows. .lift() alone is enough to
+        restore stacking order without that risk.
+        """
+        ov = self._plant_cursor_overlay
+        if ov is None:
+            return
+        try:
+            ov.lift()
+        except Exception:
+            pass
+
+    def _on_plant_cursor_motion(self, event):
+        if not self._plant_cursor_active or self._plant_cursor_overlay is None:
+            return
+        try:
+            gx0 = self.grid_frame.winfo_rootx()
+            gy0 = self.grid_frame.winfo_rooty()
+            gx1 = gx0 + self.grid_frame.winfo_width()
+            gy1 = gy0 + self.grid_frame.winfo_height()
+            over_grid = (gx0 <= event.x_root <= gx1) and (gy0 <= event.y_root <= gy1)
+        except Exception:
+            over_grid = True  # fail open rather than getting stuck hidden
+
+        try:
+            if over_grid:
+                # Small offset so the overlay doesn't sit exactly under the
+                # cursor tip -- keeps the click point itself visible.
+                self._plant_cursor_overlay.geometry(f"+{event.x_root + 14}+{event.y_root + 12}")
+                self._plant_cursor_overlay.deiconify()
+                self._reassert_plant_cursor_topmost()
+            else:
+                # Outside the garden grid (e.g. over a button/panel) --
+                # withdraw so this real, topmost window can never sit on
+                # top of and swallow clicks meant for buttons elsewhere.
+                self._plant_cursor_overlay.withdraw()
+        except Exception:
+            pass
+
+    def _on_plant_cursor_escape(self, event=None):
+        if self._plant_cursor_active:
+            self._stop_plant_cursor_mode()
+
+    def _plant_one_via_cursor(self, index):
+        """Called when a tile is clicked while click-to-plant mode is active."""
+        if not self._plant_cursor_active:
+            return False
+
+        try:
+            occupied = self.tiles[index].plant is not None and getattr(self.tiles[index].plant, "alive", True)
+        except Exception:
+            occupied = False
+        if occupied:
+            self._toast("That tile already has a plant.", level="warn")
+            self._reassert_plant_cursor_topmost()
+            return True  # click was handled (consumed), just didn't plant
+
+        planted = self._plant_one_from_group(index, self._plant_cursor_kind, self._plant_cursor_match_fn)
+        if planted:
+            self._plant_cursor_remaining -= 1
+            self.render_all()
+            self._reassert_plant_cursor_topmost()
+            if self._plant_cursor_remaining <= 0:
+                self._toast("Out of seeds.")
+                self._stop_plant_cursor_mode()
+            else:
+                self._update_plant_cursor_label()
+        else:
+            # _plant_one_from_group already toasted the specific reason
+            # (season/night gate, etc.) — further clicks would just repeat
+            # the same failure, so exit instead of leaving the player stuck.
+            self._stop_plant_cursor_mode()
+        return True
+
+    def _stop_plant_cursor_mode(self):
+        self._plant_cursor_active = False
+        self._plant_cursor_kind = None
+        self._plant_cursor_match_fn = None
+        self._plant_cursor_remaining = 0
+
+        try:
+            self.root.config(cursor="")
+        except Exception:
+            pass
+
+        try:
+            if self._plant_cursor_overlay is not None:
+                self._plant_cursor_overlay.destroy()
+        except Exception:
+            pass
+        self._plant_cursor_overlay = None
+
+        try:
+            # bind_all registers on the global "all" bindtag — plain
+            # unbind() only removes bindings from self.root's OWN tag, not
+            # "all", so it was silently failing every time and leaving the
+            # old handler registered. Each reactivation stacked another
+            # duplicate on top instead of replacing it. unbind_all is the
+            # correct counterpart for something registered with bind_all.
+            if self._plant_cursor_motion_bind_id is not None:
+                self.root.unbind_all("<Motion>")
+        except Exception:
+            pass
+        self._plant_cursor_motion_bind_id = None
+
+        try:
+            if self._plant_cursor_click_bind_id is not None:
+                self.root.unbind_all("<Button-1>")
+        except Exception:
+            pass
+        self._plant_cursor_click_bind_id = None
+
+        try:
+            self.root.unbind("<Escape>")
+        except Exception:
+            pass
+
     def _on_tile_left_press(self, event, index: int):
         """Start of a left-click: may become a drag-selection or a Shift-click multi-select."""
+
+        # Click-to-plant mode intercepts clicks entirely — no selection/drag.
+        if self._plant_cursor_active:
+            self._plant_one_via_cursor(index)
+            return
 
         # Detect Shift key (Tk uses a bitmask in event.state)
         try:
@@ -4973,6 +5377,11 @@ class GardenApp:
     def _on_tile_right_click(self, tile: TileCanvas, event: tk.Event):
         """Context menu on right-click. Works on both empty tiles and existing plants."""
 
+        # Right-click cancels click-to-plant mode instead of opening the menu.
+        if self._plant_cursor_active:
+            self._stop_plant_cursor_mode()
+            return
+
         # --- Right-click ALWAYS moves selection to the clicked tile ---
         try:
             # clear selection first
@@ -5126,6 +5535,12 @@ class GardenApp:
                 label=label,
                 state=("normal" if can_collect_now else "disabled"),
                 command=self._on_collect_pollen
+            )
+
+            menu.add_separator()
+            menu.add_command(
+                label="Unlock Laws…",
+                command=self._test_mendelian_laws_now,
             )
 
         try:
@@ -5815,6 +6230,11 @@ class GardenApp:
             })
 
     def _open_summary(self, initial_tab=None):
+        try:
+            if getattr(self, "_plant_cursor_active", False):
+                self._stop_plant_cursor_mode()
+        except Exception:
+            pass
         InventoryPopup(self.root, self.garden, self.harvest_inventory, self._on_seed_selected, app=self, initial_tab=initial_tab)
 
     def plant_seed(self, seed: Seed, slot: int):
@@ -6057,12 +6477,17 @@ class GardenApp:
             return
         # consume the seed from inventory
         sid = seed.get("id")
+        src_id = seed.get("source_id")
         if sid:
             self.harvest_inventory = [
                 s for s in self.harvest_inventory if s.get("id") != sid
             ]
+        try:
+            remaining_of_group = sum(1 for s in self.harvest_inventory if s.get("source_id") == src_id)
+        except Exception:
+            remaining_of_group = 0
 
-        self._toast(f"Planted seed {sid or ''} → {p.generation}")
+        self._toast(f"Planted seed {sid or ''} → {p.generation} ({remaining_of_group} left)")
         self.render_all()
         try:
             self._ensure_auto_loop(delay_ms=50)
@@ -6071,6 +6496,15 @@ class GardenApp:
 
     def choose_seed_for_tiles(self, tiles: List[TileCanvas]):
         """Popup to choose what to plant in a given empty slot (3×3 paged grid of seed groups)."""
+        # Opening this window should always end click-to-plant mode first —
+        # covers every caller (Plant button, right-click menu, etc.), not
+        # just the one that happened to be touched explicitly.
+        try:
+            if getattr(self, "_plant_cursor_active", False):
+                self._stop_plant_cursor_mode()
+        except Exception:
+            pass
+
         # If totally empty, bail
         if not self.harvest_inventory and int(getattr(self, "available_seeds", 0) or 0) <= 0:
             self._toast("You have no seeds to plant.")
@@ -6359,16 +6793,56 @@ class GardenApp:
                 btn_row = tk.Frame(card)
                 btn_row.pack(side="bottom", fill="x", pady=(8, 0))
 
+                # Click-to-plant shovel button — click it, then click any
+                # empty tile in the garden to plant one seed there at a
+                # time. Closes this picker so the garden is visible/clickable.
+                def _start_cursor_from_card(k=kind, mf=match_fn):
+                    if hasattr(self, "_start_plant_cursor_mode"):
+                        self._start_plant_cursor_mode(k, mf)
+                    try:
+                        picker.destroy()
+                    except Exception:
+                        pass
+
+                shovel_img = None
+                try:
+                    shovel_path = os.path.join(ICONS_DIR, "shovel.png")
+                    if os.path.exists(shovel_path):
+                        shovel_img = safe_image(shovel_path)
+                except Exception:
+                    shovel_img = None
+
+                if shovel_img is not None:
+                    b_cursor = tk.Button(
+                        btn_row,
+                        image=shovel_img,
+                        state=("normal" if count > 0 else "disabled"),
+                        command=_start_cursor_from_card,
+                        **self.button_style,
+                    )
+                    b_cursor.image = shovel_img
+                    card._img_refs.append(shovel_img)
+                else:
+                    b_cursor = tk.Button(
+                        btn_row,
+                        text="🌱",
+                        state=("normal" if count > 0 else "disabled"),
+                        command=_start_cursor_from_card,
+                        **self.button_style,
+                    )
+                self._apply_hover(b_cursor)
+                b_cursor.pack(side="left", padx=(0, 4))
+
                 # Create a frame to hold the entry and button together (always show)
                 plant_n_frame = tk.Frame(btn_row)
                 plant_n_frame.pack(side="left", padx=(0, 4))
                 
-                # Entry field for custom number - default to max available count
+                # Entry field for custom number - defaults to 1 (editable)
                 entry_n = tk.Entry(plant_n_frame, width=4, font=("Segoe UI", 9))
                 entry_n.pack(side="left", padx=(0, 2))
-                entry_n.insert(0, str(count))  # Default to maximum available count
+                entry_n.insert(0, "1")
                 
-                # Plant (n) button
+                # "Plant" button (plants the number entered, default 1)
                 def _plant_custom_n(k=kind, mf=match_fn, entry=entry_n):
                     try:
                         n = int(entry.get().strip())
@@ -6380,7 +6854,7 @@ class GardenApp:
                 
                 b_plant_n = tk.Button(
                     plant_n_frame,
-                    text="Plant (n)",
+                    text="Plant",
                     fg="green",
                     state=("normal" if count > 0 else "disabled"),
                     command=_plant_custom_n,
@@ -6389,29 +6863,22 @@ class GardenApp:
                 self._apply_hover(b_plant_n)
                 b_plant_n.pack(side="left")
 
-                # Plant ALL button
+                # "All" button — fills the entry with the max available
+                # count; only pressing "Plant" actually plants anything.
+                def _fill_max_n(entry=entry_n, c=count):
+                    entry.delete(0, "end")
+                    entry.insert(0, str(c))
+
                 b_all = tk.Button(
                     btn_row,
-                    text="Plant ALL",
+                    text="All",
                     fg="green",
                     state=("normal" if count > 0 else "disabled"),
-                    command=lambda k=kind, mf=match_fn: _plant_area(k, mf),
+                    command=_fill_max_n,
                     **self.button_style,
                 )
                 self._apply_hover(b_all)
                 b_all.pack(side="left", padx=(0, 4))
-
-                # Discard group (red)
-                b_del = tk.Button(
-                    btn_row,
-                    text="Discard",
-                    fg="red",
-                    state=("disabled" if kind == "S" else "normal"),
-                    command=lambda k=kind, s=src, d=donor, mf=match_fn: _delete_group(k, s, d, mf),
-                    **self.button_style,
-                )
-                self._apply_hover(b_del)
-                b_del.pack(side="right")
 
         # Wire prev/next
         def _prev():

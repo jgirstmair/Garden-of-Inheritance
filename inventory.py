@@ -791,13 +791,49 @@ class InventoryPopup(Toplevel):
 
         bstyle = self.app.button_style if self.app else {}
 
+        # Click-to-plant shovel button — click it, then click any empty tile
+        # in the garden to plant one seed there at a time (repeats until
+        # seeds run out or you cancel with Esc / right-click).
+        def _start_plant_cursor(k=kind, mf=match_fn):
+            if self.app and hasattr(self.app, "_start_plant_cursor_mode"):
+                self.app._start_plant_cursor_mode(k, mf)
+
+        shovel_img = None
+        try:
+            shovel_path = os.path.join(ICONS_DIR, "shovel.png")
+            if os.path.exists(shovel_path):
+                shovel_img = tk.PhotoImage(file=shovel_path)
+        except Exception:
+            shovel_img = None
+
+        if shovel_img is not None:
+            b_cursor = tk.Button(
+                btn_row,
+                image=shovel_img,
+                state=("normal" if count > 0 else "disabled"),
+                command=_start_plant_cursor,
+                **bstyle,
+            )
+            b_cursor.image = shovel_img  # keep reference alive
+        else:
+            b_cursor = tk.Button(
+                btn_row,
+                text="🌱",
+                state=("normal" if count > 0 else "disabled"),
+                command=_start_plant_cursor,
+                **bstyle,
+            )
+        if self.app:
+            self.app._apply_hover(b_cursor)
+        b_cursor.pack(side="left", padx=(0, 4))
+
         # Entry + "Plant (n)" -------------------------------------------------
         plant_n_frame = tk.Frame(btn_row)
         plant_n_frame.pack(side="left", padx=(0, 4))
 
         entry_n = tk.Entry(plant_n_frame, width=4, font=("Segoe UI", 9))
         entry_n.pack(side="left", padx=(0, 2))
-        entry_n.insert(0, str(count))
+        entry_n.insert(0, "1")
 
         def _plant_n(k=kind, mf=match_fn, entry=entry_n):
             try:
@@ -821,7 +857,7 @@ class InventoryPopup(Toplevel):
 
         b_plant_n = tk.Button(
             plant_n_frame,
-            text="Plant (n)",
+            text="Plant",
             fg="green",
             state=("normal" if count > 0 else "disabled"),
             command=_plant_n,
@@ -831,23 +867,18 @@ class InventoryPopup(Toplevel):
             self.app._apply_hover(b_plant_n)
         b_plant_n.pack(side="left")
 
-        # "Plant ALL" ---------------------------------------------------------
-        def _plant_all(k=kind, mf=match_fn):
-            if self.app and hasattr(self.app, "_on_plant_area_from_group"):
-                self.app._on_plant_area_from_group(k, mf)
-                self._render_seeds_page()
-            elif callable(self.on_seed_selected):
-                for seed in list(self.inventory):
-                    if mf(seed):
-                        self.on_seed_selected(seed)
-                self._render_seeds_page()
+        # "All" — fills the entry with the max available count; only
+        # pressing "Plant" actually plants anything.
+        def _fill_max_n(entry=entry_n, c=count):
+            entry.delete(0, "end")
+            entry.insert(0, str(c))
 
         b_all = tk.Button(
             btn_row,
-            text="Plant ALL",
+            text="All",
             fg="green",
             state=("normal" if count > 0 else "disabled"),
-            command=_plant_all,
+            command=_fill_max_n,
             **bstyle,
         )
         if self.app:
