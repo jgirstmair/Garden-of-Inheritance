@@ -1205,12 +1205,24 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 return tk.Button(parent, text=text, command=command, **kw)
 
 
-        _mkbtn(tb, "Export Plant", self._export_selected_traits).pack(side="left")
+        _mkbtn(tb, "Close", self.destroy).pack(side="left")
+        _mkbtn(tb, "Export Plant", self._export_selected_traits).pack(side="left", padx=(6, 0))
 
         tk.Label(tb, text=" Find #", bg=self.BG, fg=self.FG).pack(side="left", padx=(12,4))
         self.find_entry = tk.Entry(tb, width=5)
         self.find_entry.pack(side="left", ipadx=3)
         _mkbtn(tb, "Go", self._find_and_select).pack(side="left", padx=(4,0))
+
+        # Close via Escape or "Q" — skip closing if focus is in a text entry
+        # (e.g. the Find # box), so typing "q" there doesn't accidentally
+        # close the window.
+        def _maybe_close_on_key(event):
+            if isinstance(event.widget, (tk.Entry, tk.Text)):
+                return
+            self.destroy()
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<q>", _maybe_close_on_key)
+        self.bind("<Q>", _maybe_close_on_key)
 
         pw = ttk.Panedwindow(self, orient="horizontal")
         pw.pack(fill="both", expand=True, padx=self.PAD, pady=(4, self.PAD))
@@ -1258,11 +1270,23 @@ class TraitInheritanceExplorer(tk.Toplevel):
         right_split.add(lineage_pane, width=500)
 
         canvas_frame = tk.Frame(lineage_pane, bg="#0b1a22", highlightthickness=0)
-        canvas_frame.pack(fill="both", expand=True, padx=self.PAD, pady=self.PAD)
+        # Tighter horizontal padding specifically here (not self.PAD, which
+        # is shared with every other panel) — this is the pane people asked
+        # to have less wasted margin around, not the whole UI.
+        canvas_frame.pack(fill="both", expand=True, padx=(4, self.PAD), pady=self.PAD)
 
         self.canvas = tk.Canvas(canvas_frame, bg="#0b1a22", highlightthickness=0)
-        _tree_vscroll = tk.Scrollbar(canvas_frame, orient="vertical",   command=self.canvas.yview)
-        _tree_hscroll = tk.Scrollbar(canvas_frame, orient="horizontal", command=self.canvas.xview)
+        # Trees can keep growing across generations indefinitely, so
+        # auto-resizing the window can never fully keep up forever —
+        # scrolling has to carry the rest. A default tk.Scrollbar against
+        # this dark background renders as a thin, pale sliver that's easy
+        # to miss or hard to grab precisely, so style it to actually stand
+        # out and be comfortably grabbable.
+        _sb_opts = dict(troughcolor="#0b1a22", bg="#3a6a80",
+                         activebackground="#4fb3e6", highlightthickness=0,
+                         bd=0, width=14, elementborderwidth=0)
+        _tree_vscroll = tk.Scrollbar(canvas_frame, orient="vertical",   command=self.canvas.yview, **_sb_opts)
+        _tree_hscroll = tk.Scrollbar(canvas_frame, orient="horizontal", command=self.canvas.xview, **_sb_opts)
         self.canvas.configure(yscrollcommand=_tree_vscroll.set, xscrollcommand=_tree_hscroll.set)
         _tree_vscroll.pack(side="right",  fill="y")
         _tree_hscroll.pack(side="bottom", fill="x")
@@ -1570,19 +1594,76 @@ class TraitInheritanceExplorer(tk.Toplevel):
         _build_menu(self._cross_t2_menu, self._cross_t2)
         # _cross_x_lbl and _cross_t2_menu packed/unpacked by _on_cross_settings_changed
 
+        # ── Maximize on open ────────────────────────────────────────────────
+        # Opening maximized (rather than a fixed computed size) gives the
+        # lineage tree real room to start with, and scales naturally with
+        # whatever screen the player has instead of guessing a fixed size.
+        try:
+            self.state('zoomed')
+        except Exception:
+            try:
+                self.attributes('-zoomed', True)   # some Linux window managers
+            except Exception:
+                pass
+
         # ── Initial window sizing (one-shot) ──────────────────────────────────
         def _fix_sash():
             try:
                 pw.update_idletasks()
-                left_w    = 230   # plant list
-                lineage_w = 500   # fixed lineage pane
-                tabs_w    = 760   # switching tabs pane
-                total_w = max(1024, left_w + lineage_w + tabs_w + 36)
+                left_w = 230   # plant list
+
+                # Always compute a generous lineage width from SCREEN width,
+                # regardless of whether maximize-state detection below
+                # succeeds — self.state() == 'zoomed' checked True/False
+                # unreliably right after requesting maximize (Tk hadn't
+                # necessarily registered it yet at this point), which
+                # previously left this silently falling back to a fixed,
+                # much narrower 700px. Screen width has no such dependency.
+                avail_w = max(self.winfo_screenwidth(), 1024)
+                lineage_w = max(760, int((avail_w - left_w) * 0.5))
+
+                try:
+                    maximized = (self.state() == 'zoomed')
+                except Exception:
+                    maximized = False
+                # state() checked unreliably right after requesting
+                # maximize in the first place — as a second signal, treat
+                # an already-reasonably-wide window as "don't touch it"
+                # too, so a false "not maximized" reading here can't
+                # accidentally shrink a window that actually did maximize.
+                already_wide = self.winfo_width() > 1200
+
+                print(f"[TIE _fix_sash] screen_w={self.winfo_screenwidth()} "
+                      f"winfo_width={self.winfo_width()} state={self.state()!r} "
+                      f"maximized={maximized} already_wide={already_wide} "
+                      f"computed_lineage_w={lineage_w}")
+
+                if not maximized and not already_wide:
+                    # Don't call geometry() when maximized — that un-
+                    # maximizes the window on most platforms. When not
+                    # maximized, explicitly size the window wide enough to
+                    # actually fit the generous lineage_w computed above.
+                    tabs_w = 760   # switching tabs pane
+                    total_w = max(1024, left_w + lineage_w + tabs_w + 36)
+                    cur_h = self.winfo_height()
+                    print(f"[TIE _fix_sash] calling geometry() -> {total_w}x...")
+                    self.geometry(f"{total_w}x{max(600, cur_h if cur_h > 1 else 700)}")
+
                 pw.sashpos(0, left_w)
-                cur_h = self.winfo_height()
-                self.geometry(f"{total_w}x{max(600, cur_h if cur_h > 1 else 700)}")
-            except Exception:
-                pass
+                self._set_right_split_sash(lineage_w)
+                print(f"[TIE _fix_sash] sash right after set: "
+                      f"{self._get_right_split_sash()} (requested {lineage_w})")
+                # Retry a few times shortly after — the Panedwindow may
+                # still be catching up with the maximized window's actual
+                # size right after open, same race _auto_resize_window
+                # already guards against via _repin_sashes.
+                self.after(60, lambda: self._repin_sashes(left_w, lineage_w))
+                self.after(400, lambda: print(
+                    f"[TIE _fix_sash] sash 400ms later: {self._get_right_split_sash()} "
+                    f"(requested {lineage_w}), window size now: "
+                    f"{self.winfo_width()}x{self.winfo_height()}, state now: {self.state()!r}"))
+            except Exception as e:
+                print(f"[TIE _fix_sash] EXCEPTION: {e!r}")
         def _fix_sash_once():
             _fix_sash()
             self._layout_done = True
@@ -3134,7 +3215,11 @@ class TraitInheritanceExplorer(tk.Toplevel):
             # by cascading outward (upward toward ancestors, downward toward
             # offspring), always centering a node over the mean column of its
             # adjacent-layer relatives.
-            x_pad       = 60
+            # Tightened from 60 -> 28: this is a flat offset added equally to
+            # every node's x position (see x_of below), so shrinking it just
+            # narrows the left margin before F0 without touching relative
+            # node spacing or alignment.
+            x_pad       = 28
             GEN_LABEL_W = 48
             NODE_STEP   = 120   # pixels per column unit
 
@@ -4897,8 +4982,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
         try:
             self.update_idletasks()
             LEFT_W      = 230   # plant list pane
-            # Lineage pane width: use actual tree content width, with 500 as minimum
-            LINEAGE_W   = max(500, getattr(self, "_tree_content_w", 0))
+            # Lineage pane width: use actual tree content width, with 700 as
+            # minimum (matches the more generous starting width set at open)
+            LINEAGE_W   = max(760, getattr(self, "_tree_content_w", 0))
             CHROME      = 36
             PAD         = 60
             TAB_BAR     = 36
@@ -4942,30 +5028,100 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 notebook_w = max(700, pods_w + PAD, _prev_w)
                 notebook_h = max(600, pods_h)
 
-            total_w = LEFT_W + LINEAGE_W + notebook_w + CHROME
-            total_w = max(900, min(total_w, screen_w - 20))
-            total_h = max(600, min(notebook_h, MAX_H, screen_h - 60))
-
-            cur_x = self.winfo_x()
-            cur_y = self.winfo_y()
-            self.geometry(f"{total_w}x{total_h}+{cur_x}+{cur_y}")
-            self.update_idletasks()
-            # Re-pin the outer left sash (plant list vs right split)
-            for w in self.winfo_children():
-                if isinstance(w, ttk.Panedwindow):
-                    w.sashpos(0, LEFT_W)
-                    break
-            # Re-pin the inner right_split sash (lineage vs tabs)
             try:
-                self._right_split.sashpos(0, LINEAGE_W)
+                maximized = (self.state() == 'zoomed')
             except Exception:
-                pass
+                maximized = False
+
+            if maximized:
+                # Don't fight the maximized state with an explicit
+                # geometry() call — on most platforms that un-maximizes the
+                # window, undoing the whole point of opening maximized.
+                # Just work within whatever space is actually available.
+                total_w = max(self.winfo_width(), 900)
+                total_h = max(self.winfo_height(), 600)
+            else:
+                total_w = LEFT_W + LINEAGE_W + notebook_w + CHROME
+                total_w = max(900, min(total_w, screen_w - 20))
+                total_h = max(600, min(notebook_h, MAX_H, screen_h - 60))
+
+                cur_x = self.winfo_x()
+                cur_y = self.winfo_y()
+                self.geometry(f"{total_w}x{total_h}+{cur_x}+{cur_y}")
+                self.update_idletasks()
+
+            # Re-pin the sashes on a short deferred call rather than right
+            # here. ttk.Panedwindow.sashpos() clamps its requested position
+            # to the pane's OWN current size — and the window manager can
+            # apply a geometry() resize asynchronously, so immediately after
+            # .geometry() the Panedwindow may still only know its OLD
+            # (smaller) size. That silently clamps the lineage pane's sash
+            # back to the old width even though the window itself resized —
+            # exactly the "works for a small tree, sticks at the old size
+            # once it grows" symptom. Deferring a tick gives the window
+            # manager time to actually finish applying the resize first.
+            self.after(30, lambda lw=LEFT_W, lnw=LINEAGE_W: self._repin_sashes(lw, lnw))
+
             if tab_idx != 1:
                 self._last_non_punnett_w = total_w
                 self._last_non_punnett_h = total_h
             self._layout_done = True
         except Exception:
             pass
+
+    def _set_right_split_sash(self, x):
+        """right_split (lineage vs tabs) is a classic tk.PanedWindow, not
+        ttk.Panedwindow -- it has no .sashpos(), only .sash_place(index, x, y)
+        / .sash_coord(index). Every previous attempt to resize this specific
+        pane used .sashpos(), which doesn't exist on this widget type and
+        was raising AttributeError every single time, silently swallowed by
+        the surrounding try/except -- this is why the lineage pane never
+        actually resized despite several rounds of otherwise-correct-looking
+        width calculations."""
+        try:
+            y = max(1, self._right_split.winfo_height() // 2)
+            self._right_split.sash_place(0, int(x), y)
+        except Exception as e:
+            print(f"[TIE _set_right_split_sash] sash_place raised: {e!r}")
+
+    def _get_right_split_sash(self):
+        try:
+            return self._right_split.sash_coord(0)[0]
+        except Exception:
+            return None
+
+    def _repin_sashes(self, left_w, lineage_w, _retry=0):
+        """Re-pin both paned-window sashes to the widths _auto_resize_window
+        just computed. Deferred out of _auto_resize_window (see there for
+        why), and retried a couple of times if the Panedwindow still hasn't
+        caught up with the window's new size yet — sashpos() silently
+        clamps to whatever size the pane currently reports, so a call that
+        lands too early just re-clamps back to the old width."""
+        try:
+            outer = None
+            for w in self.winfo_children():
+                if isinstance(w, ttk.Panedwindow):
+                    outer = w
+                    break
+            if outer is not None:
+                outer.sashpos(0, left_w)
+            self._set_right_split_sash(lineage_w)
+
+            actual = self._get_right_split_sash()
+            if actual is None:
+                actual = lineage_w
+            print(f"[TIE _repin_sashes retry={_retry}] requested={lineage_w} "
+                  f"actual={actual} right_split_width={self._right_split.winfo_width()} "
+                  f"window={self.winfo_width()}x{self.winfo_height()}")
+
+            # If the pane still isn't reporting a width consistent with
+            # what we asked for, the window manager likely hadn't finished
+            # applying the resize yet — try again shortly, a few times max.
+            if _retry < 4:
+                if abs(actual - lineage_w) > 4:
+                    self.after(40, lambda: self._repin_sashes(left_w, lineage_w, _retry + 1))
+        except Exception as e:
+            print(f"[TIE _repin_sashes] EXCEPTION: {e!r}")
 
     def _render_pid(self, pid):
         # clear any ancestor preview when switching selection

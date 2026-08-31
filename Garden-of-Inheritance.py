@@ -484,6 +484,111 @@ SEEDS_CSV = os.path.join(ICONS_DIR, "seeds.csv")  # keep next to icons for conve
 TRAITS_CSV = os.path.join(ROOT_DIR, "traits_export.csv")  # export of selected plant traits
 
 
+def _silent_dialog_raw(owner, title, message, kind="info"):
+    """
+    Minimal modal message dialog that never triggers Windows' automatic
+    notification sound the way tkinter.messagebox does. On Windows,
+    tkinter.messagebox calls straight into the native MessageBox() API,
+    and Windows plays a system sound tied to the icon type automatically —
+    there's no tkinter-level parameter to suppress that, so the only
+    reliable fix is not using the native dialog at all. This is a plain Tk
+    Toplevel instead, which never goes through that native code path and
+    so never triggers any OS sound.
+
+    Module-level (not a GardenApp method) so free functions that aren't
+    GardenApp methods — e.g. _ask_grid_size, which only has a `root`
+    widget, not a GardenApp instance — can use it too, by passing that
+    widget directly as `owner`.
+
+    kind: 'info' | 'warning' | 'error' | 'question'.
+    Returns True/False for 'question' (Yes/No); None for the others.
+    """
+    win = tk.Toplevel(owner)
+    win.withdraw()   # hidden until fully built and positioned — see below
+    win.title(title)
+    win.transient(owner)
+    win.resizable(False, False)
+    win.configure(bg="#f0f0f0")
+
+    result = {"value": None}
+
+    body = tk.Frame(win, bg="#f0f0f0", padx=20, pady=16)
+    body.pack(fill="both", expand=True)
+    tk.Label(body, text=message, bg="#f0f0f0", justify="left",
+             font=("Segoe UI", 10), wraplength=380).pack(anchor="w")
+
+    btn_row = tk.Frame(win, bg="#f0f0f0", padx=16, pady=12)
+    btn_row.pack(fill="x")
+
+    def _close(val):
+        result["value"] = val
+        win.destroy()
+
+    if kind == "question":
+        # Yes on the left as the clear primary action (highlighted, like
+        # the default button in a native dialog), No on the right as the
+        # plain secondary one — opposite .pack() sides so they land at
+        # opposite ends of the row instead of clustered together.
+        tk.Button(btn_row, text="Yes", width=10,
+                  bg="#7A9A3C", fg="white", activebackground="#7A9A3C",
+                  activeforeground="white", relief="raised", bd=2,
+                  font=("Segoe UI", 9, "bold"),
+                  command=lambda: _close(True)).pack(side="left")
+        tk.Button(btn_row, text="No", width=10,
+                  command=lambda: _close(False)).pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", lambda: _close(False))
+    else:
+        tk.Button(btn_row, text="OK", width=10,
+                  command=lambda: _close(True)).pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", lambda: _close(None))
+
+    win.update_idletasks()
+    # Set the geometry explicitly using ONLY values that don't depend on
+    # the window being mapped by the window manager yet: winfo_reqwidth/
+    # reqheight (the natural size pack() computed from the packed children,
+    # available as soon as update_idletasks() has run, regardless of the
+    # Toplevel's own withdrawn/mapped state) and winfo_screenwidth/
+    # screenheight (static screen properties). Both tk::PlaceWindow and
+    # manual math off owner.winfo_rootx()/winfo_width() kept landing at
+    # +0+0 across several attempts — all of those depend, directly or
+    # indirectly, on window-manager mapping state that apparently wasn't
+    # settled yet at the point they ran. Screen dimensions and requested
+    # widget size have no such dependency, so this sets the *final*
+    # geometry before the window is ever shown, instead of positioning it
+    # after the fact.
+    ww = win.winfo_reqwidth()
+    wh = win.winfo_reqheight()
+    sw = win.winfo_screenwidth()
+    sh = win.winfo_screenheight()
+    x = max(0, (sw - ww) // 2)
+    y = max(0, (sh - wh) // 2)
+    print(f"[_silent_dialog_raw] reqsize={ww}x{wh} screen={sw}x{sh} -> geometry {ww}x{wh}+{x}+{y}")
+    win.geometry(f"{ww}x{wh}+{x}+{y}")
+
+    def _on_map(event=None):
+        win.unbind("<Map>")
+        win.lift()
+        win.attributes("-topmost", True)
+        win.after(10, lambda: win.attributes("-topmost", False))
+        win.focus_force()
+        # grab_set() can raise "grab failed: window not viewable" if called
+        # before the window is actually mapped — safe here since we're
+        # inside the <Map> handler, which only fires once it is.
+        try:
+            win.grab_set()
+        except Exception as e:
+            print(f"[_silent_dialog_raw] grab_set raised: {e!r}")
+        print(f"[_silent_dialog_raw] showing {kind!r} dialog {title!r}, "
+              f"geometry={win.geometry()}, viewable={win.winfo_viewable()}")
+
+    win.bind("<Map>", _on_map)
+    win.deiconify()
+
+    win.wait_window(win)
+    print(f"[_silent_dialog_raw] dialog {title!r} closed, result={result['value']!r}")
+    return result["value"]
+
+
 class GardenApp:
     SEASON_MODES = ["off", "overlay", "enforce"]
 
@@ -1524,6 +1629,11 @@ class GardenApp:
         self._plant_cursor_motion_bind_id = None
         self._plant_cursor_click_bind_id = None
 
+        # Realistic-difficulty planting time accumulator (see plant_seed) —
+        # each planted seed adds 15 "minutes"; a real sim-hour tick fires
+        # once this reaches 60 (i.e. every 4th seed planted).
+        self._plant_minutes_accum = 0
+
         # Anchor for keyboard Shift+Arrow range selection
         self._kb_anchor_index = None
 
@@ -1651,7 +1761,7 @@ class GardenApp:
     def _confirm_remove_all(self):
         """Ask once before clearing the entire grid."""
         try:
-            ok = messagebox.askyesno(
+            ok = self._silent_askyesno(
                 "Remove all plants",
                 "This will remove EVERY plant on the grid.\nContinue?"
             )
@@ -2312,7 +2422,7 @@ class GardenApp:
                 self._toast("Grid settings saved. Restart the simulator to apply the new garden size.")
             except Exception:
                 # Fallback if _toast not available
-                messagebox.showinfo(
+                self._silent_showinfo(
                     "Garden size",
                     "Grid settings saved.\nPlease restart the simulator to apply the new garden size."
                 )
@@ -2775,7 +2885,7 @@ class GardenApp:
             if hasattr(self, 'temp_tracker') and self.temp_tracker:
                 self.temp_tracker.open_observatory()
             else:
-                messagebox.showinfo("Observatory", "Temperature tracker not available")
+                self._silent_showinfo("Observatory", "Temperature tracker not available")
         
         view_menu.add_command(label="Help / Legend", command=self._show_help)
         
@@ -2896,11 +3006,12 @@ class GardenApp:
 
         # ── Stone Border Size ──────────────────────────────────────────
         game_menu.add_separator()
-        self._stone_size_var = tk.IntVar(value=0)   # default: no stones
+        self._stone_size_var = tk.IntVar(value=_load_stone_size_px())
 
         def _set_stone_size(px):
             self._stone_sw = px
             self._stone_size_var.set(px)
+            _save_stone_size_px(px)
             self._setup_border_stones()
 
         stone_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
@@ -3273,7 +3384,7 @@ class GardenApp:
                 compound="left",
                 command=lambda: (
                     self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
-                    else messagebox.showinfo("Observatory", "Temperature tracker not available")
+                    else self._silent_showinfo("Observatory", "Temperature tracker not available")
                 ),
                 **btn_kwargs,
             )
@@ -3285,7 +3396,7 @@ class GardenApp:
                 text="🔭 Observatory",
                 command=lambda: (
                     self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
-                    else messagebox.showinfo("Observatory", "Temperature tracker not available")
+                    else self._silent_showinfo("Observatory", "Temperature tracker not available")
                 ),
                 **btn_kwargs,
             )
@@ -3426,7 +3537,7 @@ class GardenApp:
             pass
 
         # Place stone images along border lines once the grid geometry is ready
-        self._stone_sw = 0    # default: no stones
+        self._stone_sw = _load_stone_size_px()
         self.root.after(250, self._setup_border_stones)
 
         # ---------- Mendelian laws row (below the grid in right_panel) ----------
@@ -6351,13 +6462,23 @@ class GardenApp:
         self.tiles[slot].plant = p
         # Force soil texture + icon refresh immediately (works even when paused)
         self._force_tile_soil(slot)
-        # Advance one sim-hour after planting (deferred to avoid re-entrancy).
+        # Advance sim time after planting (deferred to avoid re-entrancy).
         # Realistic-difficulty only: on Mendel-era conditions, sowing a seed
         # genuinely took time out of the day. On Casual/Moderate, planting
         # stays instantaneous.
+        #
+        # The simulation clock only ticks in whole hours (garden.clock_hour,
+        # advanced via next_hour()) — there's no minute-level granularity to
+        # advance by 15 minutes directly. Instead, accumulate 15 "minutes"
+        # per seed planted and only trigger a real hour-tick once that
+        # accumulator reaches 60 — i.e. every 4th seed planted advances the
+        # clock by one real hour, with the leftover minutes carried over.
         try:
             if str(getattr(self, "_season_mode", "off")).lower() == "enforce":
-                self.root.after(1, self._on_next_phase)
+                self._plant_minutes_accum = getattr(self, "_plant_minutes_accum", 0) + 15
+                if self._plant_minutes_accum >= 60:
+                    self._plant_minutes_accum -= 60
+                    self.root.after(1, self._on_next_phase)
         except Exception:
             pass
 
@@ -7114,6 +7235,28 @@ class GardenApp:
         except Exception:
             pass
 
+    def _silent_dialog(self, title, message, kind="info", parent=None, **_ignored):
+        """
+        Minimal modal message dialog that never triggers Windows' automatic
+        notification sound the way tkinter.messagebox does. See
+        _silent_dialog_raw (module level) for the actual implementation —
+        this just supplies self.root as the default owner window so
+        GardenApp methods can call it without passing one explicitly.
+        """
+        return _silent_dialog_raw(parent or self.root, title, message, kind=kind)
+
+    def _silent_askyesno(self, title, message, parent=None, **kw):
+        return self._silent_dialog(title, message, kind="question", parent=parent)
+
+    def _silent_showinfo(self, title, message, parent=None, **kw):
+        return self._silent_dialog(title, message, kind="info", parent=parent)
+
+    def _silent_showerror(self, title, message, parent=None, **kw):
+        return self._silent_dialog(title, message, kind="error", parent=parent)
+
+    def _silent_showwarning(self, title, message, parent=None, **kw):
+        return self._silent_dialog(title, message, kind="warning", parent=parent)
+
     def _toast(self, msg, duration=3000, level=None, **kwargs):
         """Lightweight status message in status bar; falls back gracefully."""
         if 'ms' in kwargs and isinstance(kwargs['ms'], int):
@@ -7160,7 +7303,7 @@ class GardenApp:
             
             if existing_save:
                 # Ask if user wants to replace
-                replace = messagebox.askyesno(
+                replace = self._silent_askyesno(
                     "Replace Existing Save?",
                     f'A garden named "{garden_name.strip()}" already exists.\n\n'
                     f"Do you want to replace it with the current garden state?\n\n"
@@ -7209,7 +7352,7 @@ class GardenApp:
             
         except Exception as e:
             logging.error(f"Failed to save garden: {e}", exc_info=True)
-            messagebox.showerror("Save Failed", f"Could not save garden:\n{str(e)}")
+            self._silent_showerror("Save Failed", f"Could not save garden:\n{str(e)}")
     
     def _show_save_name_dialog(self):
         """Show a simple dialog to enter garden name."""
@@ -7323,7 +7466,7 @@ class GardenApp:
         data_dir = os.path.join(_PG_BASE_DIR, "data")
         
         if not os.path.exists(data_dir):
-            messagebox.showinfo("No Saves", "No save files found.")
+            self._silent_showinfo("No Saves", "No save files found.")
             return
         
         # Get all save files
@@ -7349,7 +7492,7 @@ class GardenApp:
                 })
         
         if not save_files:
-            messagebox.showinfo("No Saves", "No save files found.")
+            self._silent_showinfo("No Saves", "No save files found.")
             return
         
         # Sort by modification time (newest first)
@@ -7474,12 +7617,12 @@ class GardenApp:
             to_delete = [var for var in checkboxes if var.get()]
             
             if not to_delete:
-                messagebox.showinfo("No Selection", "No saves selected for deletion.", parent=dialog)
+                self._silent_showinfo("No Selection", "No saves selected for deletion.", parent=dialog)
                 return
             
             # Confirm
             count = len(to_delete)
-            if not messagebox.askyesno(
+            if not self._silent_askyesno(
                 "Confirm Deletion",
                 f"Are you sure you want to delete {count} save file{'s' if count != 1 else ''}?\n\nThis action cannot be undone.",
                 parent=dialog
@@ -7498,7 +7641,7 @@ class GardenApp:
             
             # Show result
             if deleted_count > 0:
-                messagebox.showinfo(
+                self._silent_showinfo(
                     "Deletion Complete",
                     f"Successfully deleted {deleted_count} save file{'s' if deleted_count != 1 else ''}.",
                     parent=dialog
@@ -7639,23 +7782,29 @@ class GardenApp:
             
             # Confirm before loading (this will replace current garden)
             filename = os.path.basename(filepath)
-            result = messagebox.askyesno(
+            print(f"[_load_garden_from_file] about to show confirm dialog for {filename!r}")
+            result = self._silent_askyesno(
                 "Load Garden",
                 f"Loading '{filename}' will replace your current garden.\n\nContinue?",
                 icon='warning'
             )
+            print(f"[_load_garden_from_file] confirm dialog result={result!r}")
             
             if not result:
+                print(f"[_load_garden_from_file] result falsy, returning without loading")
                 return
             
+            print(f"[_load_garden_from_file] calling _deserialize_garden_state...")
             self._deserialize_garden_state(save_data)
+            print(f"[_load_garden_from_file] _deserialize_garden_state returned normally")
             
             self._toast(f"Garden loaded: {filename}", level="info")
             logging.info(f"Garden loaded from {filepath}")
             
         except Exception as e:
+            print(f"[_load_garden_from_file] EXCEPTION: {e!r}")
             logging.error(f"Failed to load garden: {e}", exc_info=True)
-            messagebox.showerror("Load Failed", f"Could not load garden:\n{str(e)}")
+            self._silent_showerror("Load Failed", f"Could not load garden:\n{str(e)}")
     
     def _serialize_garden_state(self):
         """Serialize the entire garden state to a dictionary."""
@@ -7948,7 +8097,7 @@ class GardenApp:
         saved_rows = ui_settings.get('grid_rows', ROWS)
         saved_cols = ui_settings.get('grid_cols', COLS)
         if saved_rows != ROWS or saved_cols != COLS:
-            messagebox.showwarning(
+            self._silent_showwarning(
                 "Grid Size Mismatch",
                 f"Save file has {saved_rows}x{saved_cols} grid, but current is {ROWS}x{COLS}.\n\n"
                 "Plants will be loaded where possible."
@@ -9369,6 +9518,31 @@ def _save_texture_blur_pct(pct):
     _save_display_settings(settings)
 
 
+# Stone border size presets (pixel widths), matching the Game Settings ▸
+# Stone Border Size menu: Full/Half/Quarter/Hide. Persisted the same way as
+# texture blur — an app-level display preference, not tied to any garden.
+STONE_SIZE_PRESETS = (0, 4, 8, 16)
+DEFAULT_STONE_SIZE_PX = 0   # used only when no settings file exists yet
+
+
+def _load_stone_size_px():
+    """Return the persisted stone border size in px, snapped to the nearest preset."""
+    settings = _load_display_settings()
+    try:
+        px = int(settings.get("stone_size_px", DEFAULT_STONE_SIZE_PX))
+    except Exception:
+        px = DEFAULT_STONE_SIZE_PX
+    if px not in STONE_SIZE_PRESETS:
+        px = min(STONE_SIZE_PRESETS, key=lambda p: abs(p - px))
+    return px
+
+
+def _save_stone_size_px(px):
+    settings = _load_display_settings()
+    settings["stone_size_px"] = int(px)
+    _save_display_settings(settings)
+
+
 def _grid_config_path():
     try:
         base = os.path.dirname(os.path.abspath(__file__))
@@ -9521,9 +9695,10 @@ def _ask_grid_size(root, existing_config=None):
             if c <= 0 or r <= 0:
                 raise ValueError
             if c * r > 400:
-                if not messagebox.askyesno(
-                        "Large grid",
-                        f"This will create {c*r} tiles.\nIt may be slow. Continue?"):
+                if not _silent_dialog_raw(
+                        root, "Large grid",
+                        f"This will create {c*r} tiles.\nIt may be slow. Continue?",
+                        kind="question"):
                     return
             # Update outer variables
             nonlocal rows, cols, show_dialog_next_time
@@ -9531,7 +9706,9 @@ def _ask_grid_size(root, existing_config=None):
             show_dialog_next_time = not bool(dont_show_var.get())
             win.destroy()
         except Exception:
-            messagebox.showerror("Invalid input", "Please enter positive integers for rows and columns.")
+            _silent_dialog_raw(root, "Invalid input",
+                                "Please enter positive integers for rows and columns.",
+                                kind="error")
 
     def on_cancel():
         # Just close; keep previous values & show_dialog setting
