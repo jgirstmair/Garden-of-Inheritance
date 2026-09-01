@@ -180,7 +180,7 @@ class MendelianLawWizard(tk.Toplevel):
 
         # ── centre on parent ─────────────────────────────────────────────────
         self.update_idletasks()
-        W, H = 720, 740
+        W, H = 820, 740
         px = parent.winfo_rootx() + max(0, (parent.winfo_width()  - W) // 2)
         py = parent.winfo_rooty() + max(0, (parent.winfo_height() - H) // 2)
         self.geometry(f"{W}x{H}+{px}+{py}")
@@ -517,11 +517,21 @@ class MendelianLawWizard(tk.Toplevel):
                          font=self.FONT_TINY, bg=self.BG,
                          fg=bd_c).pack()
 
-                # The 72×72 card – contents rebuilt dynamically in _refresh_slots
+                # The card – contents rebuilt dynamically in _refresh_slots.
+                # Icons match the trait-picker size below (72px each) —
+                # width fits two 72px icons + divider + padding
+                # (72+4 + 1 + 4+72 ≈ 153px content) plus the 2px border.
+                # Kept to 158px (not the ~168px the content alone suggests)
+                # since the wizard window is a fixed 720px wide — 4 boxes at
+                # full size would overflow past the right edge.
+                # The card – contents rebuilt dynamically in _refresh_slots.
+                # Icons match the trait-picker size below (72px each).
+                # The wizard window is now 820px wide specifically to give
+                # this room without squeezing padding/spacing to fit.
                 card = tk.Frame(col, bg=bg_c,
                                 highlightbackground=bd_c,
                                 highlightthickness=2,
-                                width=72, height=72)
+                                width=172, height=94)
                 card.pack_propagate(False)
                 card.pack()
 
@@ -863,8 +873,8 @@ class MendelianLawWizard(tk.Toplevel):
                     inner = tk.Frame(card, bg=bg)
                     inner.place(relx=0.5, rely=0.5, anchor="center")
 
-                    img_a = self._load_trait_img(*a_sel, size=28)
-                    a_lbl = tk.Label(inner, bg=bg, width=28, height=28)
+                    img_a = self._load_trait_img(*a_sel, size=72)
+                    a_lbl = tk.Label(inner, bg=bg, width=72, height=72)
                     if img_a:
                         a_lbl.configure(image=img_a, text="")
                     else:
@@ -873,8 +883,8 @@ class MendelianLawWizard(tk.Toplevel):
 
                     tk.Frame(inner, width=1, bg=bd).pack(side="left", fill="y", pady=4)
 
-                    img_b = self._load_trait_img(*b_sel, size=28)
-                    b_lbl = tk.Label(inner, bg=bg, width=28, height=28)
+                    img_b = self._load_trait_img(*b_sel, size=72)
+                    b_lbl = tk.Label(inner, bg=bg, width=72, height=72)
                     if img_b:
                         b_lbl.configure(image=img_b, text="")
                     else:
@@ -887,22 +897,22 @@ class MendelianLawWizard(tk.Toplevel):
                     inner.place(relx=0.5, rely=0.5, anchor="center")
 
                     if a_sel:
-                        img_a = self._load_trait_img(*a_sel, size=28)
-                        a_lbl = tk.Label(inner, bg=bg, width=28, height=28)
+                        img_a = self._load_trait_img(*a_sel, size=72)
+                        a_lbl = tk.Label(inner, bg=bg, width=72, height=72)
                         if img_a:
                             a_lbl.configure(image=img_a, text="")
                         else:
                             a_lbl.configure(text="A", font=("Segoe UI", 13, "bold"), fg=bd)
                         a_lbl.pack(side="left", padx=2)
                         tk.Frame(inner, width=1, bg=bd).pack(side="left", fill="y", pady=4)
-                        tk.Label(inner, text=num, font=("Segoe UI", 13, "bold"),
+                        tk.Label(inner, text=num, font=("Segoe UI", 28, "bold"),
                                  bg=bg, fg=self.BORDER, width=2).pack(side="left", padx=2)
                     else:
-                        tk.Label(inner, text=num, font=("Segoe UI", 13, "bold"),
+                        tk.Label(inner, text=num, font=("Segoe UI", 28, "bold"),
                                  bg=bg, fg=bd, width=2).pack(side="left", padx=2)
                         tk.Frame(inner, width=1, bg=bd).pack(side="left", fill="y", pady=4)
-                        img_b = self._load_trait_img(*b_sel, size=28)
-                        b_lbl = tk.Label(inner, bg=bg, width=28, height=28)
+                        img_b = self._load_trait_img(*b_sel, size=72)
+                        b_lbl = tk.Label(inner, bg=bg, width=72, height=72)
                         if img_b:
                             b_lbl.configure(image=img_b, text="")
                         else:

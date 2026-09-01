@@ -700,6 +700,23 @@ class TileCanvas(tk.Canvas):
 
         try:
             app = self.app
+            if not app.__dict__.get('_bg_texture_enabled', True):
+                # Textures turned off in Game Settings — fall back to the
+                # plain solid-colour rendering path below (same one used
+                # when PIL is unavailable). bg_img_item sits ON TOP of the
+                # solid-colour rect and stays visible once an image is set
+                # on it, so the fallback color change alone wouldn't show
+                # through — it has to be explicitly cleared too. Guarded so
+                # this only actually touches the canvas once, not on every
+                # render call while textures stay disabled.
+                if not getattr(self, '_bg_img_cleared_for_disabled', False):
+                    try:
+                        self.itemconfig(self.bg_img_item, image='')
+                    except Exception:
+                        pass
+                    self._bg_img_cleared_for_disabled = True
+                return False
+            self._bg_img_cleared_for_disabled = False
             cache    = app.__dict__.get('_bg_photo_cache')
             pil_imgs = app.__dict__.get('_bg_pil_images')
             if not pil_imgs:   # None or empty — textures not loaded
