@@ -1111,6 +1111,22 @@ class TraitInheritanceExplorer(tk.Toplevel):
         else:
             self._render_preview(str(pid))
 
+    def _is_maximized(self):
+        """
+        Cross-platform "is this window currently maximized" check.
+        'zoomed' is a Windows-only Tk state string, so self.state() ==
+        'zoomed' is always False on macOS even when actually maximized —
+        Mac uses the '-zoomed' window attribute instead, queried the same
+        way it's set (attributes('-zoomed') with no second arg returns the
+        current value rather than setting it).
+        """
+        try:
+            if platform.system() == "Darwin":
+                return bool(self.attributes('-zoomed'))
+            return self.state() == 'zoomed'
+        except Exception:
+            return False
+
     def __init__(self, parent_window, app, default_pid=None):
         tk.Toplevel.__init__(self, parent_window)
         self.app = app
@@ -1598,13 +1614,22 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # Opening maximized (rather than a fixed computed size) gives the
         # lineage tree real room to start with, and scales naturally with
         # whatever screen the player has instead of guessing a fixed size.
+        # 'zoomed' is a Windows-only Tk state string — on macOS it doesn't
+        # reliably raise a catchable exception (Tk can silently accept an
+        # unrecognized state rather than erroring), so the '-zoomed'
+        # attribute fallback below — which is the actually-correct method
+        # on Mac — was never being reached there. Branching on the real
+        # platform instead of hoping the exception fires correctly.
         try:
-            self.state('zoomed')
+            if platform.system() == "Darwin":
+                self.attributes('-zoomed', True)
+            else:
+                try:
+                    self.state('zoomed')
+                except Exception:
+                    self.attributes('-zoomed', True)   # some Linux window managers
         except Exception:
-            try:
-                self.attributes('-zoomed', True)   # some Linux window managers
-            except Exception:
-                pass
+            pass
 
         # ── Initial window sizing (one-shot) ──────────────────────────────────
         def _fix_sash():
@@ -1622,10 +1647,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 avail_w = max(self.winfo_screenwidth(), 1024)
                 lineage_w = max(760, int((avail_w - left_w) * 0.5))
 
-                try:
-                    maximized = (self.state() == 'zoomed')
-                except Exception:
-                    maximized = False
+                maximized = self._is_maximized()
                 # state() checked unreliably right after requesting
                 # maximize in the first place — as a second signal, treat
                 # an already-reasonably-wide window as "don't touch it"
@@ -5028,10 +5050,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 notebook_w = max(700, pods_w + PAD, _prev_w)
                 notebook_h = max(600, pods_h)
 
-            try:
-                maximized = (self.state() == 'zoomed')
-            except Exception:
-                maximized = False
+            maximized = self._is_maximized()
 
             if maximized:
                 # Don't fight the maximized state with an explicit

@@ -26,8 +26,8 @@ STAGE_NAMES = {
 # Traits and the stage at which they become observable
 TRAITS = {
     "plant_height": 3,
-    "flower_position": 5,
-    "flower_color": 5,
+    "flower_position": 4,
+    "flower_color": 4,
     "pod_shape": 7,
     "pod_color": 6,
     "seed_shape": 7,
@@ -322,6 +322,10 @@ class Plant:
     def reveal_trait(self):
         """
         Reveal a random trait that has reached its stage threshold.
+
+        seed_color is deliberately excluded here — it can only be revealed
+        by clicking a mature pod in the plant inspector window (see
+        reveal_seed_color), not through the general trait-reveal roll.
         
         Returns:
             Tuple of (trait_name, trait_value) if revealed, None otherwise
@@ -339,7 +343,7 @@ class Plant:
         # Find available traits to reveal
         available = [
             trait for trait, stage_threshold in TRAITS.items()
-            if stage_threshold <= self.stage and trait not in self.revealed_traits
+            if trait != "seed_color" and stage_threshold <= self.stage and trait not in self.revealed_traits
         ]
         
         if available:
@@ -351,9 +355,14 @@ class Plant:
         return None
     
     def reveal_all_available(self):
-        """Reveal all traits whose stage threshold has been reached."""
+        """Reveal all traits whose stage threshold has been reached.
+
+        seed_color is deliberately excluded — see reveal_trait().
+        """
         try:
             for trait, threshold in TRAITS.items():
+                if trait == "seed_color":
+                    continue
                 if self.stage >= threshold and trait not in self.revealed_traits:
                     self.revealed_traits[trait] = self.traits.get(trait, "?")
                     try:
@@ -363,12 +372,42 @@ class Plant:
                         pass
         except Exception:
             pass
+
+    def reveal_seed_color(self):
+        """
+        Reveal the seed_color trait specifically — called when the player
+        clicks a mature pod in the plant inspector window. Requires the
+        plant to actually be at the stage where seeds exist (same
+        threshold as TRAITS["seed_color"]); a no-op otherwise or if
+        already revealed.
+        """
+        if not self.alive:
+            return None
+        threshold = TRAITS.get("seed_color", 7)
+        if self.stage < threshold:
+            return None
+        if "seed_color" in self.revealed_traits:
+            return "seed_color", self.revealed_traits["seed_color"]
+        self.revealed_traits["seed_color"] = self.traits.get("seed_color", "?")
+        try:
+            if isinstance(getattr(self, "reveal_order", []), tuple):
+                self.reveal_order = list(self.reveal_order)
+            if "seed_color" not in self.reveal_order:
+                self.reveal_order.append("seed_color")
+        except Exception:
+            pass
+        return "seed_color", self.revealed_traits["seed_color"]
     
     def discover_next_trait(self):
-        """Reveal the next trait using true values (no randomness)."""
+        """Reveal the next trait using true values (no randomness).
+
+        seed_color is deliberately excluded — see reveal_trait().
+        """
         # Check reveal_order first
         try:
             for trait in getattr(self, "reveal_order", []):
+                if trait == "seed_color":
+                    continue
                 if trait not in self.revealed_traits:
                     self.revealed_traits[trait] = self.traits.get(trait, self.revealed_traits.get(trait, "?"))
                     return
@@ -378,6 +417,8 @@ class Plant:
         # Otherwise reveal any eligible trait
         try:
             for trait, threshold in TRAITS.items():
+                if trait == "seed_color":
+                    continue
                 if self.stage >= threshold and trait not in self.revealed_traits:
                     self.revealed_traits[trait] = self.traits.get(trait, "?")
                     try:

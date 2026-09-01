@@ -63,12 +63,10 @@ class PollinationDialog(tk.Toplevel):
         self.stigma_y = 329
         
         # Configure window
+        self.withdraw()   # hidden until fully built and positioned — see below
         self.title("Pollination...")
         self.transient(parent)
-        self.grab_set()
         self.resizable(False, False)
-        self.lift()
-        self.focus_force()
         
         # Create UI
         self._create_widgets()
@@ -80,6 +78,13 @@ class PollinationDialog(tk.Toplevel):
         x = parent.winfo_x() + (parent.winfo_width() // 2) - x_offset
         y = parent.winfo_y() + (parent.winfo_height() // 2) - y_offset
         self.geometry(f"+{x}+{y}")
+
+        # Only now become visible — avoids a flash at Tk's default
+        # (top-left-ish) position before this repositioning takes effect.
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        self.grab_set()
         
         # Close button handler
         self.protocol("WM_DELETE_WINDOW", self._on_close)

@@ -19,20 +19,30 @@ class EmasculationDialog(tk.Toplevel):
     Only when all 5 anthers are removed does the emasculation complete.
     """
     
-    def __init__(self, parent, flower_color="purple", callback=None):
+    def __init__(self, parent, flower_color="purple", callback=None, starting_removed=0):
         """
         Initialize the emasculation dialog.
         
         Args:
             parent: Parent tkinter window
             flower_color: Color of the flower ("purple" or "white")
-            callback: Function to call when emasculation is complete (success: bool)
+            callback: Function to call when the dialog closes:
+                      callback(success: bool, anthers_removed: int).
+                      success=True only when all anthers were removed;
+                      anthers_removed is passed either way so a cancelled
+                      attempt can be resumed later instead of losing
+                      progress.
+            starting_removed: How many anthers were already removed in a
+                previous (cancelled) attempt on this same plant — those
+                many anthers are created already-removed instead of the
+                player having to redo them.
         """
         super().__init__(parent)
         
         self.callback = callback
         self.flower_color = flower_color
-        self.anthers_removed = 0
+        self.starting_removed = max(0, min(10, int(starting_removed or 0)))
+        self.anthers_removed = self.starting_removed
         self.total_anthers = 10  # Changed from 5 to 10
         self.completed = False
         
@@ -49,12 +59,10 @@ class EmasculationDialog(tk.Toplevel):
         self.display_scale = 0.5  # Make everything 50% smaller
         
         # Configure window
+        self.withdraw()   # hidden until fully built and positioned — see below
         self.title("Emasculation...")
         self.transient(parent)
-        self.grab_set()
         self.resizable(False, False)
-        self.lift()
-        self.focus_force()
         
         # Create UI first (this sets self.canvas_width and self.canvas_height)
         self._create_widgets()
@@ -67,6 +75,13 @@ class EmasculationDialog(tk.Toplevel):
         x = parent.winfo_x() + (parent.winfo_width() // 2) - x_offset
         y = parent.winfo_y() + (parent.winfo_height() // 2) - y_offset
         self.geometry(f"+{x}+{y}")
+
+        # Only now become visible — avoids a flash at Tk's default
+        # (top-left-ish) position before this repositioning takes effect.
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        self.grab_set()
         
         # Close button handler
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -88,7 +103,7 @@ class EmasculationDialog(tk.Toplevel):
         # Progress label
         self.progress_label = tk.Label(
             instruction_frame,
-            text=f"Remaining: {self.total_anthers}",
+            text=f"Remaining: {self.total_anthers - self.starting_removed}",
             font=("Segoe UI", 11, "bold"),
             bg="#f0f0f0",
             fg="#d32f2f"
@@ -349,6 +364,15 @@ class EmasculationDialog(tk.Toplevel):
                 "y": y,
                 "removed": False
             })
+
+            # If this anther was already removed in a previous (cancelled)
+            # attempt on this plant, show it gone immediately instead of
+            # making the player redo it.
+            if i < self.starting_removed:
+                self.anthers[-1]["removed"] = True
+                self.canvas.delete(anther)
+                self.canvas.delete(stalk)
+                self.canvas.delete(f"anther_{i}_pollen")
             
         print(f"Created {len(self.anthers)} anthers (5 original + 5 additional)")
         
@@ -479,13 +503,15 @@ class EmasculationDialog(tk.Toplevel):
     def _on_complete(self):
         """Handle successful completion."""
         if self.callback:
-            self.callback(True)
+            self.callback(True, self.anthers_removed)
         self.destroy()
     
     def _on_cancel(self):
-        """Handle cancellation."""
+        """Handle cancellation — reports how many anthers were removed so
+        far, so the next attempt on this plant can resume instead of
+        starting over."""
         if self.callback:
-            self.callback(False)
+            self.callback(False, self.anthers_removed)
         self.destroy()
     
     def _on_close(self):
