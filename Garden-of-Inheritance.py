@@ -1574,6 +1574,9 @@ class GardenApp:
         self._make_flat_button(bottom_row, "Trait Inheritance Explorer", _open_tie_close_inspector_first,
                                 bg="#e0dccf", fg="#333333",
                                 font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
+        self._make_flat_button(bottom_row, "Unlock Laws", self._test_mendelian_laws_now,
+                                bg="#e0dccf", fg="#333333",
+                                font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
 
         win.update_idletasks()
         ww = win.winfo_reqwidth()
@@ -4395,67 +4398,6 @@ class GardenApp:
 
         # ALL BUTTONS (moved from topbar)
         btn_kwargs = dict(self.button_style)
-        
-        # Observatory button with custom icon
-        try:
-            observatory_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "observatory.png"))
-            self.observatory_btn = tk.Button(
-                inventory_left,
-                text=" Observatory",
-                image=observatory_icon,
-                compound="left",
-                command=lambda: (
-                    self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
-                    else self._silent_showinfo("Observatory", "Temperature tracker not available")
-                ),
-                **btn_kwargs,
-            )
-            self.observatory_btn.image = observatory_icon  # Keep reference
-        except Exception as e:
-            print(f"⚠ Could not load observatory icon: {e}")
-            self.observatory_btn = tk.Button(
-                inventory_left,
-                text="🔭 Observatory",
-                command=lambda: (
-                    self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
-                    else self._silent_showinfo("Observatory", "Temperature tracker not available")
-                ),
-                **btn_kwargs,
-            )
-        self._apply_hover(self.observatory_btn)
-        self.observatory_btn.pack(side="left", padx=2)
-
-        # Pause/Resume button
-        self.pause_btn = tk.Button(
-            inventory_left,
-            text=("▶ Resume" if not self.running else "⏸ Pause"),
-            command=self._toggle_run,
-            **btn_kwargs,
-        )
-        self._apply_hover(self.pause_btn)
-        self.pause_btn.pack(side="left", padx=2)
-
-        # Fast Forward button
-        self.fast_btn = tk.Button(
-            inventory_left,
-            text="FF ▶▶",
-            command=self._on_fast_forward,
-            **btn_kwargs,
-        )
-        self._apply_hover(self.fast_btn)
-        self.fast_btn.pack(side="left", padx=2)
-
-        # Speed button moved to Game Settings menu
-
-        # Next Phase button
-        self.next_phase_btn = tk.Button(
-            inventory_left,
-            text="Next ⏵1h",
-            command=self._on_next_phase,
-            **btn_kwargs,
-        )
-        self._apply_hover(self.next_phase_btn)
-        self.next_phase_btn.pack(side="left", padx=2)
 
         # Plant Seeds button with shovel icon
         try:
@@ -4502,7 +4444,39 @@ class GardenApp:
             )
         self._apply_hover(self.water_all_btn)
         self.water_all_btn.pack(side="left", padx=2)
-        
+
+        # Pause/Resume button
+        self.pause_btn = tk.Button(
+            inventory_left,
+            text=("▶ Resume" if not self.running else "⏸ Pause"),
+            command=self._toggle_run,
+            **btn_kwargs,
+        )
+        self._apply_hover(self.pause_btn)
+        self.pause_btn.pack(side="left", padx=2)
+
+        # Next Phase button
+        self.next_phase_btn = tk.Button(
+            inventory_left,
+            text="Next ⏵1h",
+            command=self._on_next_phase,
+            **btn_kwargs,
+        )
+        self._apply_hover(self.next_phase_btn)
+        self.next_phase_btn.pack(side="left", padx=2)
+
+        # Fast Forward button
+        self.fast_btn = tk.Button(
+            inventory_left,
+            text="FF ▶▶",
+            command=self._on_fast_forward,
+            **btn_kwargs,
+        )
+        self._apply_hover(self.fast_btn)
+        self.fast_btn.pack(side="left", padx=2)
+
+        # Speed button moved to Game Settings menu
+
         # Temperature measurement button
         self.measure_temp_btn = tk.Button(
             inventory_left,
@@ -4512,6 +4486,37 @@ class GardenApp:
         )
         self._apply_hover(self.measure_temp_btn)
         self.measure_temp_btn.pack(side="left", padx=2)
+
+        # Observatory button with custom icon — kept available, placed
+        # after the reordered core action buttons above since it wasn't
+        # part of the requested sequence.
+        try:
+            observatory_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "observatory.png"))
+            self.observatory_btn = tk.Button(
+                inventory_left,
+                text=" Observatory",
+                image=observatory_icon,
+                compound="left",
+                command=lambda: (
+                    self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
+                    else self._silent_showinfo("Observatory", "Temperature tracker not available")
+                ),
+                **btn_kwargs,
+            )
+            self.observatory_btn.image = observatory_icon  # Keep reference
+        except Exception as e:
+            print(f"⚠ Could not load observatory icon: {e}")
+            self.observatory_btn = tk.Button(
+                inventory_left,
+                text="🔭 Observatory",
+                command=lambda: (
+                    self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
+                    else self._silent_showinfo("Observatory", "Temperature tracker not available")
+                ),
+                **btn_kwargs,
+            )
+        self._apply_hover(self.observatory_btn)
+        self.observatory_btn.pack(side="left", padx=2)
         # Set initial state
         try:
             self._update_temp_button_state()
@@ -5507,14 +5512,40 @@ class GardenApp:
                     panc = list(getattr(plant_obj, 'paternal_ancestry', []) or [])
                     if panc:
                         f = panc[-1]
+
+                # Starter (F0) plants get ancestry=[self.id] /
+                # paternal_ancestry=[self.id] as a self-referential lineage
+                # placeholder (see plant.py) — not an actual parent. The
+                # fallback above picks that up as if it were real, showing
+                # a plant as its own [selfed] parent. A plant is never
+                # actually its own parent, so treat that case as "unknown"
+                # instead, regardless of generation.
+                try:
+                    if m is not None and str(m) == str(pid):
+                        m = None
+                    if f is not None and str(f) == str(pid):
+                        f = None
+                except Exception:
+                    pass
+
+                id_gen_text = f"Plant #{pid} - Generation: {gen}"
+                row = tk.Frame(frame)
+                row.pack(anchor="w", padx=8, pady=(4, 6))
+                tk.Label(row, text=id_gen_text, font=("Segoe UI", 13, "bold")).pack(side="left")
+
+                if m is None and f is None:
+                    # No known parents at all (starter seed) — nothing to
+                    # show, rather than inventing/mislabeling one.
+                    return
+
                 badges = []
                 if getattr(plant_obj, "selfed", False) or (m is not None and f is not None and m == f):
                     badges.append("selfed")
-                meta = (f"Plant #{pid} - Generation: {gen}    "
-                        f"Parents: mother #{m if m is not None else '?'}  |  father #{f if f is not None else '?'}")
+                parents_text = (f"    Parents: mother #{m if m is not None else '?'}  "
+                                f"|  father #{f if f is not None else '?'}")
                 if badges:
-                    meta += "   [" + ", ".join(badges) + "]"
-                tk.Label(frame, text=meta, font=("Segoe UI", 12, "italic")).pack(anchor="w", padx=8, pady=(4,6))
+                    parents_text += "   [" + ", ".join(badges) + "]"
+                tk.Label(row, text=parents_text, font=("Segoe UI", 12, "italic")).pack(side="left")
             except Exception:
                 pass
 
