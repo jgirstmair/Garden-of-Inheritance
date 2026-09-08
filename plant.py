@@ -603,8 +603,8 @@ class Plant:
         if not self.alive:
             return False, "Plant not alive!"
         
-        if self.stage != 5:
-            return False, "Collect during flowering stage!"
+        if self.stage < 5:
+            return False, "Collect once flowering has started!"
         
         if self.health < 70:
             return False, "Health must be ≥ 70!"

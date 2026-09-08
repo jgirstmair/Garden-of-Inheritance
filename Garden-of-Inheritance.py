@@ -486,6 +486,102 @@ SEEDS_CSV = os.path.join(ICONS_DIR, "seeds.csv")  # keep next to icons for conve
 TRAITS_CSV = os.path.join(ROOT_DIR, "traits_export.csv")  # export of selected plant traits
 
 
+class _FlatIconButton(tk.Label):
+    """
+    A tk.Label styled and wired to behave like an icon+text button — used
+    for the left-sidebar plant-action buttons (Water, Inspect, Harvest
+    seeds, etc.) instead of tk.Button, for the same reason as
+    _make_flat_button_raw below: on macOS's native Aqua theme, tk.Button
+    ignores bg/fg/relief/activebackground styling entirely, always
+    rendering with native chrome (a visible border that can't be styled
+    away) regardless of what's configured — and hover has no visible
+    effect either, since Aqua controls its own hover appearance and
+    silently ignores .configure(bg=...) on a real Button. Label respects
+    custom colors reliably on both Windows and macOS.
+
+    Unlike _make_flat_button_raw, this needs a REAL, dynamically
+    toggleable enabled/disabled state after creation — many call sites
+    do e.g. self.harvest_btn.configure(state="disabled") depending on
+    the selected plant's stage. tk.Label accepts a state= option but
+    doesn't do anything useful with it (no automatic color change, and
+    critically no automatic unbinding of click handlers), so configure()
+    is overridden here to intercept state= specially, while forwarding
+    every other kwarg straight to the normal Label.configure — existing
+    call sites that already do .configure(state="disabled"/"normal")
+    keep working completely unchanged.
+    """
+    def __init__(self, parent, text="", image=None, compound=None,
+                 command=None, bg="#F4F4F4", fg="black", hover_bg="#E4E4E4",
+                 disabled_bg="#F4F4F4", disabled_fg="#999999",
+                 font=("Segoe UI", 12), padx=12, pady=6, **kwargs):
+        self._base_bg = bg
+        self._base_fg = fg
+        self._hover_bg = hover_bg
+        self._disabled_bg = disabled_bg
+        self._disabled_fg = disabled_fg
+        self._command = command
+        self._enabled = True
+
+        super().__init__(parent, text=text, image=image, compound=compound,
+                          bg=bg, fg=fg, font=font, padx=padx, pady=pady,
+                          cursor="hand2", relief="flat", bd=0,
+                          highlightthickness=0, anchor="w", **kwargs)
+        if image is not None:
+            self.image = image  # keep a reference so it isn't garbage-collected
+
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+
+    def _on_enter(self, event=None):
+        if self._enabled:
+            tk.Label.configure(self, bg=self._hover_bg)
+
+    def _on_leave(self, event=None):
+        if self._enabled:
+            tk.Label.configure(self, bg=self._base_bg)
+
+    def _on_click(self, event=None):
+        if self._enabled and self._command:
+            self._command()
+
+    def configure(self, cnf=None, **kwargs):
+        if cnf:
+            kwargs.update(cnf)
+        if "state" in kwargs:
+            state = kwargs.pop("state")
+            self._enabled = (state != "disabled")
+            if self._enabled:
+                tk.Label.configure(self, bg=self._base_bg, fg=self._base_fg,
+                                    cursor="hand2")
+            else:
+                tk.Label.configure(self, bg=self._disabled_bg, fg=self._disabled_fg,
+                                    cursor="arrow")
+        # activebackground/activeforeground are tk.Button-only options —
+        # tk.Label doesn't have them at all, and forwarding them straight
+        # through would raise a Tcl "unknown option" error. This class
+        # handles hover via self._hover_bg instead (see _on_enter), so an
+        # explicit activebackground= is redirected into that; there's no
+        # equivalent needed for activeforeground since hover here only
+        # ever changes background, not text color.
+        if "activebackground" in kwargs:
+            self._hover_bg = kwargs.pop("activebackground")
+        kwargs.pop("activeforeground", None)
+        # Keep _base_bg/_base_fg in sync with any explicit bg/fg change —
+        # some callers (e.g. _update_temp_button_state) recolor a button
+        # dynamically after creation. Without this, the NEXT <Leave>
+        # would revert to whatever _base_bg was at construction time,
+        # undoing the very color this call just set.
+        if "bg" in kwargs:
+            self._base_bg = kwargs["bg"]
+        if "fg" in kwargs:
+            self._base_fg = kwargs["fg"]
+        if kwargs:
+            tk.Label.configure(self, **kwargs)
+
+    config = configure
+
+
 def _make_flat_button_raw(parent, text, command, bg="#7A9A3C", fg="white",
                            hover_bg=None, font=("Segoe UI", 9, "bold"), width=None,
                            state="normal"):
@@ -614,7 +710,6 @@ def _silent_dialog_raw(owner, title, message, kind="info"):
     sh = win.winfo_screenheight()
     x = max(0, (sw - ww) // 2)
     y = max(0, (sh - wh) // 2)
-    print(f"[_silent_dialog_raw] reqsize={ww}x{wh} screen={sw}x{sh} -> geometry {ww}x{wh}+{x}+{y}")
     win.geometry(f"{ww}x{wh}+{x}+{y}")
 
     def _on_map(event=None):
@@ -2196,15 +2291,20 @@ class GardenApp:
 
         # Force every tile to actually re-evaluate on the next draw —
         # same cache-invalidation + immediate-refresh pattern as
-        # _set_texture_blur above.
+        # _set_texture_blur above. Uses _all_plot_tiles() (both Abbey
+        # Garden plots), not self.tiles (only the currently active one)
+        # — otherwise toggling this only visibly applied to whichever
+        # plot happened to be on screen, leaving the other plot's tiles
+        # showing stale texture state until something else happened to
+        # touch them.
         try:
-            for tile in getattr(self, "tiles", []) or []:
+            for tile in self._all_plot_tiles():
                 tile._bg_cache_key = None
                 tile._last_display_hex = None
         except Exception:
             pass
         try:
-            for tile in getattr(self, "tiles", []) or []:
+            for tile in self._all_plot_tiles():
                 tile.set_soil_color(tile.soil)
         except Exception:
             pass
@@ -3163,7 +3263,6 @@ class GardenApp:
         import random
         
         current_day = self._get_current_day_number()
-        removed_count = 0
         
         for i, tile in enumerate(self.tiles):
             plant = tile.plant
@@ -3193,7 +3292,6 @@ class GardenApp:
                     # Clear the tile and start soil-linger countdown
                     tile.plant = None
                     self._set_soil_linger(tile)
-                    removed_count += 1
                     # Unregister from garden
                     try:
                         if plant in self.garden.plants:
@@ -3201,12 +3299,14 @@ class GardenApp:
                     except Exception:
                         pass
         
-        # Force a re-render if we removed any plants
-        if removed_count > 0:
-            try:
-                self.render_all()
-            except Exception:
-                pass
+        # No render_all() call here — every caller (_on_next_phase,
+        # _auto_advance_phase, the fast-forward loop) already renders on
+        # its own after calling this, some with their own throttling
+        # (frame-skip, FF's interval-based render). Calling it here too
+        # bypassed all of that: a full grid re-render fired unconditionally
+        # any time a dead plant happened to be removed, even on a normal-
+        # loop "skip" tick or mid-fast-forward where the whole point of
+        # throttling is to avoid exactly that.
 
     def _ensure_auto_loop(self, delay_ms=500):
         """Ensure exactly one auto-advance loop is scheduled."""
@@ -4373,32 +4473,40 @@ class GardenApp:
         self.btn_font = ("Segoe UI", 12)
 
         def make_icon_button(parent, text, icon_name, command):
-            # base style for sidebar buttons derived from main style
-            style = dict(self.button_style)
-            style["bg"] = self.grid_bg
-            style["activebackground"] = "#DDDDDD"
-
+            # _FlatIconButton (module-level, defined near
+            # _make_flat_button_raw) instead of tk.Button — on macOS,
+            # tk.Button ignores bg/relief/activebackground entirely and
+            # always shows native chrome (a visible border) with no
+            # working hover, regardless of self.button_style below.
+            font = self.button_style.get("font", ("Segoe UI", 12))
             try:
                 img = tk.PhotoImage(file=os.path.join(ICONS_DIR, icon_name))
-                btn = tk.Button(
+                btn = _FlatIconButton(
                     parent,
                     text=text,
                     image=img,
                     compound="left",
                     command=command,
-                    **style,
+                    bg=self.grid_bg,
+                    fg="black",
+                    hover_bg="#DDDDDD",
+                    disabled_bg=self.grid_bg,
+                    font=font,
                 )
                 btn.image = img
             except Exception as e:
                 print(f"⚠ Could not load icon {icon_name}: {e}")
-                btn = tk.Button(
+                btn = _FlatIconButton(
                     parent,
                     text=text,
                     command=command,
-                    **style,
+                    bg=self.grid_bg,
+                    fg="black",
+                    hover_bg="#DDDDDD",
+                    disabled_bg=self.grid_bg,
+                    font=font,
                 )
 
-            self._apply_hover(btn)
             btn.pack(anchor="nw", pady=2, fill="x")
             return btn
 
@@ -4498,12 +4606,27 @@ class GardenApp:
         self.seed_label.pack(side="left", padx=(0, 20))
 
         # ALL BUTTONS (moved from topbar)
-        btn_kwargs = dict(self.button_style)
+        # _FlatIconButton (see near _make_flat_button_raw) instead of
+        # tk.Button — same macOS issue as the left-sidebar buttons had:
+        # native tk.Button ignores bg/relief/activebackground entirely
+        # there. Map only the color/font/spacing keys from button_style
+        # explicitly rather than spreading it — several of its keys
+        # (overrelief, borderwidth) are tk.Button-only options with no
+        # Label equivalent and would raise a Tcl error if forwarded
+        # as-is; _FlatIconButton already hardcodes flat/borderless
+        # styling internally, so those aren't needed anyway.
+        btn_kwargs = dict(
+            bg=self.button_style.get("bg", "#F4F4F4"),
+            hover_bg=self.button_style.get("activebackground", "#E4E4E4"),
+            font=self.button_style.get("font", self.font_button),
+            padx=self.button_style.get("padx", 12),
+            pady=self.button_style.get("pady", 6),
+        )
 
         # Plant Seeds button with shovel icon
         try:
             plant_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "shovel.png"))
-            self.plant_seeds_btn = tk.Button(
+            self.plant_seeds_btn = _FlatIconButton(
                 inventory_left,
                 text=" Plant",
                 image=plant_icon,
@@ -4514,19 +4637,18 @@ class GardenApp:
             self.plant_seeds_btn.image = plant_icon  # Keep reference
         except Exception as e:
             print(f"⚠ Could not load shovel icon: {e}")
-            self.plant_seeds_btn = tk.Button(
+            self.plant_seeds_btn = _FlatIconButton(
                 inventory_left,
                 text="Plant 🌱",
                 command=self._on_plant_seed_quick,
                 **btn_kwargs,
             )
-        self._apply_hover(self.plant_seeds_btn)
         self.plant_seeds_btn.pack(side="left", padx=2)
 
         # Water All button with watering can icon
         try:
             water_all_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "can.png"))
-            self.water_all_btn = tk.Button(
+            self.water_all_btn = _FlatIconButton(
                 inventory_left,
                 text=" Water All",
                 image=water_all_icon,
@@ -4537,55 +4659,50 @@ class GardenApp:
             self.water_all_btn.image = water_all_icon  # Keep reference
         except Exception as e:
             print(f"⚠ Could not load can icon: {e}")
-            self.water_all_btn = tk.Button(
+            self.water_all_btn = _FlatIconButton(
                 inventory_left,
                 text="Water All 💧",
                 command=self._on_water_all,
                 **btn_kwargs,
             )
-        self._apply_hover(self.water_all_btn)
         self.water_all_btn.pack(side="left", padx=2)
 
         # Pause/Resume button
-        self.pause_btn = tk.Button(
+        self.pause_btn = _FlatIconButton(
             inventory_left,
-            text=("▶ Resume" if not self.running else "⏸ Pause"),
+            text=("▶" if not self.running else "⏸"),
             command=self._toggle_run,
             **btn_kwargs,
         )
-        self._apply_hover(self.pause_btn)
         self.pause_btn.pack(side="left", padx=2)
 
         # Next Phase button
-        self.next_phase_btn = tk.Button(
+        self.next_phase_btn = _FlatIconButton(
             inventory_left,
-            text="Next ⏵1h",
+            text="⏵1h",
             command=self._on_next_phase,
             **btn_kwargs,
         )
-        self._apply_hover(self.next_phase_btn)
         self.next_phase_btn.pack(side="left", padx=2)
 
         # Fast Forward button
-        self.fast_btn = tk.Button(
+        self.fast_btn = _FlatIconButton(
             inventory_left,
-            text="FF ▶▶",
+            text="▶▶",
             command=self._on_fast_forward,
             **btn_kwargs,
         )
-        self._apply_hover(self.fast_btn)
         self.fast_btn.pack(side="left", padx=2)
 
         # Speed button moved to Game Settings menu
 
         # Temperature measurement button
-        self.measure_temp_btn = tk.Button(
+        self.measure_temp_btn = _FlatIconButton(
             inventory_left,
-            text="°C Measure Temp",
+            text="Measure °C",
             command=self._on_measure_temperature,
             **btn_kwargs,
         )
-        self._apply_hover(self.measure_temp_btn)
         self.measure_temp_btn.pack(side="left", padx=2)
 
         # Observatory button with custom icon — kept available, placed
@@ -4593,9 +4710,9 @@ class GardenApp:
         # part of the requested sequence.
         try:
             observatory_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "observatory.png"))
-            self.observatory_btn = tk.Button(
+            self.observatory_btn = _FlatIconButton(
                 inventory_left,
-                text=" Observatory",
+                text="",
                 image=observatory_icon,
                 compound="left",
                 command=lambda: (
@@ -4607,16 +4724,18 @@ class GardenApp:
             self.observatory_btn.image = observatory_icon  # Keep reference
         except Exception as e:
             print(f"⚠ Could not load observatory icon: {e}")
-            self.observatory_btn = tk.Button(
+            # Icon failed to load — fall back to the emoji as a stand-in
+            # icon rather than leaving the button with no text or image
+            # at all.
+            self.observatory_btn = _FlatIconButton(
                 inventory_left,
-                text="🔭 Observatory",
+                text="🔭",
                 command=lambda: (
                     self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
                     else self._silent_showinfo("Observatory", "Temperature tracker not available")
                 ),
                 **btn_kwargs,
             )
-        self._apply_hover(self.observatory_btn)
         self.observatory_btn.pack(side="left", padx=2)
 
         # Plot switcher is built further below, after self.active_plot_index
@@ -6741,6 +6860,13 @@ class GardenApp:
         rather than reconfigured.
         """
         win = tk.Toplevel(self.root)
+        # Hidden until geometry (final centered position + size, set near
+        # the end of this function) is fully applied — without this, the
+        # window briefly appears at Tk's default top-left-ish position the
+        # instant it's created, then visibly jumps to center once
+        # win.geometry(...) finally runs after all the page-measuring
+        # work below. Shown again via deiconify() right before returning.
+        win.withdraw()
         win.title(title)
         try:
             self._let_window_go_above_inspector(win)
@@ -6756,13 +6882,24 @@ class GardenApp:
         body_lbl = tk.Label(content, text="", font=("Segoe UI", 12),
                              wraplength=440, justify="left")
         body_lbl.pack(anchor="w", pady=(10, 0))
-        page_lbl = tk.Label(content, text="", font=("Segoe UI", 10, "italic"), fg="#888")
-        page_lbl.pack(anchor="w", pady=(14, 0))
 
         state = {"idx": 0}
 
         nav_row = tk.Frame(content)
         nav_row.pack(side="bottom", fill="x", pady=(20, 0))
+        # Packed AFTER nav_row (not before, as body_lbl/title_lbl above
+        # are) and also side="bottom" — Tk's bottom-side packing stacks
+        # inward from the window edge in the order .pack() is called, so
+        # this lands directly above nav_row at a position that's always
+        # the same regardless of how tall body_lbl's wrapped text is on
+        # any given page. Previously packed right after body_lbl instead,
+        # which meant its vertical position visibly shifted page to page
+        # — higher up on short-text pages, lower on long ones — since it
+        # was trailing a variable-height element rather than anchored to
+        # a fixed one.
+        page_lbl = tk.Label(content, text="", font=("Segoe UI", 10, "italic"), fg="#888")
+        page_lbl.pack(side="bottom", anchor="w", pady=(14, 0))
+
         prev_slot = tk.Frame(nav_row)
         prev_slot.pack(side="left")
         next_slot = tk.Frame(nav_row)
@@ -6838,6 +6975,7 @@ class GardenApp:
         except Exception:
             pass
 
+        win.deiconify()
         return win
 
     def _open_beehive_popup(self, index):
@@ -6847,6 +6985,12 @@ class GardenApp:
         to change what's shown.
         """
         BEEHIVE_FACTS = [
+            ("A Beekeeper Since Childhood",
+             "Mendel wasn't new to bees when he started his pea "
+             "experiments — he grew up helping his beekeeping father, "
+             "and became a skilled beekeeper himself as a kid. "
+             "Beekeeping was even part of his basic schooling in "
+             "horticulture."),
             ("Bees & Peas",
              "Long before Mendel's peas, a Silesian priest and beekeeper "
              "named Johann Dzierzon made a strange discovery in 1845: "
@@ -6861,12 +7005,6 @@ class GardenApp:
              "considered the first time anyone ever published a hybrid "
              "ratio in genetics history, years before Mendel's famous "
              "pea ratios."),
-            ("A Beekeeper Since Childhood",
-             "Mendel wasn't new to bees when he started his pea "
-             "experiments — he grew up helping his beekeeping father, "
-             "and became a skilled beekeeper himself as a kid. "
-             "Beekeeping was even part of his basic schooling in "
-             "horticulture."),
             ("Neighbors at the Abbey",
              "The abbey where Mendel did his pea research kept its own "
              "beehives too, and historians think Mendel likely crossed "
@@ -7866,14 +8004,14 @@ class GardenApp:
         except Exception:
             pass
 
-        # --- NEW: flowering anther inspection (once per day) ---
+        # --- flowering-or-later anther inspection (once per day) ---
         try:
             stage = int(getattr(plant, "stage", 0))
         except Exception:
             stage = 0
 
-        if stage != 5:
-            self._toast("Inspection: this plant is not in flowering stage.")
+        if stage < 5:
+            self._toast("Inspection: this plant hasn't started flowering yet.")
             self.render_all()
             return
 
@@ -9067,7 +9205,7 @@ class GardenApp:
         try:
             # Update button label
             if hasattr(self, "pause_btn"):
-                self.pause_btn.configure(text=("⏸ Pause" if self.running else "⏵ Resume"))
+                self.pause_btn.configure(text=("⏸" if self.running else "⏵"))
         except Exception:
             pass
         # Keep loop consistent
@@ -9277,7 +9415,7 @@ class GardenApp:
 
         self.running = was_running
         try:
-            self.pause_btn.configure(text="⏸ Pause" if self.running else "⏵ Resume")
+            self.pause_btn.configure(text="⏸" if self.running else "⏵")
         except Exception:
             pass
 
@@ -10337,7 +10475,7 @@ class GardenApp:
         
         # Update pause button text
         self.pause_btn.configure(
-            text=("⏸ Pause" if self.running else "▶ Resume")
+            text=("⏸" if self.running else "▶")
         )
 
     def _show_help(self):
