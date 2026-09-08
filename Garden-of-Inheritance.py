@@ -521,6 +521,16 @@ def _make_flat_button_raw(parent, text, command, bg="#7A9A3C", fg="white",
                     padx=10, pady=4, cursor=("arrow" if disabled else "hand2"),
                     relief="flat", bd=1, highlightthickness=0,
                     width=width)
+    # Marks this Label as an intentionally-colored button rather than a
+    # plain one — checked by _apply_inspector_theme, which otherwise
+    # walks every tk.Label in a window and overwrites its background
+    # with the theme's cream color, including these. That silently wiped
+    # out a button's own color (e.g. green) until its first hover, since
+    # the hover-leave handler restores the ORIGINAL bg captured here at
+    # creation, not whatever the theme had overwritten it to — meaning
+    # the button would only "self-correct" back to its real color after
+    # being hovered once, not before.
+    lbl._is_flat_button = True
     if not disabled:
         lbl.bind("<Enter>", lambda e: lbl.configure(bg=hover_bg))
         lbl.bind("<Leave>", lambda e: lbl.configure(bg=bg))
@@ -633,6 +643,32 @@ def _silent_dialog_raw(owner, title, message, kind="info"):
 
 class GardenApp:
     SEASON_MODES = ["off", "overlay", "enforce"]
+
+    # Number of separate plots (extra garden space) the player can switch
+    # between — starting with 2 to verify the mechanism works before
+    # bumping this to 4. Everything else (switching, key bindings, widget
+    # construction) scales off this single constant.
+    NUM_PLOTS = 2
+
+    @property
+    def tiles(self):
+        """
+        The tile-set for whichever plot is currently active (see
+        _switch_to_plot / self._plot_tiles, both built in __init__). Kept
+        as a read-only property rather than a plain attribute reassigned
+        on switch — self.tiles is only ever assigned once in the whole
+        file (where the tile widgets are originally built), so every
+        other place that reads self.tiles[...] or iterates it keeps
+        working unchanged, automatically operating on whichever plot is
+        currently visible, with no changes needed at any of those call
+        sites.
+
+        Simulation itself needs no equivalent change: Garden.plants is a
+        flat, plot-agnostic set — next_hour() ticks every registered
+        plant the same way regardless of which plot's grid it's
+        displayed on, so plots left un-viewed still advance normally.
+        """
+        return self._plot_tiles[self.active_plot_index]
 
     @staticmethod
     def _hex_to_rgb(h):
@@ -940,10 +976,14 @@ class GardenApp:
 
         def _walk(widget):
             if isinstance(widget, PLAIN_TYPES):
-                try:
-                    widget.configure(bg=bg)
-                except Exception:
-                    pass
+                # Skip the bg overwrite for _make_flat_button_raw's
+                # Labels — see the comment there for why blindly
+                # recoloring these broke their intentional button colors.
+                if not getattr(widget, '_is_flat_button', False):
+                    try:
+                        widget.configure(bg=bg)
+                    except Exception:
+                        pass
                 try:
                     cur = widget.cget("font")
                     if cur:
@@ -1574,7 +1614,19 @@ class GardenApp:
         self._make_flat_button(bottom_row, "Trait Inheritance Explorer", _open_tie_close_inspector_first,
                                 bg="#e0dccf", fg="#333333",
                                 font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
-        self._make_flat_button(bottom_row, "Unlock Laws", self._test_mendelian_laws_now,
+
+        def _open_law_wizard_close_inspector_first():
+            # Same reasoning as the TIE button above — without this, the
+            # law wizard opened BEHIND the still-topmost inspector and was
+            # unresponsive, since the inspector sitting on top of it
+            # blocked interaction with it entirely.
+            try:
+                win.destroy()
+            except Exception:
+                pass
+            self._test_mendelian_laws_now()
+
+        self._make_flat_button(bottom_row, "Unlock Laws", _open_law_wizard_close_inspector_first,
                                 bg="#e0dccf", fg="#333333",
                                 font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
 
@@ -1636,7 +1688,17 @@ class GardenApp:
                 self._toast("Select a plant first.", level="info")
                 return
 
-            MendelianLawWizard(self.root, self)
+            wiz = MendelianLawWizard(self.root, self)
+            # Central construction point for the wizard regardless of
+            # caller (this covers the inspector's own button too, in case
+            # it's ever reached without closing the inspector first) — if
+            # the inspector happens to be open, let this appear above it
+            # rather than getting stuck behind an unresponsive topmost
+            # window, same treatment already given to TIE.
+            try:
+                self._let_window_go_above_inspector(wiz)
+            except Exception:
+                pass
 
         except Exception as e:
             try:
@@ -1779,7 +1841,7 @@ class GardenApp:
                 # Reset tile keys so they rebake for the new season.
                 # Do NOT clear _bg_photo_cache — keeping all PhotoImages alive
                 # prevents tkinter from losing references mid-frame (the flash).
-                for tile in self.tiles:
+                for tile in self._all_plot_tiles():
                     tile._bg_cache_key = None
             elif not hasattr(self, '_bg_current_season'):
                 self._bg_current_season = season
@@ -1804,13 +1866,21 @@ class GardenApp:
             FAST_MELT_TEMP  = 8.0   # °C — fast melt, overrides minimum-age check
             MIN_SNOW_HOURS  = 48    # sim-hours before borderline-warm melt begins
 
-            for tile in self.tiles:
+            for tile in self._all_plot_tiles():
                 try:
                     cover      = getattr(tile, 'snow_cover', 0.0)
                     snow_since = getattr(tile, '_snow_since_hour', None)
 
-                    # Per-tile RNG — different outcome each hour
-                    rng = random.Random(tile.idx * 6271 + sim_hour * 7919)
+                    # Per-tile RNG — different outcome each hour. Seeded
+                    # by plot too (same fix as the grass/soil texture
+                    # variant earlier) — tile.idx alone ranges identically
+                    # per plot, so without this every plot's tile at the
+                    # same position rolled the exact same snow decision
+                    # every hour, giving an identical melt/accumulation
+                    # pattern even once the underlying state was correctly
+                    # synced (previous fix) between plots.
+                    rng = random.Random(tile.idx * 6271 + sim_hour * 7919
+                                        + getattr(tile, 'plot_idx', 0) * 514229)
 
                     if is_snowing and temp <= ACCUM_MAX_TEMP:
                         # ── Accumulation phase ──────────────────────────────
@@ -1850,7 +1920,7 @@ class GardenApp:
             # 'soil' to 'grass'.  But if lighting is stable, set_soil_color
             # is never called, so the stale _bg_cache_key is never noticed.
             # Detect expiry here and force an immediate refresh.
-            for tile in self.tiles:
+            for tile in self._all_plot_tiles():
                 try:
                     linger = tile._soil_linger_until
                     if 0 < linger <= sim_hour:
@@ -2280,6 +2350,27 @@ class GardenApp:
         except Exception:
             pass   # decorative — never crash the simulation
 
+    def _all_plot_tiles(self):
+        """
+        Every tile across every plot, not just the currently active one
+        (self.tiles). Used specifically for simulation-derived visual
+        state that's meant to be shared across all plots regardless of
+        which is on screen — day/night lighting, season, snow cover/melt
+        — since weather/time/temperature are a single shared reference
+        the player agreed all plots should follow. Looping self.tiles
+        alone in these specific spots was the actual bug behind plots
+        drifting out of sync (one stuck in day while another was in
+        night, snow melting in one but not another): those tiles simply
+        never got their state advanced at all while not being viewed,
+        not just left unrendered.
+        """
+        try:
+            for plot_tiles in self._plot_tiles:
+                for tile in plot_tiles:
+                    yield tile
+        except Exception:
+            return
+
     def _apply_daynight_to_tiles(self):
         # ── Update season cache once per frame ──────────────────────────────
         # Tiles read _bg_current_season directly for speed. Recomputing it here
@@ -2293,7 +2384,7 @@ class GardenApp:
             if _new_season != getattr(self, '_bg_current_season', None):
                 self._bg_current_season = _new_season
                 # Reset tile keys — do NOT clear _bg_photo_cache (prevents flash)
-                for tile in self.tiles:
+                for tile in self._all_plot_tiles():
                     tile._bg_cache_key = None
                 self._daynight_last_bucket = None
         except Exception:
@@ -2304,7 +2395,7 @@ class GardenApp:
             self._daynight_last_bucket = None  # bypass bucket-skip guard
             # Also reset each tile's texture key so _try_set_bg_image
             # re-evaluates mode/season/snow on every FF render call.
-            for _t in self.tiles:
+            for _t in self._all_plot_tiles():
                 _t._bg_cache_key = None
 
         # ── Init cache once ──
@@ -2396,7 +2487,7 @@ class GardenApp:
         day_bright      = 0.08 * L_display
         day_tint_target = "#bfe3b0"  # subtle sun wash
 
-        for tile in self.tiles:
+        for tile in self._all_plot_tiles():
             base = getattr(tile, "base_soil", None)
             if not base:
                 base = getattr(tile, "soil", "#88a884")
@@ -2568,6 +2659,13 @@ class GardenApp:
         # Wildlife settings
         self._wildlife_enabled_var = tk.BooleanVar(value=True)
         self._wildlife_freq_var    = tk.StringVar(value="low")
+        # Guaranteed to exist before the trace below is registered — the
+        # real TemperatureTracker isn't constructed until much later in
+        # __init__, but _update_temp_button_state() (which reads
+        # self.temp_tracker) can fire from this trace before that, and
+        # was crashing with AttributeError when it did, since the
+        # attribute didn't exist at all yet (not even as None).
+        self.temp_tracker = None
         self.auto_record_temperature.trace_add(
             "write", lambda *_: self._update_temp_button_state()
         )
@@ -2628,7 +2726,7 @@ class GardenApp:
         # Auto progression state
         self.running = False
         self.fast_forward = False
-        self.day_length_s = 0.25
+        self.day_length_s = 1.0  # default: 1 real second = 1 simulated hour
         self._recalc_timers()
         self.subphase_counter = 0
 
@@ -3055,7 +3153,7 @@ class GardenApp:
         Also clears _bg_cache_key so the next frame re-evaluates mode.
         """
         sim_hour = getattr(self, '_snow_sim_hour', 0)
-        rng = random.Random(tile.idx * 9973 + sim_hour)
+        rng = random.Random(tile.idx * 9973 + sim_hour + getattr(tile, 'plot_idx', 0) * 275449)
         tile._soil_linger_until = sim_hour + rng.randint(min_h, max_h)
         tile._bg_cache_key = None
         tile._render_state = None   # force re-render to pick up mode change
@@ -3279,6 +3377,20 @@ class GardenApp:
         # plant, without opening the full inspector window
         self.root.bind('<a>', lambda e: self._on_check_pollen_quick())
         self.root.bind('<A>', lambda e: self._on_check_pollen_quick())
+
+        # 1 / 2 → switch plots. <Key-1> specifically, NOT <1> — the latter
+        # is a mouse-button-1 (left click) event in Tkinter, not the "1"
+        # keyboard key, a real gotcha worth documenting here. Guarded
+        # against text-entry focus (e.g. the seed picker's count box) the
+        # same way the TIE Q-shortcut is, so typing a plot count doesn't
+        # also trigger a plot switch.
+        def _switch_plot_key(event, plot_idx):
+            if isinstance(event.widget, (tk.Entry, tk.Text)):
+                return
+            self._switch_to_plot(plot_idx)
+        for _n in range(1, self.NUM_PLOTS + 1):
+            self.root.bind(f'<Key-{_n}>', lambda e, p=_n - 1: _switch_plot_key(e, p))
+
         self.root.bind('<s>', lambda e: self._on_harvest_selected())
         # Shift+S → harvest ALL pods on selected plant
         self.root.bind('<S>', lambda e: self._on_harvest_all_selected())
@@ -3654,10 +3766,9 @@ class GardenApp:
     def _contiguous_empty_region(self, start_idx):
         """Find contiguous region of empty or dead-plant tiles for area planting."""
         if start_idx is None: return []
-        # Start tile must be empty or have a dead plant
-        start_plant = self.tiles[start_idx].plant
-        if start_plant is not None and getattr(start_plant, 'alive', True):
-            return []  # Living plant blocks area planting
+        # Start tile must be free (empty/dead, and not a special-object tile)
+        if not self.tiles[start_idx].is_free_for_planting():
+            return []  # Living plant or special object blocks area planting
         
         seen = {start_idx}
         q = [start_idx]
@@ -3666,9 +3777,9 @@ class GardenApp:
             cur = q.pop(0)
             for nb in self._neighbors4(cur):
                 if nb in seen: continue
-                nb_plant = self.tiles[nb].plant
-                # Include empty tiles and tiles with dead plants
-                if nb_plant is None or not getattr(nb_plant, 'alive', True):
+                # Include empty tiles and tiles with dead plants — but not
+                # special-object tiles (beehive, measuring station)
+                if self.tiles[nb].is_free_for_planting():
                     seen.add(nb); q.append(nb); region.append(nb)
         return region
 
@@ -3689,8 +3800,7 @@ class GardenApp:
         Returns None only if the entire grid is completely full.
         """
         def _is_free(i):
-            pl = self.tiles[i].plant
-            return pl is None or not getattr(pl, 'alive', True)
+            return self.tiles[i].is_free_for_planting()
 
         idx = getattr(self, "selected_index", None)
 
@@ -3854,15 +3964,13 @@ class GardenApp:
             except Exception:
                 selected_tiles = []
 
-        plantable_tiles = [t for t in selected_tiles
-                           if t.plant is None or not getattr(t.plant, 'alive', True)]
+        plantable_tiles = [t for t in selected_tiles if t.is_free_for_planting()]
 
         if not plantable_tiles:
             # Nothing selected, or the current selection is occupied — grab
             # any free (empty or dead) plot elsewhere in the grid instead.
             free_tile = next(
-                (t for t in self.tiles
-                 if t.plant is None or not getattr(t.plant, 'alive', True)),
+                (t for t in self.tiles if t.is_free_for_planting()),
                 None
             )
             if free_tile is None:
@@ -4162,10 +4270,9 @@ class GardenApp:
         status = tk.Frame(self.topbar)
         status.pack(side="left")
 
-        # Seeds/Starter/Buttons will be created later in grid_header (above the grid)
-        # Just initialize the variables here
+        # Seeds/Buttons will be created later in grid_header (above the grid)
+        # Just initialize the variable here
         self.seed_counter_var = tk.StringVar(value="Seeds: 0")
-        self.starter_var = tk.StringVar(value=f"Starter: {0}")
 
         # New: Mendelian laws status (will be shown below grid)
         self.law_status_var = tk.StringVar(
@@ -4378,23 +4485,17 @@ class GardenApp:
         inventory_left = tk.Frame(self.inventory_row, bg=self.grid_bg)
         inventory_left.pack(side="left", anchor="w")
 
-        # Seeds label
+        # Seeds label — shows harvested seeds PLUS remaining starter (F0)
+        # seeds combined into one count (see _refresh_seed_counter_var /
+        # the two update sites below), rather than a separate "Starter"
+        # label next to it — saves the space that took in this toolbar.
         self.seed_label = tk.Label(
             inventory_left,
             textvariable=self.seed_counter_var,
             font=self.font_seed,
             bg=self.grid_bg
         )
-        self.seed_label.pack(side="left", padx=(0, 12))
-
-        # Starter label
-        self.starter_label = tk.Label(
-            inventory_left,
-            textvariable=self.starter_var,
-            font=self.font_seed,
-            bg=self.grid_bg
-        )
-        self.starter_label.pack(side="left", padx=(0, 20))
+        self.seed_label.pack(side="left", padx=(0, 20))
 
         # ALL BUTTONS (moved from topbar)
         btn_kwargs = dict(self.button_style)
@@ -4517,6 +4618,11 @@ class GardenApp:
             )
         self._apply_hover(self.observatory_btn)
         self.observatory_btn.pack(side="left", padx=2)
+
+        # Plot switcher is built further below, after self.active_plot_index
+        # and self._plot_tiles exist (tile construction happens after this
+        # toolbar section) — see the call right after that block.
+
         # Set initial state
         try:
             self._update_temp_button_state()
@@ -4534,7 +4640,8 @@ class GardenApp:
             'TILE_SIZE': TILE_SIZE,
             'WATER_BAR_W': WATER_BAR_W,
             'WATER_BAR_H': WATER_BAR_H,
-            'HEALTH_BAR_H': HEALTH_BAR_H
+            'HEALTH_BAR_H': HEALTH_BAR_H,
+            'TILES_PER_ROW': TILES_PER_ROW,
         }
 
         # Load grass/soil background textures (pre-bakes 101 lighting levels)
@@ -4553,25 +4660,81 @@ class GardenApp:
                                    'autumn' if _m in (9,10,11) else 'winter')
         self._bg_last_season = self._bg_current_season
 
-        self.tiles: List[TileCanvas] = [] 
-        for idx in range(GRID_SIZE):
-            soil = random.choice(SOIL_COLORS)
-            tile = TileCanvas(self.grid_frame, idx, self, soil, None, tile_configs)
-            tile.grid(row=idx // TILES_PER_ROW, column=idx % TILES_PER_ROW, padx=0, pady=0)
-            self.tiles.append(tile)
+        # Build all plots' tile widgets up front and keep them alive the
+        # whole session — switching plots (see _switch_to_plot) just
+        # shows/hides which set is gridded, rather than destroying and
+        # rebuilding anything. That keeps each tile's plant-association
+        # (which lives on the TileCanvas widget itself) intact across
+        # switches, and needs no changes to how planting/simulation work.
+        self.active_plot_index = 0
+        self._plot_tiles = [[] for _ in range(self.NUM_PLOTS)]
+        for plot_idx in range(self.NUM_PLOTS):
+            for idx in range(GRID_SIZE):
+                soil = random.choice(SOIL_COLORS)
+                tile = TileCanvas(self.grid_frame, idx, self, soil, None, tile_configs)
+                # Lets tile.py's texture-variant seeding tell plots apart
+                # (see _try_set_bg_image) — without this, every plot's
+                # tile at the same grid position picks the identical
+                # grass/soil texture variant, since that RNG was seeded
+                # from tile position alone.
+                tile.plot_idx = plot_idx
+                if plot_idx == self.active_plot_index:
+                    tile.grid(row=idx // TILES_PER_ROW, column=idx % TILES_PER_ROW, padx=0, pady=0)
+                # else: built but left un-gridded (invisible, takes no
+                # layout space) until this plot is switched to. Note:
+                # this initial grid() call gets superseded by
+                # _grid_tile() below, once special objects are placed and
+                # any measuring-station rowspan is known — placement
+                # happens after this loop, since it needs every tile in
+                # the plot to already exist first.
+                self._plot_tiles[plot_idx].append(tile)
 
         # Prime texture images on every tile immediately so they never show
-        # the solid-colour fallback while waiting for the first animation tick.
+        # the solid-colour fallback while waiting for the first animation
+        # tick — across every plot, not just the initially active one.
         try:
-            for tile in self.tiles:
-                tile._lighting_bucket = 100   # assume full daylight at startup
-                tile.set_soil_color(tile.soil)
+            for plot_tiles in self._plot_tiles:
+                for tile in plot_tiles:
+                    tile._lighting_bucket = 100   # assume full daylight at startup
+                    tile.set_soil_color(tile.soil)
+        except Exception:
+            pass
+
+        # One special object per plot — a beehive in plot 0 (Abbey Garden
+        # 1), a measuring station in plot 1 (Abbey Garden 2). Which object
+        # goes in which plot wasn't specified, so this is an arbitrary
+        # but easy-to-swap assignment. Each permanently blocks planting
+        # and normal selection on its tile (see
+        # TileCanvas.is_free_for_planting / GardenApp._on_tile_left_press).
+        try:
+            if len(self._plot_tiles) > 0 and self._plot_tiles[0]:
+                random.choice(self._plot_tiles[0]).set_special_object("beehive")
+            if len(self._plot_tiles) > 1 and self._plot_tiles[1]:
+                self._place_measuring_station(self._plot_tiles[1])
+        except Exception:
+            pass
+
+        # Re-grid the active plot now that special objects (and any
+        # measuring-station rowspan) are placed — the initial grid()
+        # calls above didn't know about this yet, since placement needs
+        # every tile in a plot to already exist first.
+        try:
+            for tile in self._plot_tiles[self.active_plot_index]:
+                self._grid_tile(tile)
         except Exception:
             pass
 
         # Place stone images along border lines once the grid geometry is ready
         self._stone_sw = _load_stone_size_px()
         self.root.after(250, self._setup_border_stones)
+
+        # Plot switcher — "Abbey Garden: [1] [2]" — one numbered toggle
+        # button per plot, scaling automatically with NUM_PLOTS (bumping
+        # that constant to 4 later needs no changes here). Built here,
+        # after self.active_plot_index/self._plot_tiles exist just above
+        # — building it earlier alongside the rest of the toolbar would
+        # reference active_plot_index before it's set.
+        self._build_plot_switcher(inventory_left)
 
         # ---------- Mendelian laws row (below the grid in right_panel) ----------
         self.law_row = tk.Frame(right_panel, bg=self.grid_bg, padx=0, pady=8)
@@ -4696,7 +4859,65 @@ class GardenApp:
 # ============================================================================
 # Rendering Methods
 # ============================================================================
+    def _sync_tile_selected_from_indices(self):
+        """
+        Keeps each TileCanvas's own .selected attribute in sync with
+        self.multi_selected_indices / self.selected_index — the actual
+        source of truth the visual selection border reads is each
+        tile's own attribute, not the index set. Several selection-
+        setting code paths (Shift+click, Ctrl+A/_on_select_all, arrow-
+        key movement and Shift+Arrow extend in _move_selection) only
+        ever updated the index set, never the tiles themselves — found
+        and individually fixed a couple of these already, but rather
+        than keep chasing each remaining/future one individually, this
+        runs centrally, every render_all() call (which already happens
+        after every selection change regardless of path), as a
+        defensive catch-all. Cheap early-exit if nothing changed since
+        the last sync.
+        """
+        try:
+            want = set(getattr(self, "multi_selected_indices", None) or set())
+            if not want and getattr(self, "selected_index", None) is not None:
+                want = {self.selected_index}
+            if want == getattr(self, "_last_synced_selection", None):
+                return
+            self._last_synced_selection = set(want)
+
+            for t in list(getattr(self, "selected_tiles", None) or set()):
+                try:
+                    t.selected = False
+                except Exception:
+                    pass
+            new_selected_tiles = set()
+            for idx in want:
+                try:
+                    t = self.tiles[idx]
+                    # Only the measuring station's "covered" sub-tile is
+                    # excluded here — it's never actually gridded/visible
+                    # (see _place_measuring_station), so it isn't a real,
+                    # independently-selectable entity at all. The beehive
+                    # and the measuring station's own visible tile are
+                    # NOT excluded — they're selectable and show the
+                    # selection border exactly like any other tile now;
+                    # the one thing that stays special is the internal
+                    # seam between the measuring station and its covered
+                    # tile, handled separately in tile.py's
+                    # _update_selection_border (that seam is the same
+                    # visual object split across two grid cells, not a
+                    # real boundary between two different tiles).
+                    if getattr(t, '_covered_by_measuring_station', False):
+                        continue
+                    t.selected = True
+                    new_selected_tiles.add(t)
+                except Exception:
+                    pass
+            self.selected_tiles = new_selected_tiles
+        except Exception:
+            pass
+
     def render_all(self):
+        self._sync_tile_selected_from_indices()
+
         try:
             self._update_header()
         except Exception:
@@ -4717,14 +4938,7 @@ class GardenApp:
 
         self.garden.drift_temperature_once()
 
-        if hasattr(self, "starter_var"):
-            self.starter_var.set(f"Starter: {self.available_seeds}")
-
-        if hasattr(self, "seed_counter_var"):
-            try:
-                self.seed_counter_var.set(f"Seeds: {len(self.harvest_inventory)}")
-            except Exception:
-                pass
+        self._refresh_seed_counter_var()
 
         # --- Update Mendelian law status in top bar ---
         self._update_law_status_label()
@@ -5413,9 +5627,10 @@ class GardenApp:
 
         def _find_by_id_local(pid):
             try:
-                for tile in self.tiles:
-                    if tile.plant is not None and getattr(tile.plant, "id", None) == pid:
-                        return tile.plant
+                for plot_tiles in getattr(self, "_plot_tiles", None) or [getattr(self, "tiles", [])]:
+                    for tile in plot_tiles or []:
+                        if tile.plant is not None and getattr(tile.plant, "id", None) == pid:
+                            return tile.plant
             except Exception:
                 pass
             return None
@@ -6049,15 +6264,19 @@ class GardenApp:
             # for Mother and Father.
             def _get_lineage_obj(pid):
                 """A plant-like object for pid: prefer a live Plant still
-                on a tile (fullest data), otherwise wrap the archived
-                record in SimpleNamespace so getattr(...) — which
-                _tab_meta/_fill_tab both use — works the same either way."""
+                on a tile (fullest data) — searching EVERY plot, not just
+                the currently active one (self.tiles), since a parent can
+                easily be alive in a plot you're not currently viewing —
+                otherwise wrap the archived record in SimpleNamespace so
+                getattr(...) — which _tab_meta/_fill_tab both use — works
+                the same either way."""
                 if pid is None:
                     return None
-                for t in getattr(self, "tiles", []) or []:
-                    p = getattr(t, "plant", None)
-                    if p is not None and str(getattr(p, "id", None)) == str(pid):
-                        return p
+                for plot_tiles in getattr(self, "_plot_tiles", None) or [getattr(self, "tiles", [])]:
+                    for t in plot_tiles or []:
+                        p = getattr(t, "plant", None)
+                        if p is not None and str(getattr(p, "id", None)) == str(pid):
+                            return p
                 try:
                     rec = self.archive.get("plants", {}).get(str(pid))
                     if rec:
@@ -6393,11 +6612,14 @@ class GardenApp:
             return False
 
         try:
-            occupied = self.tiles[index].plant is not None and getattr(self.tiles[index].plant, "alive", True)
+            occupied = not self.tiles[index].is_free_for_planting()
         except Exception:
             occupied = False
         if occupied:
-            self._toast("That tile already has a plant.", level="warn")
+            if getattr(self.tiles[index], 'special_object', None):
+                self._toast("That tile is occupied.", level="warn")
+            else:
+                self._toast("That tile already has a plant.", level="warn")
             self._reassert_plant_cursor_topmost()
             return True  # click was handled (consumed), just didn't plant
 
@@ -6498,12 +6720,294 @@ class GardenApp:
         except Exception:
             pass
 
+    def _on_special_object_clicked(self, index, kind):
+        """Dispatches a click on a special-object tile (beehive, measuring
+        station) to its own handler."""
+        if kind == "beehive":
+            self._open_beehive_popup(index)
+        elif kind == "measuring_station":
+            self._open_measuring_station_popup(index)
+
+    def _open_paged_info_popup(self, title, pages, extra_buttons=None):
+        """
+        Generic paged info window — styled like the Genotype Explorer
+        (_apply_inspector_theme). pages: list of (heading, body) tuples;
+        the last page renders slightly smaller/italic (used for a
+        citation). extra_buttons: optional list of (label, command)
+        tuples placed in the nav row, between Prev/Next and Close.
+        Shared by the beehive and measuring-station popups so there's
+        only one pager implementation to get right — see the comment
+        inside _render_page about why Prev/Next get rebuilt each page
+        rather than reconfigured.
+        """
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        try:
+            self._let_window_go_above_inspector(win)
+        except Exception:
+            pass
+
+        content = tk.Frame(win, padx=20, pady=20)
+        content.pack(fill="both", expand=True)
+
+        title_lbl = tk.Label(content, text="", font=("Segoe UI", 16, "bold"),
+                              wraplength=440, justify="left")
+        title_lbl.pack(anchor="w")
+        body_lbl = tk.Label(content, text="", font=("Segoe UI", 12),
+                             wraplength=440, justify="left")
+        body_lbl.pack(anchor="w", pady=(10, 0))
+        page_lbl = tk.Label(content, text="", font=("Segoe UI", 10, "italic"), fg="#888")
+        page_lbl.pack(anchor="w", pady=(14, 0))
+
+        state = {"idx": 0}
+
+        nav_row = tk.Frame(content)
+        nav_row.pack(side="bottom", fill="x", pady=(20, 0))
+        prev_slot = tk.Frame(nav_row)
+        prev_slot.pack(side="left")
+        next_slot = tk.Frame(nav_row)
+        next_slot.pack(side="left", padx=(8, 0))
+        for label, cmd in (extra_buttons or []):
+            self._make_flat_button(nav_row, label, cmd,
+                                    bg="#7A9A3C", fg="white",
+                                    font=("Segoe UI", 12, "bold")).pack(side="left", padx=(16, 0))
+        self._make_flat_button(nav_row, "Close", win.destroy,
+                                bg="#e0dccf", fg="#333333",
+                                font=("Segoe UI", 12, "bold")).pack(side="right")
+
+        def _render_page():
+            i = state["idx"]
+            heading, body = pages[i]
+            is_last = (i == len(pages) - 1)
+            title_lbl.configure(text=heading)
+            body_lbl.configure(text=body,
+                                font=("Segoe UI", 10, "italic") if is_last else ("Segoe UI", 12))
+            page_lbl.configure(text=f"{i + 1} / {len(pages)}")
+
+            # Rebuilt each time rather than reconfigured — _make_flat_button
+            # only evaluates state="disabled" once, at creation (it bakes
+            # in dimmed colors and skips attaching the click binding
+            # entirely there); reconfiguring the returned Label's state
+            # afterward wouldn't actually disable it, so the buttons are
+            # rebuilt fresh with the correct state for the current page.
+            for w in prev_slot.winfo_children():
+                w.destroy()
+            for w in next_slot.winfo_children():
+                w.destroy()
+            self._make_flat_button(prev_slot, "\u25c0 Prev", lambda: _go(-1),
+                                    bg="#e0dccf", fg="#333333", font=("Segoe UI", 12, "bold"),
+                                    state=("normal" if i > 0 else "disabled")).pack()
+            self._make_flat_button(next_slot, "Next \u25b6", lambda: _go(1),
+                                    bg="#e0dccf", fg="#333333", font=("Segoe UI", 12, "bold"),
+                                    state=("normal" if i < len(pages) - 1 else "disabled")).pack()
+
+        def _go(delta):
+            state["idx"] = max(0, min(len(pages) - 1, state["idx"] + delta))
+            _render_page()
+
+        _render_page()  # show page 0 first, populating prev/next too
+
+        # Measure every page's required size and lock the window to the
+        # largest one, BEFORE showing anything — without this, the window
+        # was sized to fit only the first page, then either overflowed on
+        # longer ones or silently grew/shrank on every Next/Prev, which
+        # looked janky. Measured per page rather than guessed, since
+        # wrapped-text height is hard to predict from character count.
+        max_w, max_h = 0, 0
+        for heading, body in pages:
+            title_lbl.configure(text=heading)
+            body_lbl.configure(text=body)
+            content.update_idletasks()
+            max_w = max(max_w, content.winfo_reqwidth())
+            max_h = max(max_h, content.winfo_reqheight())
+        _render_page()  # restore page 0's actual content after measuring
+
+        try:
+            win.update_idletasks()
+            ww = max(460, max_w + 40)   # + outer window padding
+            wh = max(320, max_h + 40)
+            sw = win.winfo_screenwidth()
+            sh = win.winfo_screenheight()
+            win.geometry(f"{ww}x{wh}+{max(0, (sw - ww) // 2)}+{max(0, (sh - wh) // 2)}")
+            win.resizable(False, False)  # stays fixed — no resize on Next/Prev
+        except Exception:
+            pass
+
+        try:
+            self._apply_inspector_theme(win)
+        except Exception:
+            pass
+
+        return win
+
+    def _open_beehive_popup(self, index):
+        """
+        Beehive info window. One fact per page, with a citation page at
+        the end. BEEHIVE_FACTS holds the actual content — edit that list
+        to change what's shown.
+        """
+        BEEHIVE_FACTS = [
+            ("Bees & Peas",
+             "Long before Mendel's peas, a Silesian priest and beekeeper "
+             "named Johann Dzierzon made a strange discovery in 1845: "
+             "queen bees that never mated could still lay eggs — but "
+             "those eggs only ever hatched into male bees (drones). We "
+             "now know this is because unfertilized eggs develop into "
+             "males in bees, a trick most animals can't pull off."),
+            ("A Ratio Before Mendel's Ratios",
+             "In 1854, Dzierzon crossed Italian and German honeybees, "
+             "then crossed their hybrid offspring again — and found the "
+             "drones came out in a clean 1:1 ratio of each type. It's "
+             "considered the first time anyone ever published a hybrid "
+             "ratio in genetics history, years before Mendel's famous "
+             "pea ratios."),
+            ("A Beekeeper Since Childhood",
+             "Mendel wasn't new to bees when he started his pea "
+             "experiments — he grew up helping his beekeeping father, "
+             "and became a skilled beekeeper himself as a kid. "
+             "Beekeeping was even part of his basic schooling in "
+             "horticulture."),
+            ("Neighbors at the Abbey",
+             "The abbey where Mendel did his pea research kept its own "
+             "beehives too, and historians think Mendel likely crossed "
+             "paths with Dzierzon in person when the famous beekeeper "
+             "stayed at the abbey as a guest."),
+            ("Mendel Kept Experimenting",
+             "Mendel didn't stop hybridizing after his pea experiments — "
+             "in 1871 he built his own brick bee house and spent years "
+             "trying to breed better honeybees, using the very same idea "
+             "of tracking traits across generations."),
+        ]
+        CITATION = (
+            "Source",
+            "Kritsky, G. (2023). Bees and Peas: How Apiology Influenced "
+            "Gregor Mendel's Research. American Entomologist, 69(2), "
+            "40\u201345. https://doi.org/10.1093/ae/tmad025"
+        )
+        pages = BEEHIVE_FACTS + [CITATION]
+        self._open_paged_info_popup("Beehive", pages)
+
+    def _open_measuring_station_popup(self, index):
+        """
+        Measuring station info window. One fact per page, a citation
+        page, then a tip about Game Settings' Auto-record Temperature
+        option — and a "Measure Temperature" button (in the nav row,
+        alongside Prev/Next/Close) that actually attempts a measurement,
+        using the same valid-hours logic as the toolbar button.
+        """
+        WEATHER_FACTS = [
+            ("Weatherman Gregor Mendel",
+             "Mendel wasn't just a pea scientist on the side — he was "
+             "an official government weather observer in Moravia for "
+             "27 years, and in his own lifetime he actually published "
+             "more articles on meteorology than on plant breeding."),
+            ("Three Times a Day",
+             "Mendel recorded temperature, rainfall, wind, air pressure, "
+             "sunlight, groundwater levels, and even ozone — three "
+             "times a day, at 6 am, 2 pm, and 10 pm. Those are the "
+             "exact same three times of day this measuring station "
+             "only works at."),
+            ("The Tornado Paper",
+             "In 1870, a tornado tore right over the abbey while Mendel "
+             "was inside. Instead of just cleaning up, he wrote a "
+             "scientific paper about it — correctly figuring out it "
+             "spun clockwise (unusual for the Northern Hemisphere) and "
+             "proposing an explanation for tornado formation that "
+             "predated the theory now credited as the founding work of "
+             "tornado science by almost 50 years."),
+            ("Naming Smog Before \"Smog\"",
+             "Decades before English speakers coined the word \"smog,\" "
+             "Mendel was already describing polluted winter air over "
+             "Brno with his own term, Rauchnebel — German for "
+             "\"smoke fog.\""),
+            ("Watching the Sun",
+             "Mendel even turned his telescope to the sky to track "
+             "sunspots, hoping to find a link between solar activity "
+             "and local weather patterns — one more example of his "
+             "lifelong habit of hunting for patterns in nature."),
+        ]
+        CITATION = (
+            "Source",
+            "Alvey, M. (2021). Weatherman Gregor Mendel: Plant "
+            "hybridizing was something of a sideline for this "
+            "polymathic priest. Natural History, April 2021, 32\u201337."
+        )
+        TIP = (
+            "Try It Yourself",
+            "Head to Game Settings and turn off Auto-record Temperature "
+            "— then you can take manual measurements yourself, three "
+            "times a day at 6 am, 2 pm, and 10 pm, just like Mendel did."
+        )
+        pages = WEATHER_FACTS + [CITATION, TIP]
+        self._open_paged_info_popup(
+            "Measuring Station", pages,
+            extra_buttons=[("Measure Temperature",
+                             lambda: self._attempt_measure_temperature_from_station(index))]
+        )
+
+    def _attempt_measure_temperature_from_station(self, index):
+        """
+        Acts like the °C Measure Temp button — but only when the tracker
+        says it's actually a valid hour (see VALID_HOURS in
+        mendel_temperature_tracker.py: 6am/2pm/10pm). Otherwise reports
+        how many hours until the next one, rather than just staying
+        disabled/silent the way the toolbar button does.
+        """
+        if self.temp_tracker is None:
+            self._toast("Temperature tracker not available", level="warn")
+            return
+
+        try:
+            can_measure, hour, reason = self.temp_tracker.can_measure_now()
+        except Exception:
+            self._toast("Temperature tracker not available", level="warn")
+            return
+
+        if can_measure:
+            self._on_measure_temperature()
+            return
+
+        try:
+            current_hour = int(getattr(self.garden, "clock_hour", 0))
+        except Exception:
+            current_hour = 0
+        valid_hours = getattr(self.temp_tracker, "VALID_HOURS", [6, 14, 22])
+        upcoming = [h for h in valid_hours if h > current_hour]
+        next_hour = upcoming[0] if upcoming else (valid_hours[0] + 24)
+        hours_until = next_hour - current_hour
+
+        self._toast(
+            f"Measure in {hours_until} hour{'s' if hours_until != 1 else ''} "
+            f"({self._format_hour_12h(next_hour % 24)})",
+            level="info"
+        )
+
+    @staticmethod
+    def _format_hour_12h(hour24):
+        """24h int (0-23) -> '6 am' / '2 pm' / '12 pm' style string."""
+        h = hour24 % 24
+        period = "am" if h < 12 else "pm"
+        h12 = h % 12
+        if h12 == 0:
+            h12 = 12
+        return f"{h12} {period}"
+
     def _on_tile_left_press(self, event, index: int):
         """Start of a left-click: may become a drag-selection or a Shift-click multi-select."""
 
         # Click-to-plant mode intercepts clicks entirely — no selection/drag.
         if self._plant_cursor_active:
             self._plant_one_via_cursor(index)
+            return
+
+        # Special-object tiles (beehive, measuring station) intercept
+        # clicks entirely too — no selection, and definitely no planting.
+        try:
+            special = self.tiles[index].special_object
+        except Exception:
+            special = None
+        if special:
+            self._on_special_object_clicked(index, special)
             return
 
         # Detect Shift key (Tk uses a bitmask in event.state)
@@ -6522,6 +7026,22 @@ class GardenApp:
 
             self.multi_selected_indices.add(index)
             self.selected_index = index
+
+            # Also set the tile's own .selected attribute —
+            # multi_selected_indices alone tracks selection for the
+            # sidebar/inspector, but the actual visual border reads each
+            # TileCanvas's own .selected, which this branch never used to
+            # set at all. Additive (not cleared first), unlike a normal
+            # click, since Shift+click is meant to add to an existing
+            # selection — so earlier shift-clicked tiles' .selected stays
+            # intact here too.
+            try:
+                self.tiles[index].selected = True
+                if not hasattr(self, "selected_tiles") or self.selected_tiles is None:
+                    self.selected_tiles = set()
+                self.selected_tiles.add(self.tiles[index])
+            except Exception:
+                pass
 
             # Optional: set anchor if none yet (useful for later Shift+Arrow)
             try:
@@ -6576,6 +7096,15 @@ class GardenApp:
 
         sel = set()
         for i, cell in enumerate(self.tiles):
+            if getattr(cell, '_covered_by_measuring_station', False):
+                # Only the measuring station's "covered" sub-tile is
+                # excluded — it's never actually gridded (no .grid()
+                # call at all, see _place_measuring_station), so
+                # winfo_width()/winfo_height() below wouldn't return
+                # anything meaningful for it anyway. The beehive and the
+                # measuring station's own visible tile ARE included in
+                # drag-selection now, same as any other tile.
+                continue
             try:
                 cx = cell.winfo_rootx()
                 cy = cell.winfo_rooty()
@@ -6637,6 +7166,20 @@ class GardenApp:
             self.render_all()
             return
 
+        # <ButtonRelease-1> is bound independently of <Button-1> — even
+        # though _on_tile_left_press already intercepts a press on a
+        # special-object tile (opening its popup instead of selecting),
+        # that interception doesn't stop this release handler from firing
+        # too. Without this check, releasing the mouse would still fall
+        # through to "normal click: single selection" below and select
+        # the tile anyway, showing the orange selection border on a
+        # beehive/measuring-station tile right after its popup opened.
+        try:
+            if getattr(self.tiles[index], 'special_object', None):
+                return
+        except Exception:
+            pass
+
         # --- Normal click: single selection ---
         # Clear selection first (tile-object selection)
         for t in list(getattr(self, "selected_tiles", set())):
@@ -6675,6 +7218,13 @@ class GardenApp:
         # Right-click cancels click-to-plant mode instead of opening the menu.
         if self._plant_cursor_active:
             self._stop_plant_cursor_mode()
+            return
+
+        # Beehive/measuring-station tiles are never selectable — right-
+        # click would otherwise unconditionally select the tile below
+        # (showing the orange selection border) before even getting to
+        # the context menu itself.
+        if getattr(tile, 'special_object', None):
             return
 
         # --- Right-click ALWAYS moves selection to the clicked tile ---
@@ -6719,8 +7269,7 @@ class GardenApp:
         except Exception:
             pass
 
-        plantable_tiles = [t for t in self.selected_tiles 
-                           if t.plant is None or not getattr(t.plant, 'alive', True)]
+        plantable_tiles = [t for t in self.selected_tiles if t.is_free_for_planting()]
 
         menu = tk.Menu(self.root, tearoff=False)
 
@@ -6900,6 +7449,171 @@ class GardenApp:
         except Exception:
             pass
 
+    def _refresh_seed_counter_var(self):
+        """
+        Combined seed count — harvested inventory plus remaining starter
+        (F0) seeds shown as one number under a single "Seeds:" label,
+        rather than a separate "Starter:" label next to it (which used to
+        take up its own space in this toolbar).
+        """
+        if not hasattr(self, "seed_counter_var"):
+            return
+        try:
+            total = len(self.harvest_inventory) + int(getattr(self, "available_seeds", 0) or 0)
+            self.seed_counter_var.set(f"Seeds: {total}")
+        except Exception:
+            pass
+
+    def _build_plot_switcher(self, parent):
+        """
+        "Abbey Garden: [1] [2]" — a numbered toggle button per plot,
+        scaling automatically with NUM_PLOTS (bumping that constant to 4
+        later needs no changes here). Built once; the buttons themselves
+        get rebuilt on every switch (see _refresh_plot_switcher_buttons).
+        """
+        wrap = tk.Frame(parent, bg=self.grid_bg)
+        wrap.pack(side="left", padx=(10, 2))
+        tk.Label(wrap, text="Abbey Garden:", font=("Segoe UI", 10, "bold"),
+                 bg=self.grid_bg).pack(side="left", padx=(0, 4))
+        self._plot_switcher_btns_frame = tk.Frame(wrap, bg=self.grid_bg)
+        self._plot_switcher_btns_frame.pack(side="left")
+        self._refresh_plot_switcher_buttons()
+
+    def _refresh_plot_switcher_buttons(self):
+        """
+        Rebuilds the numbered plot buttons from scratch rather than
+        reconfiguring existing ones in place — _make_flat_button_raw's
+        hover handlers capture their bg color in a closure at creation
+        time, so reconfiguring an existing button's color afterward would
+        leave its hover-leave handler reverting to the OLD (pre-switch)
+        color. A full rebuild with fresh bg/hover_bg per button avoids
+        that stale-closure issue entirely; there are only NUM_PLOTS of
+        these; rebuilding all of them is cheap.
+        """
+        try:
+            frame = self._plot_switcher_btns_frame
+        except AttributeError:
+            return
+        for w in frame.winfo_children():
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        for i in range(self.NUM_PLOTS):
+            active = (i == self.active_plot_index)
+            btn = _make_flat_button_raw(
+                frame, str(i + 1), (lambda p=i: self._switch_to_plot(p)),
+                bg=("#7A9A3C" if active else "#F4F4F4"),
+                fg=("white" if active else "#333333"),
+                font=("Segoe UI", 10, "bold"),
+            )
+            btn.pack(side="left", padx=1)
+
+    def _grid_tile(self, tile):
+        """
+        Grids a single tile at its normal position — except a measuring
+        station, which spans two rows vertically (see
+        _place_measuring_station for why), and the tile directly below
+        it, which is a "covered" placeholder that must NOT be gridded at
+        all — the spanning tile above already occupies that cell, and
+        gridding both would visually conflict. Shared between initial
+        __init__ tile placement and _switch_to_plot's re-gridding, so
+        this rowspan/skip logic can't drift out of sync between the two.
+        """
+        if getattr(tile, '_covered_by_measuring_station', False):
+            # Explicitly removed, not just left alone — this tile may
+            # already have been gridded normally by the initial loop in
+            # __init__, which runs before special objects (and thus this
+            # covering) are decided.
+            try:
+                tile.grid_remove()
+            except Exception:
+                pass
+            return  # the spanning tile above already occupies this cell
+        row = tile.idx // TILES_PER_ROW
+        col = tile.idx % TILES_PER_ROW
+        if getattr(tile, 'special_object', None) == 'measuring_station':
+            tile.grid(row=row, column=col, rowspan=2, padx=0, pady=0)
+        else:
+            tile.grid(row=row, column=col, padx=0, pady=0)
+
+    def _place_measuring_station(self, plot_tiles):
+        """
+        Places the measuring station on a random tile that has a valid
+        tile directly below it (i.e. not in the grid's last row), since
+        it spans two rows vertically to match its actual real-world size
+        rather than looking squeezed into one plot. Marks the tile below
+        as "covered": blocked from planting/selection (special_object
+        just needs to be truthy for TileCanvas.is_free_for_planting to
+        exclude it — the exact string doesn't matter there) and, via
+        _covered_by_measuring_station, skipped entirely during gridding.
+        """
+        rows = GRID_SIZE // TILES_PER_ROW
+        candidates = [t for t in plot_tiles if (t.idx // TILES_PER_ROW) < rows - 1]
+        if not candidates:
+            return
+        chosen = random.choice(candidates)
+        chosen.set_special_object("measuring_station")
+        below = plot_tiles[chosen.idx + TILES_PER_ROW]
+        below._covered_by_measuring_station = True
+        below.special_object = "measuring_station_covered"
+
+    def _switch_to_plot(self, idx):
+        """
+        Switch which plot is visible/active. All plots' tile widgets are
+        built once at startup and kept alive for the whole session (see
+        __init__) — this just hides the current plot's tiles and shows
+        the target plot's, rather than destroying and rebuilding
+        anything, so each tile's plant association (which lives on the
+        TileCanvas widget itself) is never disturbed.
+
+        Simulation for every plot keeps advancing regardless of which one
+        is active — Garden.plants is a flat, plot-agnostic set that
+        next_hour() ticks in full every hour, independent of what's
+        currently on screen.
+        """
+        try:
+            idx = int(idx)
+        except Exception:
+            return
+        if not (0 <= idx < len(self._plot_tiles)):
+            return
+        if idx == self.active_plot_index:
+            return
+
+        for tile in self._plot_tiles[self.active_plot_index]:
+            try:
+                tile.grid_remove()
+            except Exception:
+                pass
+
+        self.active_plot_index = idx
+
+        # Selection is an index into the PREVIOUS plot's tiles — carrying
+        # it over would either point at nothing meaningful or silently
+        # select an unrelated tile in the new plot, so clear it here
+        # rather than leave it stale.
+        self.selected_index = None
+        try:
+            self.multi_selected_indices = set()
+        except Exception:
+            pass
+
+        for tile in self._plot_tiles[idx]:
+            self._grid_tile(tile)
+
+        try:
+            self._toast(f"Switched to Plot {idx + 1}", level="info")
+        except Exception:
+            pass
+
+        try:
+            self._refresh_plot_switcher_buttons()
+        except Exception:
+            pass
+
+        self.render_all()
+
     def _on_water_all(self):
         if self.garden.weather in ("🌧", "⛈"):
             self._toast("Rainy day! Gregor leaves the plants to the clouds.", level="info")
@@ -7031,10 +7745,43 @@ class GardenApp:
 
         indices = set(i for i in range(total))
 
+        # Only the measuring station's "covered" sub-tile is excluded —
+        # it's never actually gridded/visible, so it isn't a real,
+        # independently-selectable entity. The beehive and the measuring
+        # station's own visible tile are included normally now — they're
+        # selectable and show the selection border like any other tile.
+        try:
+            indices = {i for i in indices
+                       if not getattr(self.tiles[i], '_covered_by_measuring_station', False)}
+        except Exception:
+            pass
+
         try:
             self.multi_selected_indices = indices
         except Exception:
             self.multi_selected_indices = indices
+
+        # Also set the per-tile .selected attribute — multi_selected_indices
+        # alone tracks selection for the sidebar/inspector, but the actual
+        # visual border (both the old single-rectangle version and the
+        # current per-side one) reads each TileCanvas's own .selected,
+        # which this never used to set at all. Same pattern _on_drag_motion
+        # already uses correctly for its own selection.
+        for t in list(getattr(self, "selected_tiles", set())):
+            try:
+                t.selected = False
+            except Exception:
+                pass
+        try:
+            self.selected_tiles = set()
+        except Exception:
+            pass
+        for idx in indices:
+            try:
+                self.tiles[idx].selected = True
+                self.selected_tiles.add(self.tiles[idx])
+            except Exception:
+                pass
 
         # Focus the first tile if possible
         if total > 0:
@@ -7896,11 +8643,12 @@ class GardenApp:
         # -----------------------
         grid = tk.Frame(outer)
         grid.pack(fill="both", expand=True, pady=(10, 0))
-
-        for c in range(3):
-            grid.grid_columnconfigure(c, weight=1, uniform="col")
-        for r in range(3):
-            grid.grid_rowconfigure(r, weight=1, uniform="row")
+        # Column/row uniform-group membership is set dynamically inside
+        # _render() based on how many cards the current page actually has
+        # — NOT statically here for a fixed 3×3 — see the comment there
+        # for why (uniform on an empty row/column still forces it to
+        # claim an equal share of the available space, squeezing the
+        # actually-populated ones smaller than their cards need).
 
         # -----------------------
         # Helpers
@@ -8008,35 +8756,73 @@ class GardenApp:
             # Fill cards
             shown = groups[start:end]
 
+            # Only put as many rows/columns in the uniform group as this
+            # page actually needs — with all 3×3 always uniform, an empty
+            # row/column was still forced to claim an equal share of the
+            # available space, squeezing the populated ones (e.g. row 0
+            # with 3 cards) into a fraction of the height/width their
+            # cards actually need — clipping their content even though
+            # the cards themselves were built correctly (same class of
+            # fix already applied to PollenChooserPopup's columns).
+            n_shown = max(1, len(shown))
+            cols_needed = min(3, n_shown)
+            rows_needed = (n_shown + 2) // 3  # ceil(n_shown / 3)
+            for c in range(3):
+                if c < cols_needed:
+                    grid.grid_columnconfigure(c, weight=1, uniform="col")
+                else:
+                    grid.grid_columnconfigure(c, weight=0, minsize=0, uniform="")
+            for r in range(3):
+                if r < rows_needed:
+                    grid.grid_rowconfigure(r, weight=1, uniform="row")
+                else:
+                    grid.grid_rowconfigure(r, weight=0, minsize=0, uniform="")
+
             # If nothing to show, add one message card
             if not shown:
                 f = tk.Frame(grid, borderwidth=1, relief="groove", padx=10, pady=10)
-                f.grid(row=1, column=1, padx=8, pady=8, sticky="nsew")
+                # row/col 0 — matches the 1×1 uniform reconfiguration just
+                # above for this case, not the old (1,1) "centered in a
+                # 3×3" position, which would now sit in a zero-weight cell.
+                f.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
                 tk.Label(f, text="No seed groups to show.", fg="#666666", font=("Segoe UI", 12, "italic")).pack()
+                try:
+                    picker.update_idletasks()
+                    picker.geometry("300x250")
+                except Exception:
+                    pass
                 return
 
             for i, (kind, src, donor, count, label, match_fn) in enumerate(shown):
                 r = i // 3
                 c = i % 3
-
-                card = tk.Frame(grid, borderwidth=1, relief="groove", padx=10, pady=10, width=190, height=135)
-                card.grid(row=r, column=c, padx=8, pady=8, sticky="nsew")
-                card.grid_propagate(False)
-
-                # --- Card header: title (left) + red ✕ (right) ---
-                card_header = tk.Frame(card)
-                card_header.pack(fill="x", anchor="w")
-
-                # Title (left)
                 try:
-                    if ("♀" in str(label)) or ("♂" in str(label)):
-                        self._label_with_bold_gender(
-                            card_header,
-                            str(label),
-                            base_font=("Segoe UI", 11),
-                            bold_font=("Segoe UI", 11, "bold"),
-                        ).pack(side="left", anchor="w")
-                    else:
+                    card = tk.Frame(grid, borderwidth=1, relief="groove", padx=10, pady=10, width=190, height=180)
+                    card.grid(row=r, column=c, padx=8, pady=8, sticky="nsew")
+                    card.grid_propagate(False)
+
+                    # --- Card header: title (left) + red ✕ (right) ---
+                    card_header = tk.Frame(card)
+                    card_header.pack(fill="x", anchor="w")
+
+                    # Title (left)
+                    try:
+                        if ("♀" in str(label)) or ("♂" in str(label)):
+                            self._label_with_bold_gender(
+                                card_header,
+                                str(label),
+                                base_font=("Segoe UI", 11),
+                                bold_font=("Segoe UI", 11, "bold"),
+                            ).pack(side="left", anchor="w")
+                        else:
+                            tk.Label(
+                                card_header,
+                                text=str(label),
+                                font=("Segoe UI", 11, "bold"),
+                                wraplength=170,
+                                justify="left"
+                            ).pack(side="left", anchor="w")
+                    except Exception:
                         tk.Label(
                             card_header,
                             text=str(label),
@@ -8044,201 +8830,222 @@ class GardenApp:
                             wraplength=170,
                             justify="left"
                         ).pack(side="left", anchor="w")
-                except Exception:
-                    tk.Label(
+
+                    # Red ✕ (right) — delete this group (disabled for starter seeds)
+                    btn_group_x = tk.Button(
                         card_header,
-                        text=str(label),
-                        font=("Segoe UI", 11, "bold"),
-                        wraplength=170,
-                        justify="left"
-                    ).pack(side="left", anchor="w")
+                        text="✕",
+                        width=2,
+                        fg="red",
+                        state=("disabled" if kind == "S" else "normal"),
+                        command=lambda k=kind, s=src, d=donor, mf=match_fn: _delete_group(k, s, d, mf),
+                        **self.button_style,
+                    )
+                    self._apply_hover(btn_group_x)
+                    btn_group_x.pack(side="right", anchor="e")
+                    print(f"[choose_seed_for_tiles] card {i} ({label!r}): header OK")
 
-                # Red ✕ (right) — delete this group (disabled for starter seeds)
-                btn_group_x = tk.Button(
-                    card_header,
-                    text="✕",
-                    width=2,
-                    fg="red",
-                    state=("disabled" if kind == "S" else "normal"),
-                    command=lambda k=kind, s=src, d=donor, mf=match_fn: _delete_group(k, s, d, mf),
-                    **self.button_style,
-                )
-                self._apply_hover(btn_group_x)
-                btn_group_x.pack(side="right", anchor="e")
+                    # Preview traits as icons (seed_shape + seed_color)
+                    traits = _get_sample_traits_for_group(kind, src, donor, match_fn) or {}
+                    print(f"[choose_seed_for_tiles] card {i}: traits={traits!r}")
 
-                # Preview traits as icons (seed_shape + seed_color)
-                traits = _get_sample_traits_for_group(kind, src, donor, match_fn) or {}
+                    icon_row = tk.Frame(card)
+                    icon_row.pack(anchor="w", pady=(4, 2))
 
-                icon_row = tk.Frame(card)
-                icon_row.pack(anchor="w", pady=(4, 2))
+                    # Keep image references so Tk doesn't garbage-collect them
+                    if not hasattr(card, "_img_refs"):
+                        card._img_refs = []
 
-                # Keep image references so Tk doesn't garbage-collect them
-                if not hasattr(card, "_img_refs"):
-                    card._img_refs = []
+                    shown_any = False
 
-                shown_any = False
-                
-                # Show seed color icon directly
-                seed_color = traits.get("seed_color")
-                if seed_color:
-                    try:
-                        # Map seed color to icon filename
-                        icon_filename = f"seed_color_{seed_color}.png"
-                        icon_path = os.path.join(ICONS_DIR, icon_filename)
-                        
-                        if os.path.exists(icon_path):
-                            img = safe_image(icon_path)
-                            lbl = tk.Label(icon_row, image=img)
-                            lbl.image = img
-                            lbl.pack(side="left", padx=(0, 6))
-                            card._img_refs.append(img)
-                            shown_any = True
-                            
-                            # Add plant-seeds.png icon next to seed color
-                            plant_seeds_path = os.path.join(ICONS_DIR, "plant-seeds.png")
-                            if os.path.exists(plant_seeds_path):
-                                img2 = safe_image(plant_seeds_path)
-                                lbl2 = tk.Label(icon_row, image=img2)
-                                lbl2.image = img2
-                                lbl2.pack(side="left", padx=(0, 4))
-                                card._img_refs.append(img2)
-                    except Exception as e:
-                        pass
+                    # Show seed color icon directly
+                    seed_color = traits.get("seed_color")
+                    if seed_color:
+                        try:
+                            # Map seed color to icon filename
+                            icon_filename = f"seed_color_{seed_color}.png"
+                            icon_path = os.path.join(ICONS_DIR, icon_filename)
 
-                if not shown_any:
-                    # Fallback text if this group doesn't have seed traits yet
-                    if kind == "S":
-                        tk.Label(card, text="• randomized founders", font=("Segoe UI", 10), fg="#666666").pack(anchor="w")
-                    else:
-                        tk.Label(card, text="• (no preview)", font=("Segoe UI", 10), fg="#666666").pack(anchor="w")
+                            if os.path.exists(icon_path):
+                                img = safe_image(icon_path)
+                                lbl = tk.Label(icon_row, image=img)
+                                lbl.image = img
+                                lbl.pack(side="left", padx=(0, 6))
+                                card._img_refs.append(img)
+                                shown_any = True
 
+                                # Add plant-seeds.png icon next to seed color
+                                plant_seeds_path = os.path.join(ICONS_DIR, "plant-seeds.png")
+                                if os.path.exists(plant_seeds_path):
+                                    img2 = safe_image(plant_seeds_path)
+                                    lbl2 = tk.Label(icon_row, image=img2)
+                                    lbl2.image = img2
+                                    lbl2.pack(side="left", padx=(0, 4))
+                                    card._img_refs.append(img2)
+                            else:
+                                print(f"[choose_seed_for_tiles] card {i}: icon_path missing: {icon_path!r}")
+                        except Exception as e:
+                            print(f"[choose_seed_for_tiles] card {i}: seed_color icon FAILED: {e!r}")
+                    print(f"[choose_seed_for_tiles] card {i}: shown_any={shown_any}")
 
-                # Buttons row
-                btn_row = tk.Frame(card)
-                btn_row.pack(side="bottom", fill="x", pady=(8, 0))
+                    if not shown_any:
+                        # Fallback text if this group doesn't have seed traits yet
+                        if kind == "S":
+                            tk.Label(card, text="• randomized founders", font=("Segoe UI", 10), fg="#666666").pack(anchor="w")
+                        else:
+                            tk.Label(card, text="• (no preview)", font=("Segoe UI", 10), fg="#666666").pack(anchor="w")
 
-                # Entry field for custom number - defaults to 1 (editable).
-                # Created before the shovel/Plant buttons since both read
-                # its live value now.
-                entry_var = tk.StringVar(value="1")
-                entry_n = tk.Entry(btn_row, width=4, font=("Segoe UI", 9),
-                                   textvariable=entry_var, justify="center")
+                    # Buttons row
+                    btn_row = tk.Frame(card)
+                    btn_row.pack(side="bottom", fill="x", pady=(8, 0))
+                    print(f"[choose_seed_for_tiles] card {i}: btn_row created")
 
-                def _select_all_on_focus(event, entry=entry_n):
-                    # Deferred via after_idle — a plain immediate call gets
-                    # overridden by the click's own default cursor-placement
-                    # behavior, which runs right after this handler and
-                    # would otherwise clear the selection instantly.
-                    entry.after_idle(lambda: entry.select_range(0, "end"))
-                entry_n.bind("<FocusIn>", _select_all_on_focus)
+                    # Entry field for custom number - defaults to 1 (editable).
+                    # Created before the shovel/Plant buttons since both read
+                    # its live value now.
+                    entry_var = tk.StringVar(value="1")
+                    entry_n = tk.Entry(btn_row, width=4, font=("Segoe UI", 9),
+                                       textvariable=entry_var, justify="center")
 
-                def _current_n(entry=entry_n, c=count):
-                    """Parse the entry box, clamped to a valid 1..count range."""
-                    try:
-                        n = int(entry.get().strip())
-                    except Exception:
-                        n = 1
-                    return max(1, min(n, max(1, c)))
+                    def _select_all_on_focus(event, entry=entry_n):
+                        # Deferred via after_idle — a plain immediate call gets
+                        # overridden by the click's own default cursor-placement
+                        # behavior, which runs right after this handler and
+                        # would otherwise clear the selection instantly.
+                        entry.after_idle(lambda: entry.select_range(0, "end"))
+                    entry_n.bind("<FocusIn>", _select_all_on_focus)
 
-                # Click-to-plant shovel button — plants the WHOLE number
-                # currently in the entry box in one click: one seed on the
-                # clicked tile, the rest spilling onto nearby free tiles
-                # (see _plant_one_via_cursor) — not one seed per click.
-                # Closes this picker so the garden is visible/clickable.
-                def _start_cursor_from_card(k=kind, mf=match_fn):
-                    n = _current_n()
-                    if hasattr(self, "_start_plant_cursor_mode"):
-                        self._start_plant_cursor_mode(k, mf, requested_n=n)
-                    try:
-                        picker.destroy()
-                    except Exception:
-                        pass
+                    def _current_n(entry=entry_n, c=count):
+                        """Parse the entry box, clamped to a valid 1..count range."""
+                        try:
+                            n = int(entry.get().strip())
+                        except Exception:
+                            n = 1
+                        return max(1, min(n, max(1, c)))
 
-                shovel_img = None
-                try:
-                    shovel_path = os.path.join(ICONS_DIR, "shovel.png")
-                    if os.path.exists(shovel_path):
-                        shovel_img = safe_image(shovel_path)
-                except Exception:
+                    # Click-to-plant shovel button — plants the WHOLE number
+                    # currently in the entry box in one click: one seed on the
+                    # clicked tile, the rest spilling onto nearby free tiles
+                    # (see _plant_one_via_cursor) — not one seed per click.
+                    # Closes this picker so the garden is visible/clickable.
+                    def _start_cursor_from_card(k=kind, mf=match_fn):
+                        n = _current_n()
+                        if hasattr(self, "_start_plant_cursor_mode"):
+                            self._start_plant_cursor_mode(k, mf, requested_n=n)
+                        try:
+                            picker.destroy()
+                        except Exception:
+                            pass
+
                     shovel_img = None
-
-                if shovel_img is not None:
-                    b_cursor = tk.Button(
-                        btn_row,
-                        image=shovel_img,
-                        state=("normal" if count > 0 else "disabled"),
-                        command=_start_cursor_from_card,
-                        **self.button_style,
-                    )
-                    b_cursor.image = shovel_img
-                    card._img_refs.append(shovel_img)
-                else:
-                    b_cursor = tk.Button(
-                        btn_row,
-                        text="🌱",
-                        state=("normal" if count > 0 else "disabled"),
-                        command=_start_cursor_from_card,
-                        **self.button_style,
-                    )
-                self._apply_hover(b_cursor)
-                b_cursor.pack(side="left", padx=(0, 4))
-
-                # "Plant (n)" button — label tracks the entry box live —
-                # then the entry box itself, to its right. Enters the same
-                # click-to-plant (shovel) mode the shovel button does,
-                # rather than auto-placing at a computed location — so the
-                # player always gets to choose where it goes.
-                def _plant_custom_n(k=kind, mf=match_fn, entry=entry_n):
                     try:
-                        n = int(entry.get().strip())
-                        if n <= 0:
-                            raise ValueError
-                    except ValueError:
-                        self._toast("Please enter a valid positive number.", level="warn")
-                        return
-                    if hasattr(self, "_start_plant_cursor_mode"):
-                        self._start_plant_cursor_mode(k, mf, requested_n=n)
-                    try:
-                        picker.destroy()
+                        shovel_path = os.path.join(ICONS_DIR, "shovel.png")
+                        if os.path.exists(shovel_path):
+                            shovel_img = safe_image(shovel_path)
                     except Exception:
-                        pass
+                        shovel_img = None
 
-                b_plant_n = self._make_flat_button(
-                    btn_row, "Plant (1)", _plant_custom_n,
-                    font=("Segoe UI", 12, "bold"),
-                    state=("normal" if count > 0 else "disabled"),
-                )
-                b_plant_n.pack(side="left", padx=(0, 4))
+                    if shovel_img is not None:
+                        b_cursor = tk.Button(
+                            btn_row,
+                            image=shovel_img,
+                            state=("normal" if count > 0 else "disabled"),
+                            command=_start_cursor_from_card,
+                            **self.button_style,
+                        )
+                        b_cursor.image = shovel_img
+                        card._img_refs.append(shovel_img)
+                    else:
+                        b_cursor = tk.Button(
+                            btn_row,
+                            text="🌱",
+                            state=("normal" if count > 0 else "disabled"),
+                            command=_start_cursor_from_card,
+                            **self.button_style,
+                        )
+                    self._apply_hover(b_cursor)
+                    b_cursor.pack(side="left", padx=(0, 4))
+                    print(f"[choose_seed_for_tiles] card {i}: shovel button OK")
 
-                def _update_plant_label(*_args, btn=b_plant_n, var=entry_var):
-                    txt = var.get().strip()
-                    btn.config(text=f"Plant ({txt})" if txt else "Plant")
-                entry_var.trace_add("write", _update_plant_label)
+                    # "Plant (n)" button — label tracks the entry box live —
+                    # then the entry box itself, to its right. Enters the same
+                    # click-to-plant (shovel) mode the shovel button does,
+                    # rather than auto-placing at a computed location — so the
+                    # player always gets to choose where it goes.
+                    def _plant_custom_n(k=kind, mf=match_fn, entry=entry_n):
+                        try:
+                            n = int(entry.get().strip())
+                            if n <= 0:
+                                raise ValueError
+                        except ValueError:
+                            self._toast("Please enter a valid positive number.", level="warn")
+                            return
+                        if hasattr(self, "_start_plant_cursor_mode"):
+                            self._start_plant_cursor_mode(k, mf, requested_n=n)
+                        try:
+                            picker.destroy()
+                        except Exception:
+                            pass
 
-                entry_n.pack(side="left", padx=(0, 4))
+                    b_plant_n = self._make_flat_button(
+                        btn_row, "Plant (1)", _plant_custom_n,
+                        font=("Segoe UI", 12, "bold"),
+                        state=("normal" if count > 0 else "disabled"),
+                    )
+                    b_plant_n.pack(side="left", padx=(0, 4))
+                    print(f"[choose_seed_for_tiles] card {i}: Plant(n) button OK")
 
-                # "All" — directly enters click-to-plant (shovel) mode with
-                # the full available count, same as clicking the shovel
-                # after typing the max in manually, just in one step. Sets
-                # the entry box to match too, so it's consistent if the
-                # picker were still open (it won't be — same as the shovel,
-                # this closes it so the garden is visible/clickable).
-                def _plant_all_via_cursor(k=kind, mf=match_fn, entry=entry_n, c=count):
-                    entry.delete(0, "end")
-                    entry.insert(0, str(c))
-                    if hasattr(self, "_start_plant_cursor_mode"):
-                        self._start_plant_cursor_mode(k, mf, requested_n=c)
-                    try:
-                        picker.destroy()
-                    except Exception:
-                        pass
+                    def _update_plant_label(*_args, btn=b_plant_n, var=entry_var):
+                        txt = var.get().strip()
+                        btn.config(text=f"Plant ({txt})" if txt else "Plant")
+                    entry_var.trace_add("write", _update_plant_label)
 
-                b_all = self._make_flat_button(
-                    btn_row, "All", _plant_all_via_cursor,
-                    font=("Segoe UI", 12, "bold"),
-                    state=("normal" if count > 0 else "disabled"),
-                )
-                b_all.pack(side="left", padx=(0, 4))
+                    entry_n.pack(side="left", padx=(0, 4))
+
+                    # "All" — directly enters click-to-plant (shovel) mode with
+                    # the full available count, same as clicking the shovel
+                    # after typing the max in manually, just in one step. Sets
+                    # the entry box to match too, so it's consistent if the
+                    # picker were still open (it won't be — same as the shovel,
+                    # this closes it so the garden is visible/clickable).
+                    def _plant_all_via_cursor(k=kind, mf=match_fn, entry=entry_n, c=count):
+                        entry.delete(0, "end")
+                        entry.insert(0, str(c))
+                        if hasattr(self, "_start_plant_cursor_mode"):
+                            self._start_plant_cursor_mode(k, mf, requested_n=c)
+                        try:
+                            picker.destroy()
+                        except Exception:
+                            pass
+
+                    b_all = self._make_flat_button(
+                        btn_row, "All", _plant_all_via_cursor,
+                        font=("Segoe UI", 12, "bold"),
+                        state=("normal" if count > 0 else "disabled"),
+                    )
+                    b_all.pack(side="left", padx=(0, 4))
+                    print(f"[choose_seed_for_tiles] card {i}: All button OK — card complete")
+                except Exception as e:
+                    import traceback
+                    print(f"[choose_seed_for_tiles] card {i} (label={label!r}) FAILED: {e!r}")
+                    traceback.print_exc()
+
+            # Size the window to fit however many cards this page actually
+            # built — measured AFTER building (update_idletasks first),
+            # not computed and applied beforehand. Resizing the window
+            # before its children exist can leave Tkinter's grid geometry
+            # state stale even once content is added afterward, matching
+            # a class of bug seen elsewhere in this app — this mirrors
+            # the safer pattern already used for PollenChooserPopup.
+            try:
+                picker.update_idletasks()
+                gw = grid.winfo_reqwidth()
+                gh = grid.winfo_reqheight()
+                ww = max(300, gw + 40)   # + outer padding
+                hh = max(250, gh + 90)   # + outer padding + header bar/page label
+                picker.geometry(f"{ww}x{hh}")
+            except Exception:
+                pass
 
         # Wire prev/next
         def _prev():
@@ -9049,12 +9856,18 @@ class GardenApp:
         """Serialize the entire garden state to a dictionary."""
         import datetime
         
-        # Serialize all plants
+        # Serialize all plants — across EVERY plot, not just the currently
+        # active one (self.tiles). Each plant is tagged with which plot it
+        # belongs to (plot_idx) so it can be restored to the right one on
+        # load — without this, saving only ever captured whichever plot
+        # happened to be on screen, silently losing every other plot's
+        # plants the moment you saved.
         plants_data = []
-        for tile in self.tiles:
+        for tile in self._all_plot_tiles():
             if tile.plant and tile.plant.alive:
                 plant_data = {
                     'tile_idx': tile.idx,
+                    'plot_idx': getattr(tile, 'plot_idx', 0),
                     'id': tile.plant.id,
                     'generation': tile.plant.generation,
                     'stage': tile.plant.stage,
@@ -9229,10 +10042,13 @@ class GardenApp:
     def _deserialize_garden_state(self, save_data):
         """Restore garden state from serialized data."""
         
-        # Clear current garden — must unregister from garden.plants too,
-        # otherwise stale plant objects linger in the set and _seed_archive_safe()
-        # would later overwrite the freshly-loaded archive with old-session data.
-        for tile in self.tiles:
+        # Clear current garden — ALL plots, not just the active one, so a
+        # load fully replaces every plot's plants rather than leaving
+        # stale ones behind in plots not currently being viewed. Must
+        # unregister from garden.plants too, otherwise stale plant objects
+        # linger in the set and _seed_archive_safe() would later overwrite
+        # the freshly-loaded archive with old-session data.
+        for tile in self._all_plot_tiles():
             if tile.plant is not None:
                 try:
                     self.garden.unregister_plant(tile.plant)
@@ -9409,15 +10225,24 @@ class GardenApp:
             except Exception as e:
                 logging.warning(f"Failed to restore pollen: {e}")
         
-        # Restore plants
+        # Restore plants — to the plot each was saved from (plot_idx),
+        # not always the currently active plot. Old save files predating
+        # multi-plot support won't have a plot_idx field at all, so this
+        # defaults to 0 — the only plot that existed back then, so this
+        # is exactly where those plants belong.
         for plant_data in save_data['plants']:
             tile_idx = plant_data['tile_idx']
-            
+            plot_idx = plant_data.get('plot_idx', 0)
+
+            if not (0 <= plot_idx < len(self._plot_tiles)):
+                plot_idx = 0
+            plot_tiles = self._plot_tiles[plot_idx]
+
             # Skip if tile index is out of bounds
-            if tile_idx >= len(self.tiles):
+            if tile_idx >= len(plot_tiles):
                 continue
-            
-            tile = self.tiles[tile_idx]
+
+            tile = plot_tiles[tile_idx]
             
             # Create plant (using Plant constructor with minimal args)
             plant = Plant(
@@ -9480,7 +10305,7 @@ class GardenApp:
         # Re-sync used_ids from all restored sources so new plants never reuse IDs
         if not hasattr(self, 'used_ids'):
             self.used_ids = set()
-        for tile in self.tiles:
+        for tile in self._all_plot_tiles():
             if tile.plant is not None:
                 pid = getattr(tile.plant, 'id', None)
                 if pid is not None:
@@ -9508,11 +10333,7 @@ class GardenApp:
         self._update_temp_button_state()
         
         # Update seed counter display
-        if hasattr(self, "seed_counter_var"):
-            try:
-                self.seed_counter_var.set(f"Seeds: {len(self.harvest_inventory)}")
-            except Exception:
-                pass
+        self._refresh_seed_counter_var()
         
         # Update pause button text
         self.pause_btn.configure(

@@ -123,6 +123,13 @@ class TileCanvas(tk.Canvas):
         self.app = app
         self.soil = soil_color
         self.plant = plant
+        # None, or a string like "beehive" / "measuring_station" — a tile
+        # with this set permanently blocks planting and normal selection;
+        # clicking it triggers its own special handler instead (see
+        # GardenApp._on_tile_left_press). plot_idx is set externally by
+        # the app right after construction (see __init__'s tile-building
+        # loop), same as for the texture-variant plot differentiation.
+        self.special_object = None
         
         # Layout dimensions
         self.w = configs['TILE_SIZE']
@@ -162,7 +169,8 @@ class TileCanvas(tk.Canvas):
         self._snow_melt_rate  = _rng.uniform(0.04, 0.12)   # melt per triggered hour
         self._snow_since_hour = None                        # sim-hour when this tile first got snow
         
-        # Initialize canvas — no highlight border; selection shown via sel_rect
+        # Initialize canvas — no highlight border; selection shown via the
+        # 4 sel_line_* items (see _create_background / _update_selection_border)
         super().__init__(
             parent,
             width=self.w,
@@ -202,13 +210,27 @@ class TileCanvas(tk.Canvas):
         # Texture image sits on top of bg_rect; starts empty (shows bg_rect through)
         self.bg_img_item = self.create_image(0, 0, anchor='nw', tags='bg_img')
 
-        # Selection border drawn as an inset rectangle (replaces highlightthickness).
-        # Invisible by default; outline set to darkorange when selected.
-        self.sel_rect = self.create_rectangle(
-            1, 1, self.w - 1, self.h - 1,
-            outline="", width=3,
-            tags="sel_border"
-        )
+        # Selection border — drawn as 4 independent line segments (one per
+        # side), not a single rectangle, so each side can be shown or
+        # hidden based on whether the tile touching it in that direction
+        # is ALSO selected (see _update_selection_border). That gives a
+        # full-thickness border around the outer edge of a selection, and
+        # a single line (not doubled) at the seam between two adjacent
+        # selected tiles. Each line spans the tile's full length along
+        # its own axis (0 to self.w, or 0 to self.h); inset is only
+        # applied on the perpendicular axis, to keep the line's own
+        # half-width from being clipped at the canvas edge. Invisible by
+        # default; color set to white when a given side is shown.
+        SEL_W = 3
+        inset = 1
+        self.sel_line_top = self.create_line(
+            0, inset, self.w, inset, width=SEL_W, fill="", tags="sel_border")
+        self.sel_line_bottom = self.create_line(
+            0, self.h - inset, self.w, self.h - inset, width=SEL_W, fill="", tags="sel_border")
+        self.sel_line_left = self.create_line(
+            inset, 0, inset, self.h, width=SEL_W, fill="", tags="sel_border")
+        self.sel_line_right = self.create_line(
+            self.w - inset, 0, self.w - inset, self.h, width=SEL_W, fill="", tags="sel_border")
     
     def _create_water_bar(self):
         """Create the vertical water level bar on the left side."""
@@ -360,7 +382,81 @@ class TileCanvas(tk.Canvas):
             )
         except Exception:
             pass
-    
+
+    def set_special_object(self, kind):
+        """
+        Marks this tile as permanently occupied by a non-plant object —
+        kind is "beehive" or "measuring_station". Blocks planting/normal
+        selection (see is_free_for_planting and
+        GardenApp._on_tile_left_press) and swaps in its icon in place of
+        the usual plant/empty rendering (see _render_special_object).
+
+        A measuring station spans two grid rows vertically — its actual
+        real-world size doesn't fit a single plant plot convincingly (see
+        GardenApp._place_measuring_station / _grid_tile, which handle the
+        rowspan and hide the covered tile below it) — so this canvas
+        widget itself is resized taller to match before the icon is
+        scaled, rather than just drawing a bigger icon inside a
+        single-tile-sized canvas, which would just get clipped at the
+        normal tile boundary (Canvas clips its own content — it can't
+        visually overflow into a neighboring widget's space).
+
+        Icon scaled up via PIL when available — target is most of
+        whatever the tile's actual footprint is now (single square for
+        a beehive, tall rectangle for a measuring station) — since these
+        tiles have no water/health bar to share space with, there's no
+        reason for the icon to stay at the source PNG's native size.
+        Falls back to that native size if PIL isn't available or the
+        resize fails.
+        """
+        self.special_object = kind
+        icon_file = {"beehive": "beehive.png",
+                     "measuring_station": "measuringstation.png"}.get(kind)
+
+        if kind == "measuring_station":
+            try:
+                self.h = self.w * 2
+                self.config(height=self.h)
+                # bg_rect, bg_img_item, and the sel_line_* selection-
+                # border items were all created at construction time
+                # (see _create_background), sized to the tile's original
+                # square dimensions — resizing the canvas taller here
+                # doesn't automatically resize items already drawn on
+                # it. Texture tiling for a non-standard height isn't
+                # worth the complexity for a tile that never shows a
+                # plant, so: stretch the solid-colour fallback to the
+                # full new height and hide the texture image entirely,
+                # and extend the selection-border lines that run along
+                # the height axis (left, right, and bottom's position)
+                # to match.
+                self.coords(self.bg_rect, 0, 0, self.w, self.h)
+                self.itemconfig(self.bg_img_item, image='')
+                inset = 1
+                self.coords(self.sel_line_left, inset, 0, inset, self.h)
+                self.coords(self.sel_line_right, self.w - inset, 0, self.w - inset, self.h)
+                self.coords(self.sel_line_bottom, 0, self.h - inset, self.w, self.h - inset)
+            except Exception:
+                pass
+
+        self._special_object_img = None
+        if icon_file:
+            path = f"icons/{icon_file}"
+            target_w = max(24, int(self.w * 0.85))
+            target_h = max(24, int(self.h * 0.85))
+            if _PIL_AVAILABLE:
+                try:
+                    pil_img = _PilImage.open(path).convert("RGBA")
+                    pil_img.thumbnail((target_w, target_h), _PilImage.LANCZOS)
+                    self._special_object_img = _PilImageTk.PhotoImage(pil_img)
+                except Exception:
+                    self._special_object_img = None
+            if self._special_object_img is None:
+                try:
+                    self._special_object_img = tk.PhotoImage(file=path)
+                except Exception:
+                    pass
+        self._render_state = None  # force the next render() to actually apply this
+
     def _set_bindings(self):
         """Set up mouse event bindings for interaction."""
         self.bind("<Button-1>", 
@@ -403,6 +499,135 @@ class TileCanvas(tk.Canvas):
             self.selected,
         )
 
+    def _update_selection_border(self):
+        """
+        Shows/hides each of the 4 selection-border line segments — a
+        side is shown only if THIS tile is selected AND the neighboring
+        tile in that direction is NOT ALSO responsible for drawing that
+        same boundary. That gives a full-thickness border around the
+        outer edge of a multi-tile selection, and a single (not doubled)
+        line at the seam between two contiguous selected tiles.
+
+        TOP and LEFT are always drawn when this tile is selected,
+        regardless of neighbors. BOTTOM and RIGHT are drawn UNLESS the
+        neighbor in that direction is also selected — in that case, that
+        neighbor is the one responsible for this boundary instead, from
+        its own TOP/LEFT.
+
+        Special-object tiles (beehive, measuring station) behave exactly
+        like any other tile here. The one genuine exception: a measuring
+        station's canvas is resized taller (see set_special_object) to
+        visually span both the grid row it sits in and the row below,
+        which holds its "covered" tile — a tile that's never actually
+        gridded/visible at all (see _place_measuring_station). That's
+        one real canvas object spanning two grid cells, not two separate
+        visual tiles, so:
+        - the station's own "down" neighbor for hand-off purposes is 2
+          rows down (its real neighbor), not 1 (the invisible covered
+          tile occupying the same visual space);
+        - the two ordinary tiles diagonally adjacent to the covered
+          position (one row down, one column to either side of the
+          station) treat the covering station's own .selected/hand-off
+          state as authoritative for the side facing the covered tile,
+          rather than the covered tile's own .selected (always False,
+          since it's excluded from selection) — the station's own full-
+          height side line already covers that boundary when it draws.
+
+        Called unconditionally at the top of render(), every call, not
+        gated behind the dirty-flag check — a side's correct visibility
+        can depend on a NEIGHBORING tile's selection state changing, not
+        just this tile's own state, which this tile's own dirty-flag (it
+        only tracks self.selected, not a neighbor's) can't detect.
+        """
+        try:
+            show_any = self.selected
+            lines = (self.sel_line_top, self.sel_line_bottom,
+                     self.sel_line_left, self.sel_line_right)
+            if not show_any:
+                for line in lines:
+                    self.itemconfig(line, fill="")
+                return
+
+            cols = int(self.configs.get('TILES_PER_ROW', 1)) or 1
+            col = self.idx % cols
+
+            def _neighbor(n_idx):
+                try:
+                    tiles = self.app.tiles
+                    if 0 <= n_idx < len(tiles):
+                        return tiles[n_idx]
+                except Exception:
+                    pass
+                return None
+
+            def _neighbor_responsible(n_idx):
+                n = _neighbor(n_idx)
+                return bool(n is not None and getattr(n, 'selected', False))
+
+            def _covering_station(covered_idx):
+                """Given the idx of a measuring-station 'covered' tile,
+                return the measuring-station tile that visually occupies
+                that same space (one row up), or None."""
+                n = _neighbor(covered_idx - cols)
+                if n is not None and getattr(n, 'special_object', None) == 'measuring_station':
+                    return n
+                return None
+
+            def _ms_own_right_shown(ms_tile):
+                """Would this measuring-station tile show its own right
+                line? Same rule as any tile's right side: hidden only if
+                its same-row right neighbor is selected."""
+                if not getattr(ms_tile, 'selected', False):
+                    return False
+                ms_col = ms_tile.idx % cols
+                if ms_col >= cols - 1:
+                    return True
+                return not _neighbor_responsible(ms_tile.idx + 1)
+
+            is_measuring_station = getattr(self, 'special_object', None) == 'measuring_station'
+            bottom_idx = self.idx + (2 * cols if is_measuring_station else cols)
+
+            # Left/right need an explicit column-boundary check — idx-1 /
+            # idx+1 stay within bounds even when wrapping to the previous
+            # or next ROW, which the plain index bounds check alone
+            # wouldn't catch (unlike top/bottom, where going off the grid
+            # vertically is inherently out of bounds).
+            bottom_owned_by_neighbor = _neighbor_responsible(bottom_idx)
+
+            # This tile's own right side, when the right-neighbor is a
+            # covered tile: defer to the covering station's .selected
+            # instead (see docstring).
+            right_neighbor_idx = self.idx + 1
+            right_neighbor = _neighbor(right_neighbor_idx) if col < cols - 1 else None
+            if right_neighbor is not None and getattr(right_neighbor, '_covered_by_measuring_station', False):
+                covering = _covering_station(right_neighbor_idx)
+                right_owned_by_neighbor = bool(covering is not None and getattr(covering, 'selected', False))
+            else:
+                right_owned_by_neighbor = (col < cols - 1) and _neighbor_responsible(right_neighbor_idx)
+
+            # Mirror case: this tile's own left side is normally always
+            # drawn — suppressed only when its left-neighbor is a
+            # covered tile AND the covering station's own right line
+            # would actually be showing (which already spans the full
+            # height and covers this boundary). If the station's right
+            # is handed off elsewhere instead, that only covers the
+            # upper half, so this tile's own left still needs to draw.
+            left_suppressed = False
+            if col > 0:
+                left_neighbor = _neighbor(self.idx - 1)
+                if left_neighbor is not None and getattr(left_neighbor, '_covered_by_measuring_station', False):
+                    covering = _covering_station(self.idx - 1)
+                    if covering is not None and _ms_own_right_shown(covering):
+                        left_suppressed = True
+
+            self.itemconfig(self.sel_line_top,    fill="white")
+            self.itemconfig(self.sel_line_left,   fill=("" if left_suppressed else "white"))
+            self.itemconfig(self.sel_line_bottom, fill=("" if bottom_owned_by_neighbor else "white"))
+            self.itemconfig(self.sel_line_right,  fill=("" if right_owned_by_neighbor else "white"))
+            self.tag_raise("sel_border")
+        except Exception:
+            pass
+
     def render(self):
         """
         Render the tile based on current plant state.
@@ -411,50 +636,113 @@ class TileCanvas(tk.Canvas):
         Skips all tkinter calls when nothing has changed — eliminates the
         majority of render work during stable simulation.
         """
+        # Cheap and self-contained (depends only on this tile's own
+        # state, not a neighbor's) — left unconditional here rather than
+        # moved into the dirty-flag-gated section below, since it's
+        # harmless either way.
+        self._update_selection_border()
+
         state = self._get_render_state()
         if state == self._render_state:
             return
         self._render_state = state
 
-        # Selection border — only raise when visible (tag_raise is expensive)
         try:
-            if self.selected:
-                self.itemconfig(self.sel_rect, outline="darkorange")
-                self.tag_raise(self.sel_rect)
-            else:
-                self.itemconfig(self.sel_rect, outline="")
+            # Hide bars and badges by default using explicit IDs (much faster than tags)
+            try:
+                self.itemconfig(self.wb_bg,  state="hidden")
+                self.itemconfig(self.wb_fill, state="hidden")
+            except Exception:
+                pass
+            try:
+                self.itemconfig(self.hb_bg,  state="hidden")
+                self.itemconfig(self.hb_fill, state="hidden")
+            except Exception:
+                pass
+            try:
+                self.itemconfig("badge_group", state="hidden")
+            except Exception:
+                pass
+
+            # Special object tile (beehive, measuring station) — takes over
+            # rendering entirely; these can never hold a plant, so self.plant
+            # stays None and none of the normal empty/dead/alive paths apply.
+            if getattr(self, 'special_object', None):
+                self._render_special_object()
+                return
+
+            # Empty plot
+            if self.plant is None:
+                self._render_empty()
+                return
+
+            # Dead plant
+            if not self.plant.__dict__.get('alive', True):
+                self._render_dead()
+                return
+
+            # Living plant
+            self._render_alive()
+        finally:
+            # _create_background() (which creates the sel_line_* items)
+            # runs before _create_water_bar()/_create_health_bar() in
+            # __init__, so Tkinter's default stacking (creation order —
+            # later on top) puts those bars above the border by default.
+            # _update_selection_border()'s own tag_raise (top of this
+            # method) only fixes that at the moment it runs — everything
+            # below it can restack things above the border again before
+            # this call finishes. try/finally re-applies it after EVERY
+            # branch above, regardless of which one ran or returned
+            # early — a plain call after the if/elif chain would get
+            # skipped by all of their early returns.
+            try:
+                self.tag_raise("sel_border")
+            except Exception:
+                pass
+
+    def is_free_for_planting(self):
+        """
+        True if this tile can receive a new plant — empty, or holds only
+        a dead plant. Special-object tiles (beehive, measuring station)
+        are never available, even though self.plant is None for them
+        too — centralizing this check here (rather than the scattered
+        "pl is None or not pl.alive" pattern repeated across several
+        planting functions) means every one of those call sites
+        automatically respects special tiles without having to be
+        individually updated.
+        """
+        if getattr(self, 'special_object', None):
+            return False
+        return self.plant is None or not getattr(self.plant, 'alive', True)
+
+    def _render_special_object(self):
+        """Render a beehive/measuring-station icon in place of a plant —
+        reuses the same plant-icon canvas item/tag rather than creating a
+        new one. Repositioned to the tile's true center (the plant-icon
+        item is normally offset to leave room for the water bar on the
+        left and health bar at the bottom — special-object tiles have
+        neither, so that offset just wastes space here). Uses self.h
+        rather than assuming it equals self.w — a measuring station's
+        canvas is resized taller than it is wide (see
+        set_special_object), so its true vertical center isn't self.w."""
+        try:
+            self.itemconfig(self.label_item, text="", state="hidden")
         except Exception:
             pass
+        img = getattr(self, '_special_object_img', None)
+        if img is not None:
+            try:
+                self.itemconfig("plant_img", state="normal")
+                self.itemconfig(self.img_item, image=img)
+                self.coords(self.img_item, self.w // 2, self.h // 2)
+            except Exception:
+                pass
+        else:
+            try:
+                self.itemconfig("plant_img", state="hidden")
+            except Exception:
+                pass
 
-        # Hide bars and badges by default using explicit IDs (much faster than tags)
-        try:
-            self.itemconfig(self.wb_bg,  state="hidden")
-            self.itemconfig(self.wb_fill, state="hidden")
-        except Exception:
-            pass
-        try:
-            self.itemconfig(self.hb_bg,  state="hidden")
-            self.itemconfig(self.hb_fill, state="hidden")
-        except Exception:
-            pass
-        try:
-            self.itemconfig("badge_group", state="hidden")
-        except Exception:
-            pass
-
-        # Empty plot
-        if self.plant is None:
-            self._render_empty()
-            return
-
-        # Dead plant
-        if not self.plant.__dict__.get('alive', True):
-            self._render_dead()
-            return
-
-        # Living plant
-        self._render_alive()
-    
     def _render_empty(self):
         """Render an empty plot — label only, no icon (seedling is the first stage)."""
         try:
@@ -714,6 +1002,15 @@ class TileCanvas(tk.Canvas):
                         self.itemconfig(self.bg_img_item, image='')
                     except Exception:
                         pass
+                    # Measuring station's second stacked texture copy
+                    # (see below) needs clearing too, or it'd leave a
+                    # stale texture on the bottom half even though the
+                    # top half correctly went blank.
+                    if hasattr(self, '_bg_img_item2'):
+                        try:
+                            self.itemconfig(self._bg_img_item2, image='')
+                        except Exception:
+                            pass
                     self._bg_img_cleared_for_disabled = True
                 return False
             self._bg_img_cleared_for_disabled = False
@@ -726,7 +1023,17 @@ class TileCanvas(tk.Canvas):
             if self._bg_grass_vi is None:
                 n_g = max(1, app.__dict__.get('_bg_grass_variants', 1))
                 n_s = max(1, app.__dict__.get('_bg_soil_variants',  1))
-                rng = random.Random(self.idx * 31337)
+                # Seeded by position AND plot — seeding on self.idx alone
+                # meant every plot's tile at the same grid position (idx
+                # ranges 0..GRID_SIZE-1 identically per plot) picked the
+                # exact same variant, making every plot look like a clone
+                # of the first regardless of soil colour. This same
+                # variant index gets reused across every season change
+                # (see below — season only picks which image FILE a given
+                # variant number maps to), so this one fix is enough to
+                # keep plots visually distinct through spring/summer/
+                # autumn/winter too, without any separate seasonal fix.
+                rng = random.Random(self.idx * 31337 + getattr(self, 'plot_idx', 0) * 104729)
                 self._bg_grass_vi = rng.randint(0, n_g - 1)
                 self._bg_soil_vi  = rng.randint(0, n_s - 1)
 
@@ -787,6 +1094,28 @@ class TileCanvas(tk.Canvas):
 
             self.itemconfig(self.bg_img_item, image=cache[key])
             self._bg_cache_key = key
+
+            # Measuring station's canvas is resized taller than a single
+            # baked texture image (see set_special_object) — tile a
+            # second copy of the same image directly below the first, to
+            # cover the full doubled height rather than leaving the
+            # bottom half untextured.
+            if getattr(self, 'special_object', None) == 'measuring_station':
+                try:
+                    if not hasattr(self, '_bg_img_item2'):
+                        self._bg_img_item2 = self.create_image(0, self.w, anchor='nw', tags='bg_img')
+                        # Stack above bg_rect (so the texture actually
+                        # shows, not just the solid fallback underneath
+                        # it) but below the plant-icon item (so the
+                        # station's icon stays visible on top, rather
+                        # than getting covered by this new background
+                        # layer created after it).
+                        self.tag_raise(self._bg_img_item2, self.bg_rect)
+                        self.tag_lower(self._bg_img_item2, self.img_item)
+                    self.itemconfig(self._bg_img_item2, image=cache[key])
+                except Exception:
+                    pass
+
             return True
 
         except Exception:
