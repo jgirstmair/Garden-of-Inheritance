@@ -3269,6 +3269,35 @@ class GardenApp:
             print(f"Error opening emasculation dialog: {e}")
             on_emasculation_complete(True)
 
+    def _force_window_not_maximized(self, win):
+        """
+        Explicitly forces a Toplevel out of the maximized/zoomed state
+        right after creation. On macOS, a new Toplevel can visibly
+        inherit the root window's zoomed state (set at startup via
+        root.attributes('-zoomed', True) — see main()) even without ever
+        asking for it itself, which looks broken for a small utility
+        popup like the seed/pollen pickers — geometry("760x640") alone
+        isn't reliably enough to escape it. TIE deliberately maximizing
+        ITSELF via its own explicit toggle is a different, intentional
+        case this doesn't touch — this is only for popups that should
+        never be maximized in the first place. Same platform-branching
+        as the root window's own zoom call (see main()) and
+        traitinheritanceexplorer.py's — 'zoomed' is a Windows-only Tk
+        state string that macOS can silently accept without erroring
+        even though it does nothing there, so branch on the real
+        platform rather than hoping an exception fires.
+        """
+        try:
+            if sys.platform == "darwin":
+                win.attributes('-zoomed', False)
+            else:
+                try:
+                    win.state('normal')
+                except Exception:
+                    win.attributes('-zoomed', False)
+        except Exception:
+            pass
+
     def _open_speed_dialog(self):
         """Popup to adjust simulation speed: seconds of real time per simulated HOUR."""
         win = Toplevel(self.root)
@@ -5235,14 +5264,21 @@ class GardenApp:
         )
         self.law_status_label.pack(side="left", anchor="w", padx=(0, 10))
 
-        # Unlock button (left, next to laws)
-        self.btn_test_laws = tk.Button(
+        # Unlock button (left, next to laws) — was a plain tk.Button, the
+        # same macOS chrome issue fixed elsewhere in this file (native
+        # border, styling ignored). Uses the same grey self.button_style
+        # values as before, just via _FlatIconButton instead of tk.Button.
+        _bstyle = self.button_style
+        self.btn_test_laws = _FlatIconButton(
             law_left,
-            text="Unlock",
+            text="Unlock Laws",
             command=self._test_mendelian_laws_now,
-            **self.button_style
+            bg=_bstyle.get("bg", "#F4F4F4"),
+            hover_bg=_bstyle.get("activebackground", "#E4E4E4"),
+            font=_bstyle.get("font", ("Segoe UI", 12)),
+            padx=_bstyle.get("padx", 16),
+            pady=_bstyle.get("pady", 10),
         )
-        self._apply_hover(self.btn_test_laws)
         self.btn_test_laws.pack(side="left", padx=(8, 10))
 
     # ---------- Rendering ----------
@@ -5739,16 +5775,14 @@ class GardenApp:
             self._apply_pollen(pkt)
             return
 
-        # Otherwise open the standalone pollen chooser
+        # Otherwise open the standalone pollen chooser — no forced
+        # lift()/focus_force() here either, to match how
+        # choose_seed_for_tiles's own callers just open the picker and
+        # leave it to Toplevel's normal above-its-parent behavior.
         try:
             pop = PollenChooserPopup(self.root, self)
             try:
                 self.summary_popup = pop
-            except Exception:
-                pass
-            try:
-                pop.lift()
-                pop.focus_force()
             except Exception:
                 pass
         except Exception as e:
@@ -7100,7 +7134,6 @@ class GardenApp:
         batch_n = getattr(self, "_plant_cursor_batch_n", None)
         requested = min(live_remaining, batch_n) if batch_n else live_remaining
         requested = max(1, requested)
-        print(f"[_plant_one_via_cursor] live_remaining={live_remaining} batch_n={batch_n} requested={requested}")
 
         region = self._contiguous_empty_region(index)
         if not region:
@@ -7118,11 +7151,8 @@ class GardenApp:
                 # (season/night gate, etc.) — further attempts in this
                 # batch would just repeat the same failure.
                 break
-        print(f"[_plant_one_via_cursor] planted_count={planted_count} of requested={requested}, "
-              f"cursor_active_before_render={self._plant_cursor_active}")
 
         self.render_all()
-        print(f"[_plant_one_via_cursor] cursor_active_after_render={self._plant_cursor_active}")
 
         if planted_count > 0:
             if planted_count < requested:
@@ -7144,8 +7174,6 @@ class GardenApp:
                 self._toast("Could not plant here.", level="warn")
 
         still_left = self._count_seeds_in_group(self._plant_cursor_kind, self._plant_cursor_match_fn)
-        print(f"[_plant_one_via_cursor] still_left={still_left} -> "
-              f"{'STOPPING' if (planted_count == 0 or still_left <= 0) else 'STAYING ACTIVE'}")
         # A night-gate block (Mendel asleep/having dinner/etc.) is a
         # temporary, time-based condition that resolves on its own —
         # exiting cursor mode over it would force re-clicking Plant and
@@ -9135,6 +9163,9 @@ class GardenApp:
         picker.title("Choose Seed")
         picker.geometry("760x640")
         picker.resizable(True, True)
+        # This should never open maximized just because the main window
+        # happens to be (see _force_window_not_maximized's docstring).
+        self._force_window_not_maximized(picker)
 
         # Keep page state on the window itself
         picker._seed_page = 0
@@ -9342,7 +9373,64 @@ class GardenApp:
                     card_header = tk.Frame(card)
                     card_header.pack(fill="x", anchor="w")
 
-                    # Title (left)
+                    # Remove icon (left, before the name) — delete this
+                    # group (disabled for starter seeds). Was a plain
+                    # tk.Button with a "✕" character — on macOS that
+                    # ignores all styling and always shows native chrome
+                    # (a visible box), the same issue _FlatIconButton
+                    # exists to fix for the sidebar buttons. Packed on
+                    # the LEFT, before the title, with its own right-side
+                    # padx as spacing to the name — pinned to the right
+                    # edge (side="right") it was getting visibly clipped
+                    # by the card's own border there; there's no such
+                    # edge pressure on the left, right next to where the
+                    # title text starts.
+                    # safe_image, not a raw tk.PhotoImage(file=...) — the
+                    # latter re-loads and re-decodes the PNG from disk
+                    # fresh on every single card (up to 9 per page),
+                    # instead of reusing the same cached image object the
+                    # way the shovel icon a bit further down already
+                    # does via safe_image's own file-path cache.
+                    try:
+                        _remove_img = safe_image(os.path.join(ICONS_DIR, "remove.png"))
+                    except Exception:
+                        _remove_img = None
+                    # Match card_header's actual background exactly (it's
+                    # never explicitly set, so it's whatever default Tk
+                    # frame gray the platform/theme provides) rather than
+                    # assuming self.grid_bg — a mismatch here would just
+                    # trade one visible box for a different-colored one.
+                    _card_bg = card_header.cget("bg")
+                    btn_group_x = _FlatIconButton(
+                        card_header,
+                        text="" if _remove_img is not None else "✕",
+                        image=_remove_img,
+                        compound="center",
+                        bg=_card_bg,
+                        fg="red",
+                        hover_bg="#DDDDDD",
+                        disabled_bg=_card_bg,
+                        font=self.button_style.get("font", ("Segoe UI", 12)),
+                        padx=6,
+                        pady=6,
+                        command=lambda k=kind, s=src, d=donor, mf=match_fn: _delete_group(k, s, d, mf),
+                    )
+                    # Overrides _FlatIconButton's own hardcoded anchor="w"
+                    # (meant for its usual icon+text left-aligned rows) —
+                    # for an image-only button like this, "center" keeps
+                    # the icon centered within its own padding on both
+                    # sides rather than pinned to whichever edge "w"
+                    # implies, which was still showing as slightly
+                    # clipped on the right even after moving this whole
+                    # button away from the card's actual right border.
+                    btn_group_x.configure(anchor="center")
+                    if _remove_img is not None:
+                        btn_group_x.image = _remove_img
+                    if kind == "S":
+                        btn_group_x.configure(state="disabled")
+                    btn_group_x.pack(side="left", anchor="w", padx=(0, 8))
+
+                    # Title (after the icon)
                     try:
                         if ("♀" in str(label)) or ("♂" in str(label)):
                             self._label_with_bold_gender(
@@ -9368,23 +9456,8 @@ class GardenApp:
                             justify="left"
                         ).pack(side="left", anchor="w")
 
-                    # Red ✕ (right) — delete this group (disabled for starter seeds)
-                    btn_group_x = tk.Button(
-                        card_header,
-                        text="✕",
-                        width=2,
-                        fg="red",
-                        state=("disabled" if kind == "S" else "normal"),
-                        command=lambda k=kind, s=src, d=donor, mf=match_fn: _delete_group(k, s, d, mf),
-                        **self.button_style,
-                    )
-                    self._apply_hover(btn_group_x)
-                    btn_group_x.pack(side="right", anchor="e")
-                    print(f"[choose_seed_for_tiles] card {i} ({label!r}): header OK")
-
                     # Preview traits as icons (seed_shape + seed_color)
                     traits = _get_sample_traits_for_group(kind, src, donor, match_fn) or {}
-                    print(f"[choose_seed_for_tiles] card {i}: traits={traits!r}")
 
                     icon_row = tk.Frame(card)
                     icon_row.pack(anchor="w", pady=(4, 2))
@@ -9420,10 +9493,9 @@ class GardenApp:
                                     lbl2.pack(side="left", padx=(0, 4))
                                     card._img_refs.append(img2)
                             else:
-                                print(f"[choose_seed_for_tiles] card {i}: icon_path missing: {icon_path!r}")
-                        except Exception as e:
-                            print(f"[choose_seed_for_tiles] card {i}: seed_color icon FAILED: {e!r}")
-                    print(f"[choose_seed_for_tiles] card {i}: shown_any={shown_any}")
+                                pass
+                        except Exception:
+                            pass
 
                     if not shown_any:
                         # Fallback text if this group doesn't have seed traits yet
@@ -9435,14 +9507,18 @@ class GardenApp:
                     # Buttons row
                     btn_row = tk.Frame(card)
                     btn_row.pack(side="bottom", fill="x", pady=(8, 0))
-                    print(f"[choose_seed_for_tiles] card {i}: btn_row created")
 
                     # Entry field for custom number - defaults to 1 (editable).
                     # Created before the shovel/Plant buttons since both read
                     # its live value now.
                     entry_var = tk.StringVar(value="1")
-                    entry_n = tk.Entry(btn_row, width=4, font=("Segoe UI", 9),
-                                       textvariable=entry_var, justify="center")
+                    # bd=1 matches the flat buttons' own border width —
+                    # Entry's default (bd=2, sunken) adds visible extra
+                    # height on top of that border alone, before ipady is
+                    # even factored in.
+                    entry_n = tk.Entry(btn_row, width=4, font=("Segoe UI", 12),
+                                       textvariable=entry_var, justify="center",
+                                       bd=1, relief="solid")
 
                     def _select_all_on_focus(event, entry=entry_n):
                         # Deferred via after_idle — a plain immediate call gets
@@ -9482,27 +9558,35 @@ class GardenApp:
                     except Exception:
                         shovel_img = None
 
+                    # _FlatIconButton, not tk.Button — same macOS chrome
+                    # issue as the other buttons on this row (Plant/All
+                    # already use _make_flat_button for the same reason;
+                    # this was the one holdout still using a plain
+                    # tk.Button here, with the visible box the reported
+                    # screenshot showed around it).
+                    _bstyle = self.button_style
+                    b_cursor = _FlatIconButton(
+                        btn_row,
+                        text="" if shovel_img is not None else "🌱",
+                        image=shovel_img,
+                        compound="center",
+                        bg=_bstyle.get("bg", "#F4F4F4"),
+                        hover_bg=_bstyle.get("activebackground", "#E4E4E4"),
+                        font=_bstyle.get("font", ("Segoe UI", 12)),
+                        padx=_bstyle.get("padx", 16),
+                        pady=_bstyle.get("pady", 10),
+                        state=("normal" if count > 0 else "disabled"),
+                        command=_start_cursor_from_card,
+                    )
                     if shovel_img is not None:
-                        b_cursor = tk.Button(
-                            btn_row,
-                            image=shovel_img,
-                            state=("normal" if count > 0 else "disabled"),
-                            command=_start_cursor_from_card,
-                            **self.button_style,
-                        )
                         b_cursor.image = shovel_img
                         card._img_refs.append(shovel_img)
-                    else:
-                        b_cursor = tk.Button(
-                            btn_row,
-                            text="🌱",
-                            state=("normal" if count > 0 else "disabled"),
-                            command=_start_cursor_from_card,
-                            **self.button_style,
-                        )
-                    self._apply_hover(b_cursor)
+                    # Same anchor="w" override as the remove icon — that
+                    # was left out here initially, which is exactly why
+                    # this button showed the same off-center/clipped-
+                    # looking icon the remove icon did before that fix.
+                    b_cursor.configure(anchor="center")
                     b_cursor.pack(side="left", padx=(0, 4))
-                    print(f"[choose_seed_for_tiles] card {i}: shovel button OK")
 
                     # "Plant (n)" button — label tracks the entry box live —
                     # then the entry box itself, to its right. Enters the same
@@ -9530,14 +9614,13 @@ class GardenApp:
                         state=("normal" if count > 0 else "disabled"),
                     )
                     b_plant_n.pack(side="left", padx=(0, 4))
-                    print(f"[choose_seed_for_tiles] card {i}: Plant(n) button OK")
 
                     def _update_plant_label(*_args, btn=b_plant_n, var=entry_var):
                         txt = var.get().strip()
                         btn.config(text=f"Plant ({txt})" if txt else "Plant")
                     entry_var.trace_add("write", _update_plant_label)
 
-                    entry_n.pack(side="left", padx=(0, 4))
+                    entry_n.pack(side="left", padx=(0, 4), ipady=1)
 
                     # "All" — directly enters click-to-plant (shovel) mode with
                     # the full available count, same as clicking the shovel
@@ -9561,7 +9644,6 @@ class GardenApp:
                         state=("normal" if count > 0 else "disabled"),
                     )
                     b_all.pack(side="left", padx=(0, 4))
-                    print(f"[choose_seed_for_tiles] card {i}: All button OK — card complete")
                 except Exception as e:
                     import traceback
                     print(f"[choose_seed_for_tiles] card {i} (label={label!r}) FAILED: {e!r}")

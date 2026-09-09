@@ -17,6 +17,79 @@ from plant import Plant, STAGE_NAMES
 from icon_loader import *
 
 
+class _FlatIconButton(tk.Label):
+    """
+    Local copy of Garden-of-Inheritance.py's _FlatIconButton (same
+    reasoning applies here: on macOS, tk.Button ignores bg/fg/relief/
+    activebackground styling entirely and always shows native chrome —
+    a visible box — regardless of what's configured; tk.Label doesn't
+    have that problem). Duplicated here rather than imported, since
+    Garden-of-Inheritance.py imports FROM this module (PollenChooserPopup
+    etc.), so importing the other way would be circular.
+    """
+    def __init__(self, parent, text="", image=None, compound=None,
+                 command=None, bg="#F4F4F4", fg="black", hover_bg="#E4E4E4",
+                 disabled_bg="#F4F4F4", disabled_fg="#999999",
+                 font=("Segoe UI", 12), padx=12, pady=6, **kwargs):
+        self._base_bg = bg
+        self._base_fg = fg
+        self._hover_bg = hover_bg
+        self._disabled_bg = disabled_bg
+        self._disabled_fg = disabled_fg
+        self._command = command
+        self._enabled = True
+
+        super().__init__(parent, text=text, image=image, compound=compound,
+                          bg=bg, fg=fg, font=font, padx=padx, pady=pady,
+                          cursor="hand2", relief="flat", bd=0,
+                          highlightthickness=0, anchor="w", **kwargs)
+        if image is not None:
+            self.image = image  # keep a reference so it isn't garbage-collected
+
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+
+    def _on_enter(self, event=None):
+        if self._enabled:
+            tk.Label.configure(self, bg=self._hover_bg)
+
+    def _on_leave(self, event=None):
+        if self._enabled:
+            tk.Label.configure(self, bg=self._base_bg)
+
+    def _on_click(self, event=None):
+        if self._enabled and self._command:
+            self._command()
+
+    def configure(self, cnf=None, **kwargs):
+        if cnf:
+            kwargs.update(cnf)
+        if "state" in kwargs:
+            state = kwargs.pop("state")
+            self._enabled = (state != "disabled")
+            if self._enabled:
+                tk.Label.configure(self, bg=self._base_bg, fg=self._base_fg,
+                                    cursor="hand2")
+            else:
+                tk.Label.configure(self, bg=self._disabled_bg, fg=self._disabled_fg,
+                                    cursor="arrow")
+        if "activebackground" in kwargs:
+            self._hover_bg = kwargs.pop("activebackground")
+        kwargs.pop("activeforeground", None)
+        # Keep _base_bg/_base_fg in sync with any explicit bg/fg change —
+        # without this, the next <Leave> would revert to whatever
+        # _base_bg was at construction time, undoing this call's color.
+        if "bg" in kwargs:
+            self._base_bg = kwargs["bg"]
+        if "fg" in kwargs:
+            self._base_fg = kwargs["fg"]
+        if kwargs:
+            tk.Label.configure(self, **kwargs)
+
+    config = configure
+
+
 # ============================================================================
 # Inventory Item Classes
 # ============================================================================
@@ -1002,19 +1075,28 @@ class PollenChooserPopup(Toplevel):
 
     def __init__(self, master, app):
         super().__init__(master)
-        try:
-            self.attributes("-topmost", True)
-            self.lift()
-        except Exception:
-            pass
 
         self.app   = app
         self.page  = 0
         self._img_refs = []
 
         self.title("Choose Pollen")
-        self.geometry("800x700")
+        # Same size as choose_seed_for_tiles's picker (760x640) — this
+        # used to be a different, larger 800x700, and also forced itself
+        # "always on top" (-topmost) with an internal lift() on top of
+        # the caller's own lift()/focus_force() — neither of which the
+        # seed picker does; it just relies on Toplevel's normal above-
+        # its-parent behavior. Matched here so the two pickers actually
+        # look and behave the same way, not just similarly.
+        self.geometry("760x640")
         self.resizable(True, True)
+        # Should never open maximized just because the main window
+        # happens to be — see GardenApp._force_window_not_maximized's
+        # docstring for why this needs an explicit call on macOS.
+        try:
+            self.app._force_window_not_maximized(self)
+        except Exception:
+            pass
 
         self._build()
 
@@ -1128,12 +1210,9 @@ class PollenChooserPopup(Toplevel):
         card.grid(row=r, column=c, padx=8, pady=8, sticky="new")
         card._img_refs = []
 
-        # ── Header: title (left) + ✕ (right) ────────────────────────────────
+        # ── Header: icon (left) + title (after it) ──────────────────────────
         hdr = tk.Frame(card)
         hdr.pack(fill="x")
-
-        tk.Label(hdr, text=f"from Plant #{source_id}",
-                 font=("Segoe UI", 11, "bold")).pack(side="left")
 
         def _discard(sid=source_id):
             try:
@@ -1147,11 +1226,41 @@ class PollenChooserPopup(Toplevel):
                 pass
             self._render()
 
-        btn_x = tk.Button(hdr, text="✕", width=2, fg="red",
-                          command=_discard, **bstyle)
-        if self.app:
-            self.app._apply_hover(btn_x)
-        btn_x.pack(side="right")
+        # Remove icon (left, before the name) — matches self.remove_btn on
+        # the left panel and the same fix applied to choose_seed_for_tiles's
+        # own per-card delete button, replacing a plain tk.Button("✕") that
+        # showed macOS's unstylable native chrome (a visible box). Packed
+        # on the LEFT, before the title, with its own right-side padx as
+        # spacing to the name — pinned to the right edge (side="right") it
+        # was getting visibly clipped by the card's own border there.
+        try:
+            _remove_img = tk.PhotoImage(file=os.path.join(ICONS_DIR, "remove.png"))
+        except Exception:
+            _remove_img = None
+        btn_x = _FlatIconButton(
+            hdr,
+            text="" if _remove_img is not None else "✕",
+            image=_remove_img,
+            compound="center",
+            bg=hdr.cget("bg"),
+            fg="red",
+            hover_bg="#DDDDDD",
+            disabled_bg=hdr.cget("bg"),
+            font=bstyle.get("font", ("Segoe UI", 12)),
+            padx=6,
+            pady=6,
+            command=_discard,
+        )
+        # Overrides _FlatIconButton's own hardcoded anchor="w" — see the
+        # matching comment in choose_seed_for_tiles for why "center" is
+        # needed here specifically for an image-only button like this.
+        btn_x.configure(anchor="center")
+        if _remove_img is not None:
+            btn_x.image = _remove_img
+        btn_x.pack(side="left", anchor="w", padx=(0, 8))
+
+        tk.Label(hdr, text=f"from Plant #{source_id}",
+                 font=("Segoe UI", 11, "bold")).pack(side="left")
 
         # ── Icon row: flower icon + anther icon ──────────────────────────────
         icon_row = tk.Frame(card)
