@@ -216,66 +216,81 @@ SOIL_COLORS = [
 
 class FFDialog(simpledialog.Dialog):
     """
-    Fast-Forward dialog with options for:
-    - Number of days to advance
-    - Daily rendering toggle
-    - Hourly render interval (1-23 hours)
+    Fast-Forward dialog — asks only for the number of days to advance.
+    Daily-render and hourly-render-interval used to live here too, but
+    those are persistent preferences (how FF renders), not something to
+    reconsider every time you fast-forward — moved to Game Settings ▸
+    Fast Forward instead, alongside the app's other persistent settings.
+
+    Styled to match the app's other recent popups (plant inspector,
+    beehive/measuring-station info windows) — same cream background and
+    "Segoe UI" font family via _apply_inspector_theme, plus matching
+    12pt body / bold OK-Cancel sizing, which that helper doesn't cover
+    on its own (it only changes font FAMILY, not size — see its
+    docstring). Needs the live GardenApp instance to reach that method
+    and its INSPECTOR_BG constant, since this dialog is its own class
+    rather than a GardenApp method — passed in as app= at construction.
     """
-    
+
+    def __init__(self, parent, title=None, app=None):
+        self._app = app
+        super().__init__(parent, title)
+
     def body(self, master):
         """
         Build dialog body with input fields.
-        
+
         Args:
             master: Parent widget
-            
+
         Returns:
             Widget to receive initial focus
         """
         tk.Label(
             master,
-            text="Enter the number of days to fast-forward:"
+            text="Days to fast forward",
+            font=("Segoe UI", 12)
         ).grid(row=0, column=0, sticky="w", pady=4)
-        
-        # Days to fast-forward
-        self.days_var = tk.StringVar()
-        self.entry = tk.Entry(master, textvariable=self.days_var)
+
+        # Days to fast-forward — default 3, pre-selected so a click
+        # followed immediately by typing overwrites it outright, rather
+        # than needing a manual select-all or backspacing first before a
+        # new value can be typed in.
+        self.days_var = tk.StringVar(value="3")
+        self.entry = tk.Entry(master, textvariable=self.days_var, font=("Segoe UI", 12))
         self.entry.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        
-        # Daily rendering checkbox (ticked by default)
-        self.daily_var = tk.BooleanVar(value=True)
-        self.cb = tk.Checkbutton(
-            master,
-            text="Daily render (once per day)",
-            variable=self.daily_var,
-            anchor="w"
-        )
-        self.cb.grid(row=2, column=0, sticky="w", pady=(0, 4))
-        
-        # Hourly render interval
-        tk.Label(
-            master,
-            text="Render every N simulated h (1–23):"
-        ).grid(row=3, column=0, sticky="w", pady=(4, 2))
-        
-        self.interval_var = tk.IntVar(value=9)  # Default 9 hours
-        self.interval_spin = tk.Spinbox(
-            master,
-            from_=1,
-            to=23,
-            textvariable=self.interval_var,
-            width=5
-        )
-        self.interval_spin.grid(row=4, column=0, sticky="w", pady=(0, 6))
-        
+        self.entry.select_range(0, 'end')
+        self.entry.icursor('end')
+
         return self.entry  # Initial focus on day entry
-    
+
+    def buttonbox(self):
+        """
+        Builds the standard OK/Cancel row, then — unlike the base class —
+        re-themes the whole dialog (body + these buttons together) to
+        match the app's other recent popups. Done here rather than at
+        the end of body() specifically because buttonbox() runs AFTER
+        body(), so this is the first point where the OK/Cancel buttons
+        actually exist to be caught by the re-theme walk too.
+        """
+        super().buttonbox()
+        if self._app is not None:
+            try:
+                self._app._apply_inspector_theme(self)
+            except Exception:
+                pass
+            try:
+                for child in self.winfo_children():
+                    for w in child.winfo_children():
+                        if isinstance(w, tk.Button):
+                            w.configure(font=("Segoe UI", 12, "bold"))
+            except Exception:
+                pass
+
     def apply(self):
         """Store dialog results when OK is pressed."""
         self.result = {
             "days": self.days_var.get(),
-            "daily": self.daily_var.get(),
-            "interval": self.interval_var.get(),
         }
 """
 
@@ -933,6 +948,15 @@ class GardenApp:
         updates (to keep the cache in sync after a surgical update, so a
         later refresh doesn't see stale-vs-real state and force an
         unnecessary rebuild right after).
+
+        health/water deliberately NOT included — they change on
+        essentially every simulation tick, and were previously causing a
+        full inspector rebuild (visibly flashing the whole window) for
+        every single point of fluctuation. Those two are now handled by
+        a separate, lightweight in-place label update instead — see
+        _update_inspector_health_water — called unconditionally whenever
+        the inspector is open, independently of whether this signature
+        changed enough to warrant a full rebuild for anything else.
         """
         if plant is None:
             return ("none",)
@@ -943,7 +967,6 @@ class GardenApp:
                 idx, getattr(plant, "id", None), getattr(plant, "stage", None),
                 getattr(plant, "pods_remaining", None),
                 getattr(plant, "emasculated", None), getattr(plant, "pollinated", None),
-                getattr(plant, "health", None), getattr(plant, "water", None),
                 tuple(sorted(revealed.items())),
                 tuple(sorted(seed_counts.items())),
             )
@@ -1003,6 +1026,16 @@ class GardenApp:
                 pass
         self._inspector_last_selected_idx = idx
 
+        # Health/water are updated in-place here, unconditionally,
+        # regardless of whether anything else below triggers a full
+        # rebuild — deliberately excluded from the signature check just
+        # below (see _compute_inspector_sig's docstring) specifically so
+        # their near-constant fluctuation doesn't force one. If a full
+        # rebuild DOES happen for some other reason, _open_plant_inspector
+        # recreates these labels fresh anyway, so this update is harmless
+        # either way, not just when a rebuild is skipped.
+        self._update_inspector_health_water(plant)
+
         sig = self._compute_inspector_sig(idx, plant)
 
         if sig is not None and sig == getattr(self, "_inspector_last_sig", None):
@@ -1014,6 +1047,52 @@ class GardenApp:
         else:
             rows = self._build_inspector_status_rows(plant)
             self._open_plant_inspector(plant, rows)
+
+    def _update_inspector_health_water(self, plant):
+        """
+        Reconfigures the inspector's Health/Water labels' text and color
+        in place, without touching anything else in the window — see
+        _refresh_inspector_if_open, which calls this unconditionally,
+        every time, specifically because these two values change on
+        nearly every simulation tick, and previously forced a full
+        inspector rebuild (visibly flashing the whole window) for every
+        single point of fluctuation. Same color thresholds as
+        _open_plant_inspector's own initial creation of these labels —
+        kept in sync deliberately, not derived from a shared helper, so
+        double-check both places if these thresholds ever change.
+        """
+        health_lbl = getattr(self, "_inspector_health_label", None)
+        water_lbl = getattr(self, "_inspector_water_label", None)
+        if health_lbl is None and water_lbl is None:
+            return
+        try:
+            if not health_lbl.winfo_exists():
+                return
+        except Exception:
+            return
+
+        health = getattr(plant, "health", None) if plant is not None else None
+        water = getattr(plant, "water", None) if plant is not None else None
+
+        try:
+            if health_lbl is not None and health is not None:
+                h_color = "#c0392b" if health < 30 else ("#b8860b" if health < 60 else "#2e7d32")
+                health_lbl.configure(text=f"Health: {int(health)}%", fg=h_color)
+        except Exception:
+            pass
+
+        try:
+            if water_lbl is not None and water is not None:
+                w = float(water)
+                if w < 20 or w > 95:
+                    w_color, w_note = "#c0392b", "  ⚠ CRITICAL"
+                elif w < 30 or w > 85:
+                    w_color, w_note = "#b8860b", "  ⚠ low/high"
+                else:
+                    w_color, w_note = "#2e7d32", ""
+                water_lbl.configure(text=f"Water: {int(w)}%{w_note}", fg=w_color)
+        except Exception:
+            pass
 
     # Trait icon order used by the plant inspector's bottom row — every
     # trait shown in one line, revealed or not. seed_color is deliberately
@@ -1352,15 +1431,24 @@ class GardenApp:
         # Health / water — color-coded so a critical water level is
         # immediately obvious rather than just a plain number. Thresholds
         # match the actual penalty bands in Plant's own water-stress logic
-        # (see plant.py) rather than an arbitrary separate scale.
+        # (see plant.py) rather than an arbitrary separate scale. Label
+        # references stored on self so _update_inspector_health_water can
+        # reconfigure just their text/color later without rebuilding
+        # anything else — see that function for why (health/water change
+        # on nearly every tick; rebuilding the whole window for each of
+        # those was the actual "disturbing" flashing being fixed here).
         health = getattr(plant, "health", None)
         water = getattr(plant, "water", None)
         hw_row = tk.Frame(id_box, bg=BG)
         hw_row.pack(anchor="w", pady=(4, 0))
+        self._inspector_health_label = None
+        self._inspector_water_label = None
         if health is not None:
             h_color = "#c0392b" if health < 30 else ("#b8860b" if health < 60 else "#2e7d32")
-            tk.Label(hw_row, text=f"Health: {int(health)}%", font=("Segoe UI", 14, "bold"),
-                     bg=BG, fg=h_color).pack(side="left", padx=(0, 16))
+            self._inspector_health_label = tk.Label(
+                hw_row, text=f"Health: {int(health)}%", font=("Segoe UI", 14, "bold"),
+                bg=BG, fg=h_color)
+            self._inspector_health_label.pack(side="left", padx=(0, 16))
         if water is not None:
             w = float(water)
             if w < 20 or w > 95:
@@ -1369,8 +1457,10 @@ class GardenApp:
                 w_color, w_note = "#b8860b", "  ⚠ low/high"
             else:
                 w_color, w_note = "#2e7d32", ""
-            tk.Label(hw_row, text=f"Water: {int(w)}%{w_note}", font=("Segoe UI", 14, "bold"),
-                     bg=BG, fg=w_color).pack(side="left")
+            self._inspector_water_label = tk.Label(
+                hw_row, text=f"Water: {int(w)}%{w_note}", font=("Segoe UI", 14, "bold"),
+                bg=BG, fg=w_color)
+            self._inspector_water_label.pack(side="left")
 
         tk.Frame(header, width=2, bg="#c8c0ac").pack(side="left", fill="y", padx=14)
 
@@ -1887,11 +1977,24 @@ class GardenApp:
             t = (h - ss) / twilight
             return twilight_peak * (1.0 - t)
 
-        # daytime dome
+        # Daytime plateau — full 1.0 (100%) brightness across the broad
+        # middle of the day, ramping down only near the sunrise/sunset
+        # edges before handing off to the twilight branches above. The
+        # previous shape (core = 1.0 - x**3, no plateau) was a bell curve
+        # that only ever actually reached 1.0 for the fleeting instant of
+        # exact solar noon, falling visibly short of full brightness the
+        # rest of the day — this was the "plants/plots never look fully
+        # lit" issue. Night and twilight (the branches above) are
+        # untouched — only this daytime portion changed.
         mid = (sr + ss) / 2.0
         half = max(1e-6, (ss - sr) / 2.0)
-        x = abs(h - mid) / half
-        core = max(0.0, 1.0 - x**3.0)
+        x = abs(h - mid) / half  # 0 at solar noon, 1 at the sunrise/sunset edge
+
+        plateau = 0.5  # inner half of the half-day width stays at full 1.0
+        if x <= plateau:
+            return 1.0
+        t = (x - plateau) / (1.0 - plateau)  # 0 at plateau edge, 1 at sunrise/sunset
+        core = max(0.0, 1.0 - t**3.0)
         return twilight_peak + (1.0 - twilight_peak) * core
 
     def _toggle_daynight(self):
@@ -2522,10 +2625,24 @@ class GardenApp:
             smooth_hour = current_hour
         else:
             last_adv = getattr(self, "_daynight_last_advance", None)
-            phase_secs = max(0.05, getattr(self, "phase_ms", 600) / 1000.0)
+            # Denominator is the FULL wall-clock time per simulated hour
+            # (self.day_length_s — see _recalc_timers), not just phase_ms.
+            # _daynight_last_advance is only set when next_phase() actually
+            # runs, but the temperature sub-update ticks that precede the
+            # next next_phase() call (2-3 of them, at the shorter sub_ms
+            # pace — see _auto_advance_phase) also elapse before that
+            # happens, and previously weren't counted here at all. Using
+            # just phase_ms as the denominator meant elapsed time exceeded
+            # it well before the real next hour actually landed, so frac
+            # clamped to 1.0 early and smooth_hour sat pinned at next
+            # hour's target for the remainder of the wait instead of
+            # smoothly progressing across the whole hour — the visible
+            # "jumpy" lighting/timing, most noticeable right after startup
+            # when it's freshly being watched.
+            hour_secs = max(0.05, float(getattr(self, "day_length_s", 1.0)))
             if last_adv is not None:
-                elapsed = max(0.0, min(phase_secs, now - last_adv))
-                frac = elapsed / phase_secs   # 0.0 → 1.0 within this phase
+                elapsed = max(0.0, min(hour_secs, now - last_adv))
+                frac = elapsed / hour_secs   # 0.0 → 1.0 across the full hour
                 smooth_hour = (current_hour + frac) % 24.0
             else:
                 smooth_hour = current_hour
@@ -2773,8 +2890,20 @@ class GardenApp:
         # 🔗 Bridge auto-record flag to garden for TemperatureTracker
         self.garden.auto_record_temperature = self.auto_record_temperature
 
-        # Fast-forward rendering mode: hourly vs daily redraw
-        self.ff_render_daily = tk.BooleanVar(value=False)
+        # Fast-forward rendering mode: hourly vs daily redraw. Defaults to
+        # True (not False) specifically because this used to live as a
+        # checkbox inside the FF dialog itself, ticked by default and
+        # freshly recreated (so reset to ticked) every single time that
+        # dialog opened — meaning "daily render" was effectively always
+        # on in practice regardless of this variable's own starting
+        # value. Now that it's a genuinely persistent Game Settings
+        # value instead of being re-set on every FF run, its own default
+        # is what actually takes effect — so it needs to match that
+        # previous always-on-in-practice behavior directly, or FF's
+        # visible lighting flips from "looks frozen at one point in the
+        # day" (daily) to "visibly cycles through times of day" (hourly
+        # interval) despite nothing else about FF changing.
+        self.ff_render_daily = tk.BooleanVar(value=True)
         self.ff_render_interval = tk.IntVar(value=9)  # default: every 9 simulated hours
 
         # --- multi-selection state for drag selection ---
@@ -2824,7 +2953,7 @@ class GardenApp:
         self.auto_water_normal = tk.BooleanVar(value=False)
 
         # Auto progression state
-        self.running = False
+        self.running = True
         self.fast_forward = False
         self.day_length_s = 1.0  # default: 1 real second = 1 simulated hour
         self._recalc_timers()
@@ -2843,9 +2972,28 @@ class GardenApp:
         self._bind_hotkeys()
         self.render_all()
 
-        # Start automated phase progression (slight delay for safety)
+        # Start automated phase progression — a few seconds' delay (not
+        # the previous 50ms near-immediate start) gives the rest of
+        # __init__ and the window itself time to fully settle before the
+        # simulation's first tick fires, now that it starts already
+        # running rather than paused.
         try:
-            self._ensure_auto_loop(delay_ms=50)
+            self._ensure_auto_loop(delay_ms=3000)
+        except Exception:
+            pass
+
+        # Start the smooth day/night animation loop right away — this
+        # used to only ever get kicked off from _on_inspect_unified (the
+        # Inspect Plant handler), meaning it silently never started until
+        # a player first inspected a plant. Until then, the only source
+        # of lighting updates was render_all()'s own occasional call to
+        # _apply_daynight_to_tiles (itself skipped every other simulation
+        # tick), instead of this loop's dedicated 40-100ms cadence — the
+        # likely real reason visible daytime brightness lagged behind or
+        # never quite caught up to its target, especially early in a
+        # session before a plant happened to get inspected.
+        try:
+            self._start_daynight_animation()
         except Exception:
             pass
 
@@ -3033,6 +3181,8 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_emasculate_selected(self):
+        if not self._night_gate("emasculating"):
+            return
         idx = self.selected_index
         plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
         ok, reason = plant.can_emasculate()
@@ -3214,6 +3364,89 @@ class GardenApp:
         try:
             ent.focus_set()
             ent.select_range(0, 'end')
+        except Exception:
+            pass
+
+    def _open_ff_render_settings_dialog(self):
+        """
+        Popup for Fast Forward's rendering settings — how OFTEN the
+        garden repaints itself during a fast-forward run, not how many
+        days to advance (that's still asked fresh each time via
+        FFDialog). These two used to live inside FFDialog itself, but
+        they're really persistent preferences about FF's own behavior
+        rather than something to reconsider on every run, so they moved
+        here alongside the app's other Game Settings. Reads from and
+        writes directly to self.ff_render_daily / self.ff_render_interval
+        — the same persistent vars the FF loop itself already reads from.
+        """
+        win = Toplevel(self.root)
+        win.title("Fast Forward Rendering")
+        frm = tk.Frame(win, padx=20, pady=20)
+        frm.pack(fill="both", expand=True)
+
+        daily_var = tk.BooleanVar(value=bool(self.ff_render_daily.get()))
+        cb = tk.Checkbutton(
+            frm,
+            text="Daily render (once per day)",
+            variable=daily_var,
+            font=("Segoe UI", 12),
+            anchor="w"
+        )
+        cb.pack(anchor="w", pady=(0, 8))
+
+        tk.Label(
+            frm,
+            text="Render every N simulated h (1–23):",
+            font=("Segoe UI", 12)
+        ).pack(anchor="w", pady=(4, 2))
+
+        interval_var = tk.IntVar(value=int(self.ff_render_interval.get()))
+        interval_spin = tk.Spinbox(
+            frm,
+            from_=1,
+            to=23,
+            textvariable=interval_var,
+            font=("Segoe UI", 12),
+            width=5
+        )
+        interval_spin.pack(anchor="w", pady=(0, 10))
+
+        tk.Label(
+            frm,
+            text="(Ignored while Daily render is on.)",
+            font=("Segoe UI", 10, "italic"),
+            anchor="w",
+            fg="#888",
+        ).pack(anchor="w", pady=(0, 16))
+
+        def on_apply():
+            try:
+                self.ff_render_daily.set(bool(daily_var.get()))
+            except Exception:
+                pass
+            try:
+                interval = int(interval_var.get())
+            except Exception:
+                interval = 9
+            if interval < 1:
+                interval = 1
+            elif interval > 23:
+                interval = 23
+            try:
+                self.ff_render_interval.set(interval)
+            except Exception:
+                self.ff_render_interval = tk.IntVar(value=interval)
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        self._make_flat_button(frm, "Apply", on_apply,
+                                bg="#7A9A3C", fg="white",
+                                font=("Segoe UI", 12, "bold")).pack(anchor="w")
+
+        try:
+            self._apply_inspector_theme(win)
         except Exception:
             pass
 
@@ -4208,7 +4441,15 @@ class GardenApp:
             label="Time Speed…",
             command=self._open_speed_dialog
         )
-        
+
+        # --- Fast Forward rendering (moved out of the FF dialog itself —
+        # these are persistent preferences about how FF renders, not
+        # something to re-choose every time you fast-forward) ---
+        game_menu.add_command(
+            label="Fast Forward Rendering…",
+            command=self._open_ff_render_settings_dialog
+        )
+
         game_menu.add_separator()
         game_menu.add_checkbutton(label="Auto-water",
                                     variable=self.auto_water_normal)
@@ -4315,8 +4556,8 @@ class GardenApp:
             "borderwidth": 0,  # Explicitly set borderwidth to 0 for macOS
             "highlightthickness": 0,
             "overrelief": "flat",  # Keep flat appearance even when pressed on macOS
-            "padx": 12,
-            "pady": 6,
+            "padx": 16,
+            "pady": 10,
         }
 
         # -----------------
@@ -4409,7 +4650,10 @@ class GardenApp:
         mendel_img = safe_image(os.path.join(ICONS_DIR, "mendel.png"))
         self.mendel_label = tk.Label(self.left_panel, image=mendel_img, bg=self.grid_bg)
         self.mendel_label.image = mendel_img
-        self.mendel_label.pack(anchor="w", pady=(0, 0))  # No bottom padding
+        self.mendel_label.pack(anchor="center", pady=(0, 0))  # No bottom padding
+        self._mendel_hover_idx = 0
+        self.mendel_label.bind("<Enter>", self._on_mendel_hover)
+        self.mendel_label.bind("<Leave>", lambda e: self.status_var.set(""))
 
         # Container for icon with ID and generation text
         self.icon_row = tk.Frame(self.left_panel, bg=self.grid_bg)
@@ -4479,6 +4723,14 @@ class GardenApp:
             # always shows native chrome (a visible border) with no
             # working hover, regardless of self.button_style below.
             font = self.button_style.get("font", ("Segoe UI", 12))
+            # padx/pady explicitly pulled from the same shared style the
+            # top toolbar buttons use — this was missing entirely before,
+            # silently falling back to _FlatIconButton's own class
+            # defaults (12/6) instead, so these sidebar buttons stayed a
+            # different size from the toolbar ones even after that
+            # style's padx/pady were deliberately increased (16/10).
+            padx = self.button_style.get("padx", 16)
+            pady = self.button_style.get("pady", 10)
             try:
                 img = tk.PhotoImage(file=os.path.join(ICONS_DIR, icon_name))
                 btn = _FlatIconButton(
@@ -4492,6 +4744,8 @@ class GardenApp:
                     hover_bg="#DDDDDD",
                     disabled_bg=self.grid_bg,
                     font=font,
+                    padx=padx,
+                    pady=pady,
                 )
                 btn.image = img
             except Exception as e:
@@ -4505,6 +4759,8 @@ class GardenApp:
                     hover_bg="#DDDDDD",
                     disabled_bg=self.grid_bg,
                     font=font,
+                    padx=padx,
+                    pady=pady,
                 )
 
             btn.pack(anchor="nw", pady=2, fill="x")
@@ -4531,6 +4787,7 @@ class GardenApp:
 
         # Traits header + per-trait icon list used to live here, replaced by
         # the plant inspector window (see _open_plant_inspector). Kept as
+        # plain (unpacked) widgets rather than removed outright, since a
         # plain (unpacked) widgets rather than removed outright, since a
         # couple of other spots still clear traits_container's children —
         # harmless when it's always empty, and avoids touching that code.
@@ -4568,26 +4825,84 @@ class GardenApp:
         except Exception:
             pass
 
-        # Status message bar
+        # Status message bar — wrapped in a fixed-width container (the
+        # grid's known pixel width, same TILE_SIZE * TILES_PER_ROW
+        # constant used for inventory_row/the plot switcher) rather than
+        # packed directly with fill="x" — right_panel isn't reliably
+        # constrained to the grid's width by anything else, so fill="x"
+        # alone stretches to whatever else happens to be constraining the
+        # window instead, the same issue that affected the plot switcher
+        # before that fix. tk.Label's width= is in CHARACTER units for
+        # text content (unlike an image-displaying label, where it's
+        # pixels), so locking width directly on status_msg itself isn't
+        # straightforward the way it was for inventory_row (a plain
+        # Frame) — wrapping it is simpler.
+        #
+        # pack_propagate(False) is needed here too — without it, the
+        # container's width would just shrink to match whatever the
+        # CURRENT status message text happens to need (wraplength is
+        # only a maximum before wrapping, not a minimum the label
+        # actually claims), not the full grid width. That locks height
+        # too though, so it's computed from font metrics — the same
+        # reliable, immediately-available approach used for
+        # inventory_row's height, rather than measuring real rendered
+        # geometry (which isn't trustworthy this early, before the
+        # window has ever been shown — see that fix's own comments for
+        # the two earlier, unreliable attempts at exactly that). A first
+        # pass sized this for a full 2 lines, which came out noticeably
+        # taller than intended — 1.3× a single line's height instead
+        # gives a modest amount of headroom without visually doubling
+        # the bar's height for what's normally one line of text. Font
+        # size bumped slightly too (14→16), per request.
+        _status_font_size = 16
+        _status_font = tkfont.Font(font=("Segoe UI", _status_font_size, "bold"))
+        _status_row_height = int(1.3 * _status_font.metrics("linespace")) + 2 * 4 + 8
+        self.status_msg_row = tk.Frame(right_panel, bg=self.grid_bg,
+                                        width=TILE_SIZE * TILES_PER_ROW,
+                                        height=_status_row_height)
+        self.status_msg_row.pack_propagate(False)
+        self.status_msg_row.pack(anchor="w")
         self.status_msg = tk.Label(
-            right_panel,
+            self.status_msg_row,
             textvariable=self.status_var,
             anchor="w",
             fg="#c01818",
             bg="#dcdcdc",
-            font=("Segoe UI", 14, "bold"),
+            font=("Segoe UI", _status_font_size, "bold"),
             justify="left",
-            wraplength=980,
+            wraplength=TILE_SIZE * TILES_PER_ROW - 16,
             relief="groove",
             bd=1,
             padx=6,
             pady=4,
         )
-        self.status_msg.pack(fill="x", pady=(0, 4))
+        self.status_msg.pack(fill="both", expand=True, pady=(0, 4))
 
         # ---------- Seeds/Starter/All Buttons row ----------
-        self.inventory_row = tk.Frame(right_panel, bg=self.grid_bg)
-        self.inventory_row.pack(anchor="w", fill="x", pady=(4, 8))
+        # Explicit width = the grid's actual pixel width (a known
+        # constant, TILE_SIZE * TILES_PER_ROW — no need to measure
+        # anything at runtime). Height is computed from font metrics
+        # right now, synchronously and reliably, rather than measured
+        # via winfo_height()/update_idletasks() or a bound <Configure>
+        # event — several earlier attempts at exactly this (locking this
+        # row's width to the grid's, so the plot switcher packed to its
+        # right edge actually lines up with the grid's right edge) tried
+        # measuring real, rendered geometry instead, and all failed:
+        # this runs during synchronous __init__ before the window has
+        # ever been shown, when Tk's own geometry queries aren't
+        # reliably accurate yet, however they're obtained. Font metrics
+        # ARE available immediately regardless of realization, so this
+        # sidesteps that whole problem category rather than working
+        # around it. A generous +16px buffer covers the extra internal
+        # padding/border real button widgets add beyond font linespace
+        # + their own pady — better slightly too tall than clipped.
+        _btn_font = tkfont.Font(font=self.font_button)
+        _row_height = _btn_font.metrics("linespace") + 2 * self.button_style.get("pady", 6) + 16
+        self.inventory_row = tk.Frame(right_panel, bg=self.grid_bg,
+                                       width=TILE_SIZE * TILES_PER_ROW,
+                                       height=_row_height)
+        self.inventory_row.pack_propagate(False)
+        self.inventory_row.pack(anchor="w", pady=(4, 8))
 
         # Left-aligned container for Seeds/Starter
         inventory_left = tk.Frame(self.inventory_row, bg=self.grid_bg)
@@ -4667,15 +4982,6 @@ class GardenApp:
             )
         self.water_all_btn.pack(side="left", padx=2)
 
-        # Pause/Resume button
-        self.pause_btn = _FlatIconButton(
-            inventory_left,
-            text=("▶" if not self.running else "⏸"),
-            command=self._toggle_run,
-            **btn_kwargs,
-        )
-        self.pause_btn.pack(side="left", padx=2)
-
         # Next Phase button
         self.next_phase_btn = _FlatIconButton(
             inventory_left,
@@ -4684,6 +4990,16 @@ class GardenApp:
             **btn_kwargs,
         )
         self.next_phase_btn.pack(side="left", padx=2)
+
+        # Pause/Resume button — placed directly next to Fast Forward below,
+        # since both control simulation-time flow.
+        self.pause_btn = _FlatIconButton(
+            inventory_left,
+            text=("▶" if not self.running else "⏸"),
+            command=self._toggle_run,
+            **btn_kwargs,
+        )
+        self.pause_btn.pack(side="left", padx=2)
 
         # Fast Forward button
         self.fast_btn = _FlatIconButton(
@@ -4699,7 +5015,7 @@ class GardenApp:
         # Temperature measurement button
         self.measure_temp_btn = _FlatIconButton(
             inventory_left,
-            text="Measure °C",
+            text="Measure T (°C)",
             command=self._on_measure_temperature,
             **btn_kwargs,
         )
@@ -4707,19 +5023,27 @@ class GardenApp:
 
         # Observatory button with custom icon — kept available, placed
         # after the reordered core action buttons above since it wasn't
-        # part of the requested sequence.
+        # part of the requested sequence. Text restored ("Observatory")
+        # after an icon-only (text="") version wasn't reliably matching
+        # neighboring text buttons' height even with extra pady and an
+        # explicit height= override (neither visibly changed anything —
+        # likely how Tk sizes a compound image+empty-text label, which
+        # may not follow the font's linespace at all in that case). With
+        # real text present this button should size on the same basis
+        # every other text button already correctly does.
+        observatory_kwargs = dict(btn_kwargs)
         try:
             observatory_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "observatory.png"))
             self.observatory_btn = _FlatIconButton(
                 inventory_left,
-                text="",
+                text=" Observatory",
                 image=observatory_icon,
                 compound="left",
                 command=lambda: (
                     self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
                     else self._silent_showinfo("Observatory", "Temperature tracker not available")
                 ),
-                **btn_kwargs,
+                **observatory_kwargs,
             )
             self.observatory_btn.image = observatory_icon  # Keep reference
         except Exception as e:
@@ -4729,12 +5053,12 @@ class GardenApp:
             # at all.
             self.observatory_btn = _FlatIconButton(
                 inventory_left,
-                text="🔭",
+                text="🔭 Observatory",
                 command=lambda: (
                     self.temp_tracker.open_observatory() if hasattr(self, 'temp_tracker') and self.temp_tracker
                     else self._silent_showinfo("Observatory", "Temperature tracker not available")
                 ),
-                **btn_kwargs,
+                **observatory_kwargs,
             )
         self.observatory_btn.pack(side="left", padx=2)
 
@@ -4852,8 +5176,11 @@ class GardenApp:
         # that constant to 4 later needs no changes here). Built here,
         # after self.active_plot_index/self._plot_tiles exist just above
         # — building it earlier alongside the rest of the toolbar would
-        # reference active_plot_index before it's set.
-        self._build_plot_switcher(inventory_left)
+        # reference active_plot_index before it's set. Parented to
+        # inventory_row (not inventory_left) so it packs as a right-side
+        # sibling of the main button group — see _build_plot_switcher's
+        # docstring for why that aligns it to the grid's right edge.
+        self._build_plot_switcher(self.inventory_row)
 
         # ---------- Mendelian laws row (below the grid in right_panel) ----------
         self.law_row = tk.Frame(right_panel, bg=self.grid_bg, padx=0, pady=8)
@@ -5344,6 +5671,8 @@ class GardenApp:
         If exactly one viable pollen source exists today, auto-apply it.
         Otherwise open Summary focused on Pollen tab so user can pick.
         """
+        if not self._night_gate("pollinating"):
+            return
         # Must have a valid recipient selected
         idx = getattr(self, "selected_index", None)
         plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
@@ -6754,6 +7083,7 @@ class GardenApp:
         targets = region[:requested]
 
         planted_count = 0
+        self._last_night_block_reason = None
         for tidx in targets:
             ok = self._plant_one_from_group(tidx, self._plant_cursor_kind, self._plant_cursor_match_fn)
             if ok:
@@ -6775,7 +7105,18 @@ class GardenApp:
             else:
                 self._toast(f"Planted {planted_count} seed(s).")
         else:
-            self._toast("Could not plant here.", level="warn")
+            # Prefer the specific reason _plant_one_from_group's own
+            # night-gate check already recorded (e.g. "Mendel is
+            # asleep.") over this generic fallback — the generic message
+            # was previously shown unconditionally here, immediately
+            # overwriting that more specific, already-displayed toast
+            # with something misleading (a tile-placement complaint, not
+            # a time-of-day one) even though the tile itself was fine.
+            reason = getattr(self, "_last_night_block_reason", None)
+            if reason:
+                self._toast(reason, level="warn")
+            else:
+                self._toast("Could not plant here.", level="warn")
 
         still_left = self._count_seeds_in_group(self._plant_cursor_kind, self._plant_cursor_match_fn)
         print(f"[_plant_one_via_cursor] still_left={still_left} -> "
@@ -7029,9 +7370,12 @@ class GardenApp:
         """
         Measuring station info window. One fact per page, a citation
         page, then a tip about Game Settings' Auto-record Temperature
-        option — and a "Measure Temperature" button (in the nav row,
-        alongside Prev/Next/Close) that actually attempts a measurement,
-        using the same valid-hours logic as the toolbar button.
+        option — plus two extra buttons in the nav row, alongside
+        Prev/Next/Close: "Measure T (°C)" (attempts a measurement, using
+        the same valid-hours logic as the toolbar button) and "⏵1h" (the
+        same hour-advance as the main toolbar's Next button, so a player
+        waiting for the next valid measurement hour doesn't need to
+        close the popup first).
         """
         WEATHER_FACTS = [
             ("Weatherman Gregor Mendel",
@@ -7079,8 +7423,11 @@ class GardenApp:
         pages = WEATHER_FACTS + [CITATION, TIP]
         self._open_paged_info_popup(
             "Measuring Station", pages,
-            extra_buttons=[("Measure Temperature",
-                             lambda: self._attempt_measure_temperature_from_station(index))]
+            extra_buttons=[
+                ("Measure T (°C)",
+                 lambda: self._attempt_measure_temperature_from_station(index)),
+                ("⏵1h", self._on_next_phase),
+            ]
         )
 
     def _attempt_measure_temperature_from_station(self, index):
@@ -7608,10 +7955,24 @@ class GardenApp:
         scaling automatically with NUM_PLOTS (bumping that constant to 4
         later needs no changes here). Built once; the buttons themselves
         get rebuilt on every switch (see _refresh_plot_switcher_buttons).
+
+        Packed as a RIGHT-side sibling of the main button row
+        (inventory_left) within their shared parent (parent, i.e.
+        inventory_row) — inventory_row's width is now explicitly locked
+        to the grid's known pixel width (TILE_SIZE * TILES_PER_ROW) right
+        where it's created, with its height computed from font metrics
+        rather than measured at runtime (see the comment there for why
+        several earlier attempts at this specifically — all trying to
+        MEASURE real rendered geometry one way or another — failed).
+        With that width genuinely, reliably set from the start, a plain
+        side="right" pack here lands button "2" exactly at the grid's
+        right edge — specifically the last plot column's — the same way
+        side="left" already correctly lands the main buttons at its left
+        edge, with no further placement math needed at all.
         """
         wrap = tk.Frame(parent, bg=self.grid_bg)
-        wrap.pack(side="left", padx=(10, 2))
-        tk.Label(wrap, text="Abbey Garden:", font=("Segoe UI", 10, "bold"),
+        wrap.pack(side="right", padx=(2, 0))
+        tk.Label(wrap, text="Abbey Garden:", font=self.font_button,
                  bg=self.grid_bg).pack(side="left", padx=(0, 4))
         self._plot_switcher_btns_frame = tk.Frame(wrap, bg=self.grid_bg)
         self._plot_switcher_btns_frame.pack(side="left")
@@ -7643,7 +8004,7 @@ class GardenApp:
                 frame, str(i + 1), (lambda p=i: self._switch_to_plot(p)),
                 bg=("#7A9A3C" if active else "#F4F4F4"),
                 fg=("white" if active else "#333333"),
-                font=("Segoe UI", 10, "bold"),
+                font=self.font_button,
             )
             btn.pack(side="left", padx=1)
 
@@ -7753,6 +8114,8 @@ class GardenApp:
         self.render_all()
 
     def _on_water_all(self):
+        if not self._night_gate("watering"):
+            return
         if self.garden.weather in ("🌧", "⛈"):
             self._toast("Rainy day! Gregor leaves the plants to the clouds.", level="info")
             return
@@ -7940,6 +8303,8 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_water_selected(self):
+        if not self._night_gate("watering"):
+            return
         indices = self._selected_indices()
         if not indices:
             return
@@ -9225,37 +9590,18 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_fast_forward(self):
-        # Dialog: ask for days + daily render option
-        dlg = FFDialog(self.root, title="Fast Forward")
+        # Dialog now asks only for the number of days — daily-render and
+        # hourly-render-interval moved to Game Settings ▸ Fast Forward
+        # (persistent settings, not something to re-choose every run).
+        # The loop below already reads self.ff_render_daily /
+        # self.ff_render_interval directly, so whatever's set there is
+        # picked up automatically without this dialog touching them.
+        dlg = FFDialog(self.root, title="Fast Forward", app=self)
 
         if not getattr(dlg, "result", None):
             return
 
         resp = dlg.result["days"].strip()
-        daily_mode = bool(dlg.result["daily"])
-
-        # Read chosen hourly interval (1–23); ignore if daily render is used
-        interval = dlg.result.get("interval", 9)
-        try:
-            interval = int(interval)
-        except Exception:
-            interval = 9
-        # Clamp to 1–23; 24 would be equivalent to daily render, so we skip 24
-        if interval < 1:
-            interval = 1
-        elif interval > 23:
-            interval = 23
-
-        # Store choices in app-level vars
-        try:
-            self.ff_render_daily.set(daily_mode)
-        except Exception:
-            pass
-        try:
-            self.ff_render_interval.set(interval)
-        except Exception:
-            # Fallback if variable didn't exist for some reason
-            self.ff_render_interval = tk.IntVar(value=interval)
 
         # Validate day count
         try:
@@ -9446,11 +9792,57 @@ class GardenApp:
         if 'ms' in kwargs and isinstance(kwargs['ms'], int):
             duration = kwargs['ms']
         try:
-            prefix = {'info': 'ℹ️ ', 'warn': '⚠️ ', 'error': '⛔ '}.get(level, '')
-            self.status_var.set(prefix + str(msg))
+            self.status_var.set(str(msg))
             self.root.after(duration, lambda: self.status_var.set(""))
         except Exception:
             pass
+
+    def _on_mendel_hover(self, event=None):
+        """
+        Alternates between three tips in the status/message bar each
+        time the mouse enters the Mendel portrait — greeting, help hint,
+        pause hint, then back to the greeting, and so on.
+        _mendel_hover_idx is initialized once alongside mendel_label
+        itself and just keeps incrementing here.
+
+        At night, Mendel's asleep — shows "Z z z z z ..." instead and
+        doesn't advance the alternating index, so the cycle picks up
+        again from wherever it left off once it's day again, rather
+        than skipping a beat for every hover overnight.
+        """
+        if self._is_night_now():
+            try:
+                self.status_var.set("Z z z z z ...")
+            except Exception:
+                pass
+            return
+        messages = (
+            "Good day, young novice!",
+            'Press "H" to find some help.',
+            'Press SPACE to pause time.',
+        )
+        idx = getattr(self, "_mendel_hover_idx", 0)
+        try:
+            self.status_var.set(messages[idx % len(messages)])
+        except Exception:
+            pass
+        self._mendel_hover_idx = idx + 1
+
+    def _is_night_now(self) -> bool:
+        """
+        Matches _night_gate_sowing's own "Mendel is asleep" window
+        exactly (0 <= hour < 6, i.e. midnight to 6am) — not the broader
+        astronomical day/night check wildlife.py's creatures use, which
+        turned out to cover a much wider evening range than what the
+        game's existing sleep concept actually means. This keeps the
+        hover message consistent with that existing text specifically,
+        rather than introducing a second, different definition of
+        "night" for the same character.
+        """
+        try:
+            return 0 <= int(getattr(self.garden, "clock_hour", 8)) % 24 < 6
+        except Exception:
+            return False
 
     # ============================================================================
     # Save / Load System
@@ -11144,49 +11536,60 @@ class GardenApp:
         msg = messages.get(new_mode, f"Difficulty: {new_mode}")
         self._toast(msg)
 
-    def _night_gate_sowing(self):
+    def _night_gate(self, action_verb="doing that"):
         """
-        Realistic-difficulty only: block sowing outside Gregor's working
-        hours. On "Realistic — Full Mendel-era conditions" the garden goes
-        quiet in the evening — Gregor needs dinner, study time, and sleep
-        like anyone else. Returns True if sowing is allowed right now;
-        otherwise shows an explanatory toast and returns False. Always
-        returns True (no-op) on Casual/Moderate difficulty.
+        Blocks an action outside Mendel's working hours — the garden
+        goes quiet in the evening; Mendel needs dinner, study time, and
+        sleep like anyone else. Returns True if the action is allowed
+        right now; otherwise shows an explanatory toast (naming the
+        action via action_verb, e.g. "watering", "pollinating") and
+        returns False.
 
-        Also records the block reason on self._last_night_block_reason (or
-        clears it to None on success), so a caller that plants in bulk and
-        wraps this in its own "Planted N seed(s)" toast can show that
-        summary first and then queue the Gregor explanation right after,
-        instead of the two toasts stomping on each other.
+        Applies on ALL difficulty levels — an earlier version of this
+        (as _night_gate_sowing, sowing-only) only ever applied on
+        "Realistic" difficulty, skipping the check entirely otherwise.
+        Renamed and generalized so planting, watering, emasculation, and
+        pollination can all share one gate and one set of reasons,
+        rather than each re-implementing the same hour logic separately
+        or drifting out of sync with each other over time.
+
+        Also records the block reason on self._last_night_block_reason
+        (or clears it to None on success), so a caller that acts in bulk
+        and wraps this in its own summary toast can show that first and
+        then queue the Mendel explanation right after, instead of the
+        two toasts stomping on each other. Also relied on directly by
+        callers like _plant_one_via_cursor when nothing got planted, so
+        they can show this specific reason instead of a generic,
+        misleading fallback message.
         """
         try:
-            if str(getattr(self, "_season_mode", "off")).lower() != "enforce":
-                self._last_night_block_reason = None
-                return True
-
             hour = int(getattr(self.garden, "clock_hour", 8)) % 24
 
             if hour == 19:
-                reason = "Gregor is having dinner."
+                reason = "Mendel is having dinner."
             elif 20 <= hour <= 22:
-                reason = "Gregor is studying."
+                reason = "Mendel is studying."
             elif hour == 23:
-                reason = "Gregor is preparing for bed."
+                reason = "Mendel is preparing for bed."
             elif 0 <= hour < 6:
-                reason = "Gregor is asleep."
+                reason = "Mendel is asleep."
             else:
                 self._last_night_block_reason = None
                 return True
 
             self._last_night_block_reason = reason
             try:
-                self._toast(f"No sowing right now — {reason}", level="warn")
+                self._toast(f"No {action_verb} right now — {reason}", level="warn")
             except Exception:
                 pass
             return False
         except Exception:
-            # A bug in the night gate should never block sowing entirely
+            # A bug in the night gate should never block the action entirely
             return True
+
+    def _night_gate_sowing(self):
+        """Backward-compatible alias — see _night_gate."""
+        return self._night_gate("sowing")
 
     def _season_gate_sowing(self):
         """
