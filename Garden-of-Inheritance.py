@@ -1829,21 +1829,12 @@ class GardenApp:
             win.deiconify()  # only now — avoids a top-left flash before centering
 
     def _on_tile_double_click(self, event, index: int):
-        print("DOUBLE CLICK", index)
-        self._toast(f"Double-click #{index}", level="info")
         # ensure the tile becomes selected (same behavior as click)
         try:
             self._on_tile_left_release(event, index)
         except Exception:
             # fallback: at least set selected_index
             self.selected_index = index
-
-        # open TIE only if there's a plant
-        plant = self.tiles[index].plant if (0 <= index < len(self.tiles)) else None
-        if plant is None:
-            return
-
-        self._open_tie_for_selected()
 
     def _test_mendelian_laws_now(self):
         """Open the Mendelian Law Unlock wizard."""
@@ -1959,8 +1950,20 @@ class GardenApp:
 
 
     def _compute_light_factor(self, date_obj: dt.date, hour_float: float) -> float:
-        # Prefer using GardenEnvironment’s sunrise/sunset (Brno+DST), already in garden.py
-        sr, ss = self.garden._sunrise_sunset_local_hours(date_obj)  # :contentReference[oaicite:6]{index=6}
+        # Sunrise/sunset only depends on the date, not the hour, but this
+        # is called on every _apply_daynight_to_tiles tick — up to ~25/sec
+        # during an active transition (see _start_daynight_animation) —
+        # and garden._sunrise_sunset_local_hours does a full NOAA solar
+        # calculation (multiple sin/cos/acos calls) from scratch every
+        # time. Cached per-date here so it's only actually computed once
+        # per simulated day instead of dozens of times per real second.
+        cache_key = (date_obj.year, date_obj.month, date_obj.day)
+        cached = getattr(self, "_sun_times_cache", None)
+        if cached is not None and cached[0] == cache_key:
+            sr, ss = cached[1]
+        else:
+            sr, ss = self.garden._sunrise_sunset_local_hours(date_obj)
+            self._sun_times_cache = (cache_key, (sr, ss))
         h = hour_float % 24.0
 
         twilight = 0.35
@@ -2662,9 +2665,21 @@ class GardenApp:
         if not hasattr(self, "_daynight_visual_L") or getattr(self, "fast_forward", False):
             self._daynight_visual_L = target_L
 
-        # Generous max velocity: 1.2 L/sec allows tracking any natural
-        # dawn/dusk ramp while still damping sudden teleports.
-        max_L_per_sec = 1.2
+        # Max velocity scales with simulation speed instead of being a
+        # fixed constant. The twilight ramp itself (target_L moving from
+        # 0 to twilight_peak) is only twilight=0.35 simulated hours wide,
+        # so its real-time duration is twilight * day_length_s seconds —
+        # at fast game speeds that window becomes very short, and a fixed
+        # 1.2 L/sec cap can't move enough to keep up (confirmed: at the
+        # 0.1s and 0.25s presets it needed ~5.1 and ~2.1 L/sec just to
+        # track the ramp itself). Below that, visual_L permanently lags
+        # target_L and the "smooth" tracking effectively breaks down —
+        # it never catches up before the next transition starts. Scaling
+        # inversely with day_length_s keeps pace at any speed, while the
+        # 1.2 floor keeps the same feel as before at normal-to-slow
+        # speeds, where 1.2 was already comfortably enough.
+        _day_len = max(0.1, float(getattr(self, "day_length_s", 1.0)))
+        max_L_per_sec = max(1.2, 1.5 / _day_len)
         delta = target_L - self._daynight_visual_L
         max_step = max_L_per_sec * dt_s
         if abs(delta) <= max_step:
@@ -2870,7 +2885,7 @@ class GardenApp:
         self.auto_water_ff = tk.BooleanVar(value=True)      # ✅
         self.auto_water_normal = tk.BooleanVar(value=False) # ☐
         # cross_random removed - was non-functional legacy setting
-        self.auto_record_temperature = tk.BooleanVar(value=True)  # ✅ "Auto-record temperature"
+        self.auto_record_temperature = tk.BooleanVar(value=False)  # ☐ "Auto-record temperature"
         self.show_breed_dialogs = tk.BooleanVar(value=True)       # ✅ "Show Emasculation/Pollination dialogs"
 
         # Wildlife settings
@@ -2904,7 +2919,12 @@ class GardenApp:
         # day" (daily) to "visibly cycles through times of day" (hourly
         # interval) despite nothing else about FF changing.
         self.ff_render_daily = tk.BooleanVar(value=True)
-        self.ff_render_interval = tk.IntVar(value=9)  # default: every 9 simulated hours
+        # Interval only actually applies once "daily render" is turned
+        # off (see ff_render_daily above) — defaults to 1, the most
+        # frequent/slowest setting, since someone unchecking daily
+        # presumably wants the finer-grained option, not the coarsest
+        # one just short of daily itself.
+        self.ff_render_interval = tk.IntVar(value=1)
 
         # --- multi-selection state for drag selection ---
         self.multi_selected_indices = set()
@@ -3385,10 +3405,15 @@ class GardenApp:
         frm.pack(fill="both", expand=True)
 
         daily_var = tk.BooleanVar(value=bool(self.ff_render_daily.get()))
+
+        def on_daily_toggle(*_a):
+            interval_spin.configure(state=("disabled" if daily_var.get() else "normal"))
+
         cb = tk.Checkbutton(
             frm,
-            text="Daily render (once per day)",
+            text="Render once per simulated day (fastest)",
             variable=daily_var,
+            command=on_daily_toggle,
             font=("Segoe UI", 12),
             anchor="w"
         )
@@ -3396,8 +3421,9 @@ class GardenApp:
 
         tk.Label(
             frm,
-            text="Render every N simulated h (1–23):",
-            font=("Segoe UI", 12)
+            text="Or repaint every N simulated hours instead —\nlower is more frequent (and slower), higher is\ncloser to daily (and faster):",
+            font=("Segoe UI", 12),
+            justify="left"
         ).pack(anchor="w", pady=(4, 2))
 
         interval_var = tk.IntVar(value=int(self.ff_render_interval.get()))
@@ -3410,12 +3436,19 @@ class GardenApp:
             width=5
         )
         interval_spin.pack(anchor="w", pady=(0, 10))
+        # Greyed out (not just a text note) whenever the once-per-day
+        # option is checked, so the "these are alternatives, not two
+        # settings that combine" relationship is visible at a glance
+        # rather than something you'd only learn from reading the small
+        # italic line below.
+        on_daily_toggle()
 
         tk.Label(
             frm,
-            text="(Ignored while Daily render is on.)",
+            text="(The hour interval above is ignored while the\nonce-per-day option is checked.)",
             font=("Segoe UI", 10, "italic"),
             anchor="w",
+            justify="left",
             fg="#888",
         ).pack(anchor="w", pady=(0, 16))
 
@@ -3427,7 +3460,7 @@ class GardenApp:
             try:
                 interval = int(interval_var.get())
             except Exception:
-                interval = 9
+                interval = 1
             if interval < 1:
                 interval = 1
             elif interval > 23:
@@ -4372,8 +4405,60 @@ class GardenApp:
 
         # --- NEW: Game Settings menu ---
         game_menu = tk.Menu(self.menubar, tearoff=0, font=("Segoe UI", 11))
-        
-        # --- Day / Night toggle ---
+
+        # ═══ Difficulty & Simulation — pacing and challenge ═══
+        difficulty_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
+
+        # Initialize difficulty variable if not exists
+        if not hasattr(self, '_difficulty_var'):
+            current_mode = getattr(self, '_season_mode', 'off')
+            self._difficulty_var = tk.StringVar(value=current_mode)
+
+        difficulty_menu.add_radiobutton(
+            label="Casual — No environmental stress",
+            variable=self._difficulty_var,
+            value="off",
+            command=self._on_difficulty_change
+        )
+        difficulty_menu.add_radiobutton(
+            label="Moderate — Environmental effects (advisory)",
+            variable=self._difficulty_var,
+            value="overlay",
+            command=self._on_difficulty_change
+        )
+        difficulty_menu.add_radiobutton(
+            label="Realistic — Full Mendel-era conditions",
+            variable=self._difficulty_var,
+            value="enforce",
+            command=self._on_difficulty_change
+        )
+        game_menu.add_cascade(label="Difficulty", menu=difficulty_menu)
+
+        game_menu.add_command(
+            label="Time Speed…",
+            command=self._open_speed_dialog
+        )
+        game_menu.add_command(
+            label="Fast Forward Rendering…",
+            command=self._open_ff_render_settings_dialog
+        )
+
+        # ═══ Automation — things the game does for you ═══
+        game_menu.add_separator()
+        game_menu.add_checkbutton(label="Auto-water",
+                                    variable=self.auto_water_normal)
+        game_menu.add_checkbutton(label="Auto-water in FF",
+                                    variable=self.auto_water_ff)
+        game_menu.add_checkbutton(label="Auto-record temperature",
+                                    variable=self.auto_record_temperature)
+        game_menu.add_checkbutton(
+            label="Show Emasculation / Pollination dialogs",
+            variable=self.show_breed_dialogs
+        )
+
+        # ═══ Visuals & Atmosphere — cosmetic, no gameplay effect ═══
+        game_menu.add_separator()
+
         self.daynight_var = tk.BooleanVar(value=self.enable_daynight)
         game_menu.add_checkbutton(
             label="Day / Night cycle",
@@ -4381,7 +4466,6 @@ class GardenApp:
             command=self._toggle_daynight
         )
 
-        # --- Wildlife submenu (visual/atmosphere — grouped with day/night) ---
         wildlife_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
         wildlife_menu.add_checkbutton(
             label="Enable wildlife",
@@ -4406,72 +4490,7 @@ class GardenApp:
         )
         game_menu.add_cascade(label="Wildlife", menu=wildlife_menu)
 
-        game_menu.add_separator()
-        difficulty_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
-        
-        # Initialize difficulty variable if not exists
-        if not hasattr(self, '_difficulty_var'):
-            current_mode = getattr(self, '_season_mode', 'off')
-            self._difficulty_var = tk.StringVar(value=current_mode)
-        
-        difficulty_menu.add_radiobutton(
-            label="Casual — No environmental stress",
-            variable=self._difficulty_var,
-            value="off",
-            command=self._on_difficulty_change
-        )
-        difficulty_menu.add_radiobutton(
-            label="Moderate — Environmental effects (advisory)",
-            variable=self._difficulty_var,
-            value="overlay",
-            command=self._on_difficulty_change
-        )
-        difficulty_menu.add_radiobutton(
-            label="Realistic — Full Mendel-era conditions",
-            variable=self._difficulty_var,
-            value="enforce",
-            command=self._on_difficulty_change
-        )
-        
-        game_menu.add_cascade(label="Difficulty", menu=difficulty_menu)
-        game_menu.add_separator()
-        
-        # --- NEW: Time Speed (moved from top buttons) ---
-        game_menu.add_command(
-            label="Time Speed…",
-            command=self._open_speed_dialog
-        )
-
-        # --- Fast Forward rendering (moved out of the FF dialog itself —
-        # these are persistent preferences about how FF renders, not
-        # something to re-choose every time you fast-forward) ---
-        game_menu.add_command(
-            label="Fast Forward Rendering…",
-            command=self._open_ff_render_settings_dialog
-        )
-
-        game_menu.add_separator()
-        game_menu.add_checkbutton(label="Auto-water",
-                                    variable=self.auto_water_normal)
-        game_menu.add_checkbutton(label="Auto-water in FF",
-                                    variable=self.auto_water_ff)
-        # game_menu.add_checkbutton(label="Random X on harvest",  # Removed - non-functional
-        #                             variable=self.cross_random)
-        game_menu.add_checkbutton(label="Auto-record temperature",
-                                    variable=self.auto_record_temperature)
-        game_menu.add_checkbutton(
-            label="Show Emasculation / Pollination dialogs",
-            variable=self.show_breed_dialogs
-        )
-        
-        game_menu.add_separator()
-        game_menu.add_command(
-            label="Garden size wizard…",
-            command=self._on_grid_wizard
-        )
-
         # ── Stone Border Size ──────────────────────────────────────────
-        game_menu.add_separator()
         self._stone_size_var = tk.IntVar(value=_load_stone_size_px())
 
         def _set_stone_size(px):
@@ -4524,12 +4543,18 @@ class GardenApp:
         # ── Show Background Texture ─────────────────────────────────────
         # Off = tiles fall back to their existing plain solid-colour
         # rendering (same path already used when PIL is unavailable).
-        game_menu.add_separator()
         self._bg_texture_enabled_var = tk.BooleanVar(value=getattr(self, "_bg_texture_enabled", True))
         game_menu.add_checkbutton(
             label="Show Background Texture",
             variable=self._bg_texture_enabled_var,
             command=lambda: self._set_bg_texture_enabled(self._bg_texture_enabled_var.get())
+        )
+
+        # ═══ Garden Setup — structural, rarely changed ═══
+        game_menu.add_separator()
+        game_menu.add_command(
+            label="Garden size wizard…",
+            command=self._on_grid_wizard
         )
 
         self.menubar.add_cascade(label="Game Settings", menu=game_menu)
@@ -7121,10 +7146,19 @@ class GardenApp:
         still_left = self._count_seeds_in_group(self._plant_cursor_kind, self._plant_cursor_match_fn)
         print(f"[_plant_one_via_cursor] still_left={still_left} -> "
               f"{'STOPPING' if (planted_count == 0 or still_left <= 0) else 'STAYING ACTIVE'}")
-        if planted_count == 0 or still_left <= 0:
+        # A night-gate block (Mendel asleep/having dinner/etc.) is a
+        # temporary, time-based condition that resolves on its own —
+        # exiting cursor mode over it would force re-clicking Plant and
+        # re-picking the amount all over again once it's available,
+        # rather than just letting the player click the same tile again
+        # the moment it opens back up. Only THIS specific reason keeps
+        # cursor mode alive through a zero-planted click; every other
+        # failure (no room, season gate, etc.) still exits as before.
+        night_blocked = planted_count == 0 and bool(getattr(self, "_last_night_block_reason", None))
+        if still_left <= 0 or (planted_count == 0 and not night_blocked):
             # Nothing left in the group (or this click accomplished
-            # nothing, e.g. a gate blocked it) — stop rather than leave
-            # the shovel following the mouse pointlessly.
+            # nothing for a non-transient reason) — stop rather than
+            # leave the shovel following the mouse pointlessly.
             self._stop_plant_cursor_mode()
         else:
             # Seeds remain — keep the cursor active for another click,
@@ -9721,7 +9755,7 @@ class GardenApp:
                     try:
                         interval = int(self.ff_render_interval.get())
                     except Exception:
-                        interval = 9
+                        interval = 1
                     if interval < 1:
                         interval = 1
                     elif interval > 23:
