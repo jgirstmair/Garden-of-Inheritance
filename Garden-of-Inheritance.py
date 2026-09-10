@@ -320,10 +320,27 @@ def infer_genotype_from_traits(traits, rng):
         pair_P = _infer_pair_from_trait('P','p', True, rng)
         pair_V = _infer_pair_from_trait('V','v', True, rng)
     else:
-        if rng.random() < 0.5:
-            pair_P = ('p','p'); pair_V = _infer_pair_from_trait('V','v', True, rng)
-        else:
-            pair_V = ('v','v'); pair_P = _infer_pair_from_trait('P','p', True, rng)
+        # Constricted phenotype needs AT LEAST one of P, V homozygous
+        # recessive (the epistasis rule below: constricted iff P is pp
+        # OR V is vv) — but not EXCLUSIVELY one. This used to always
+        # force exactly one locus to pp/vv and draw the OTHER from
+        # _infer_pair_from_trait(..., True, ...), which by definition
+        # can only return heterozygous or homozygous-DOMINANT, never
+        # homozygous recessive — meaning ppvv (both loci recessive) was
+        # mathematically impossible to produce here, no matter how many
+        # constricted plants got generated. Each locus now independently
+        # has its own chance of landing recessive; if neither does (a
+        # coin-flip miss on both), one is forced afterward so the
+        # phenotype stays consistent with actually being constricted.
+        p_recessive = rng.random() < 0.5
+        v_recessive = rng.random() < 0.5
+        if not p_recessive and not v_recessive:
+            if rng.random() < 0.5:
+                p_recessive = True
+            else:
+                v_recessive = True
+        pair_P = ('p','p') if p_recessive else _infer_pair_from_trait('P','p', True, rng)
+        pair_V = ('v','v') if v_recessive else _infer_pair_from_trait('V','v', True, rng)
 
     fp = t.get('flower_position','')
     if fp.startswith('terminal'):
@@ -446,7 +463,15 @@ class _Tooltip:
         widget.bind("<ButtonPress>", self._hide)
 
     def _show(self, event=None):
-        if self.tip or not self.text:
+        if self.tip:
+            return
+        # text may be a callable, resolved fresh on every hover rather
+        # than fixed once at attach time — needed for content that can
+        # change after the tooltip was attached, like a tile whose plant
+        # (or that plant's revealed alleles) isn't the same from one
+        # hover to the next.
+        resolved = self.text() if callable(self.text) else self.text
+        if not resolved:
             return
         try:
             x = self.widget.winfo_rootx() + 12
@@ -456,7 +481,7 @@ class _Tooltip:
         self.tip = tk.Toplevel(self.widget)
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry(f"+{x}+{y}")
-        lbl = tk.Label(self.tip, text=self.text, justify="left",
+        lbl = tk.Label(self.tip, text=resolved, justify="left",
                        relief="solid", borderwidth=1, font=("Segoe UI", 12), bg="#ffffe0")
         lbl.pack(ipadx=4, ipady=2)
 
@@ -973,6 +998,90 @@ class GardenApp:
         except Exception:
             return None
 
+    def _format_plant_alleles_for_hover(self, plant):
+        """
+        Multi-line "Trait: X/x" text for a plant's revealed genotype —
+        used by the garden-tile hover tooltip once alleles have been
+        revealed at least once via the Genotype Viewer (self.
+        _genotype_revealed — see _on_genetics/_table_row, which check
+        the same flag). Reads plant.genotype directly, the same
+        attribute the Genotype Viewer itself reads from (see _on_genetics
+        further below) — not a recomputation, so this always matches
+        whatever that window would show for the same plant.
+
+        Returns "" (tooltip stays hidden — see _Tooltip._show) if reveal
+        hasn't happened yet, there's no plant, or it has no genotype.
+        """
+        if not getattr(self, "_genotype_revealed", False):
+            return ""
+        if plant is None:
+            return ""
+        geno = getattr(plant, "genotype", None)
+        if not geno:
+            return ""
+
+        # locus -> human-readable trait label, same loci _on_genetics
+        # itself tracks (R/I/A/Le/Gp for the five single-locus traits,
+        # P+V together for pod shape's two-gene trait, Fa+Mfa together
+        # for flower position's modifier pair).
+        locus_labels = [
+            (("R",), "Seed shape"),
+            (("I",), "Seed color"),
+            (("A",), "Flower color"),
+            (("Le",), "Plant height"),
+            (("Gp",), "Pod color"),
+            (("P", "V"), "Pod shape"),
+            (("Fa", "Mfa"), "Flower position"),
+        ]
+        lines = []
+        for loci, label in locus_labels:
+            parts = []
+            for loc in loci:
+                pair = geno.get(loc)
+                if not pair:
+                    continue
+                a1 = pair[0] if len(pair) > 0 else "?"
+                a2 = pair[1] if len(pair) > 1 else "?"
+                # No "P:"/"V:"/"Fa:"/"Mfa:" locus prefix even for the
+                # two-locus traits — the trait label ("Pod shape:",
+                # "Flower position:") already gives the context, so
+                # naming each locus again here was redundant. Matches
+                # the same fix already applied to TIE's own allele
+                # display (traitinheritanceexplorer.py's _allele_suffix).
+                parts.append(f"{a1}/{a2}")
+            if parts:
+                lines.append(f"{label}: " + "; ".join(parts))
+        return "\n".join(lines)
+
+    def _refresh_genotype_viewer_if_open(self):
+        """
+        If the Genotype Viewer is currently open, rebuild it for whatever
+        plant is now selected — called every render (same as
+        _refresh_inspector_if_open just below) so switching plants while
+        it's open swaps its content the same way the inspector does,
+        instead of it silently continuing to show the plant it was
+        originally opened for. _on_genetics() itself handles destroying
+        the previous window and preserving its screen position, so this
+        just needs to detect that a rebuild is actually warranted.
+        """
+        win = getattr(self, "_genotype_viewer_win", None)
+        if win is None:
+            return
+        try:
+            if not win.winfo_exists():
+                self._genotype_viewer_win = None
+                self._genotype_viewer_idx = None
+                return
+        except Exception:
+            self._genotype_viewer_win = None
+            self._genotype_viewer_idx = None
+            return
+
+        if getattr(self, "_genotype_viewer_idx", None) == self.selected_index:
+            return  # same plant (or same "none") still selected — nothing to do
+
+        self._on_genetics()
+
     def _refresh_inspector_if_open(self):
         """
         If the plant inspector is currently open, refresh it to reflect
@@ -1117,6 +1226,123 @@ class GardenApp:
     # visually match other windows to it (see _apply_inspector_theme).
     INSPECTOR_BG = "#f5f0e6"
 
+    def _popup_close_bar(self, outer, popup):
+        """
+        A "Close" button pinned to the bottom-right of a genotype-
+        explanation popup — packed into its own bottom-docked bar
+        (side="bottom") so it stays anchored there regardless of how
+        much content sits above it, rather than just trailing after the
+        last content label wherever that happened to end (which is what
+        made it look like it was "hanging in the air" — its vertical
+        position moved around depending on content length instead of
+        being fixed). Styled green via _make_flat_button, not a plain
+        tk.Button, matching the rest of this window's own buttons rather
+        than standing out as a different, unstyled control.
+        """
+        bar = tk.Frame(outer)
+        bar.pack(side="bottom", fill="x", pady=(10, 0))
+        btn = self._make_flat_button(
+            bar, "Close", popup.destroy,
+            bg="#7A9A3C", fg="white", font=("Segoe UI", 11, "bold"))
+        btn.pack(side="right")
+
+    def _fit_popup_to_content(self, popup, parent_win):
+        """
+        Sizes a genotype-explanation popup to exactly fit its actual
+        built content (measured via winfo_reqwidth/reqheight after
+        everything, including _popup_close_bar's bottom bar, has been
+        packed) rather than a fixed guessed geometry — a fixed size was
+        leaving a lot of empty space at the bottom once the icon-row
+        summary made real content shorter than guessed. Centered on
+        parent_win (the Genotype Explorer window itself) rather than the
+        screen, so it opens right where it was triggered from. Call
+        popup.withdraw() before building content and this handles
+        showing it again once sized — avoids a visible flash at the
+        wrong size/position while it's being measured and moved.
+        """
+        try:
+            popup.update_idletasks()
+            w = popup.winfo_reqwidth()
+            h = popup.winfo_reqheight()
+            if w <= 1 or h <= 1:
+                popup.deiconify()
+                return
+            try:
+                pw = parent_win.winfo_width()
+                ph = parent_win.winfo_height()
+                px = parent_win.winfo_x()
+                py = parent_win.winfo_y()
+                x = px + max(0, (pw - w) // 2)
+                y = py + max(0, (ph - h) // 2)
+            except Exception:
+                sw = popup.winfo_screenwidth()
+                sh = popup.winfo_screenheight()
+                x = max(0, (sw - w) // 2)
+                y = max(0, (sh - h) // 2)
+            popup.geometry(f"{w}x{h}+{x}+{y}")
+            popup.deiconify()
+        except Exception:
+            try:
+                popup.deiconify()
+            except Exception:
+                pass
+
+    def _popup_icon_summary_row(self, parent, icon_path, text, icon_img=None):
+        """
+        One "[icon] text" row for a genotype-explanation popup's summary
+        section (e.g. "P/_ V/_  →  inflated pods", shown with the actual
+        inflated-pod icon rather than as a plain bullet line) — matches
+        the main Genotype Explorer table's own font (Segoe UI 12/12
+        bold), reused here so the popups read consistently with the
+        window that opens them. icon_img lets a caller pass an already-
+        loaded PhotoImage (e.g. a greyscaled pod-shape icon) instead of
+        a file path for safe_image_scaled to load, same convention as
+        _table_row's own icon_img parameter.
+        """
+        row = tk.Frame(parent)
+        row.pack(anchor="w", pady=(2, 2), fill="x")
+        img = icon_img
+        if img is None and icon_path:
+            try:
+                img = safe_image_scaled(icon_path, 1, 1)
+            except Exception:
+                img = None
+        if img is not None:
+            icon_lbl = tk.Label(row, image=img)
+            icon_lbl.image = img
+            icon_lbl.pack(side="left", padx=(0, 8))
+        tk.Label(
+            row, text=text, font=("Segoe UI", 12),
+            justify="left", anchor="w", wraplength=460,
+        ).pack(side="left", fill="x", expand=True)
+        return row
+
+    def _greyscale_icon_from_path(self, path, sx=1, sy=1):
+        """
+        Load an icon from file path, convert to greyscale, return
+        PhotoImage or None. Same approach traitinheritanceexplorer.py's
+        own _greyscale_icon_from_path uses for its pod-shape ratio icons
+        (loaded with an arbitrary color just to get *a* shape icon, then
+        desaturated) — reused here for the Genotype Explorer's Pod shape
+        row once split out from Pod color (see the pod section further
+        down): shape alone shouldn't visually imply a specific color the
+        way the combined pod_shape_icon_path(shape, color) icon did.
+        """
+        if not path:
+            return None
+        try:
+            pil_img = Image.open(path).convert("RGBA")
+            if sx != 1 or sy != 1:
+                w, h = pil_img.size
+                pil_img = pil_img.resize((max(1, int(w * sx)), max(1, int(h * sy))), Image.NEAREST)
+            # Desaturate: convert to L then back to RGBA to preserve alpha
+            r, g, b, a = pil_img.split()
+            grey_rgb = pil_img.convert("L")
+            grey_rgba = Image.merge("RGBA", (grey_rgb, grey_rgb, grey_rgb, a))
+            return ImageTk.PhotoImage(grey_rgba)
+        except Exception:
+            return None
+
     def _apply_inspector_theme(self, root_widget, bg=None):
         """
         Recursively restyle an existing window's widget tree to match the
@@ -1156,6 +1382,17 @@ class GardenApp:
                 if not getattr(widget, '_is_flat_button', False):
                     try:
                         widget.configure(bg=bg)
+                        # _apply_hover (see its own definition) stashes
+                        # the bg a button had AT THE TIME hover binding
+                        # was attached as _base_bg, restored on <Leave>.
+                        # Buttons here get hover-bound before this theme
+                        # walk ever runs, so without this their _base_bg
+                        # stays the stale pre-theme color — hovering off
+                        # them would visibly revert to the wrong
+                        # background instead of this widget's real,
+                        # current one.
+                        if hasattr(widget, "_base_bg"):
+                            widget._base_bg = bg
                     except Exception:
                         pass
                 try:
@@ -5521,6 +5758,12 @@ class GardenApp:
         except Exception:
             pass
 
+        # Same treatment for the Genotype Viewer, if it's open.
+        try:
+            self._refresh_genotype_viewer_if_open()
+        except Exception:
+            pass
+
 
         # Ensure all eligible traits are revealed for any living plant
         try:
@@ -6058,9 +6301,61 @@ class GardenApp:
         idx = self.selected_index
         plant = self.tiles[idx].plant if (idx is not None) else None
 
+        # Preserve screen position across a selection-driven rebuild (see
+        # _refresh_genotype_viewer_if_open) — this whole window gets
+        # destroyed and recreated for a newly-selected plant rather than
+        # updated in place (the function that builds it is ~780 lines of
+        # tabs/tables built directly against a single plant, too large
+        # and risky to split into separate build/populate halves), so
+        # without this it would otherwise jump back to Tk's default
+        # placement every time the selection changes. Also replaces
+        # (rather than duplicates) any Genotype Viewer already open for
+        # a normal re-press of the button that opens this, for the same
+        # single-window behavior as the plant inspector.
+        _prev_geometry = None
+        _prev_win = getattr(self, "_genotype_viewer_win", None)
+        if _prev_win is not None:
+            try:
+                if _prev_win.winfo_exists():
+                    _prev_geometry = _prev_win.geometry()
+                    _prev_win.destroy()
+            except Exception:
+                pass
+
         win = tk.Toplevel(self.root)
         win.title("Genotype Viewer")
         self._let_window_go_above_inspector(win)
+        # Stays topmost persistently — not just momentarily lifted on
+        # open or when the "?" toggle re-centers it (see
+        # _toggle_how_it_works_this_tab's own lift()/focus_force()) —
+        # matching how the plant inspector itself already behaves (see
+        # _let_window_go_above_inspector's own docstring: "normally
+        # always on top of everything"). Without this, clicking any
+        # other window would drop the Genotype Viewer behind it, with
+        # nothing bringing it back to the front on its own.
+        try:
+            win.attributes('-topmost', True)
+        except Exception:
+            pass
+        if _prev_geometry:
+            try:
+                win.geometry(_prev_geometry)
+            except Exception:
+                pass
+
+        # Tracked so _refresh_genotype_viewer_if_open (called every
+        # render, same as the plant inspector's own refresh) knows this
+        # window is open, which plant it currently shows, and can rebuild
+        # it when the selection changes to a different plant.
+        self._genotype_viewer_win = win
+        self._genotype_viewer_idx = idx
+
+        def _on_genotype_viewer_close():
+            if getattr(self, "_genotype_viewer_win", None) is win:
+                self._genotype_viewer_win = None
+                self._genotype_viewer_idx = None
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _on_genotype_viewer_close)
 
         nb = ttk.Notebook(win)
         nb.pack(fill="both", expand=True, padx=12, pady=(4, 12))
@@ -6189,11 +6484,21 @@ class GardenApp:
                     parts.append(f"{loc}: {a1}/{a2}")
             return "; ".join(parts)
 
-        def _table_row(tbl, r, trait_label, icon_path, chrom_text, allele_text, why):
+        def _table_row(tbl, r, trait_label, icon_path, chrom_text, allele_text, why, icon_img=None):
             cell = tk.Frame(tbl)
             cell.grid(row=r, column=0, padx=(6,6), pady=(2,0), sticky="w")
             tk.Label(cell, text=trait_label, font=("Segoe UI", 12, "bold")).pack(side="left", padx=(0,6))
-            img = safe_image_scaled(icon_path, 2, 2)
+            # icon_img lets a caller pass an already-loaded PhotoImage
+            # directly (e.g. the greyscaled Pod shape icon below) instead
+            # of a file path for safe_image_scaled to load — used when
+            # the icon needed isn't just "this file, scaled" but the
+            # result of some other processing first.
+            # Native size (1, 1) — was (2, 2), which safe_image_scaled
+            # treats as shrink-by-2, making every other row's icon half
+            # the size of Pod shape's (which loads at its own native
+            # size via _greyscale_icon_from_path's sx=sy=1 default).
+            # Matched here so every row's icon is the same size.
+            img = icon_img if icon_img is not None else safe_image_scaled(icon_path, 1, 1)
             icon_lbl = tk.Label(cell, image=img); icon_lbl.image = img
             icon_lbl.pack(side="left")
 
@@ -6201,8 +6506,20 @@ class GardenApp:
             chrom_lbl = tk.Label(tbl, text=str(chrom_text or ""), font=("Segoe UI", 12))
             chrom_lbl.grid(row=r, column=1, sticky="w", padx=6)
 
-            # Alleles are stored but initially hidden; they will be revealed by a button.
-            alle = tk.Label(tbl, text="•••", font=("Segoe UI", 12, "bold"))
+            # Alleles are stored but initially hidden; they will be
+            # revealed by a button — UNLESS reveal was already used
+            # earlier in this session (self._genotype_revealed, a
+            # persistent app-level flag, not per-plant), in which case
+            # every subsequently-opened Genotype Viewer — for any plant —
+            # starts already revealed too, matching the once-you've-seen-
+            # it-you've-seen-it framing the reveal button itself implies,
+            # rather than having to press Reveal again per plant.
+            _already_revealed = bool(getattr(self, "_genotype_revealed", False))
+            alle = tk.Label(
+                tbl,
+                text=(allele_text if _already_revealed else "•••"),
+                font=("Segoe UI", 12, "bold")
+            )
             alle._allele_real = allele_text  # stash the true text here
             alle.grid(row=r, column=2, sticky="w", padx=6)
 
@@ -6213,7 +6530,7 @@ class GardenApp:
                 _attach_tooltip(why_lbl, why)
 
             sep = tk.Frame(tbl, height=1, bg="#DDDDDD")
-            sep.grid(row=r+1, column=0, columnspan=4, sticky="ew", padx=6, pady=(2,2))
+            sep.grid(row=r+1, column=0, columnspan=5, sticky="ew", padx=6, pady=(2,2))
             return r+2
 
         def _tab_meta(frame, plant_obj):
@@ -6293,14 +6610,102 @@ class GardenApp:
             tbl = tk.Frame(frame)
             tbl.pack(fill="x", expand=True)
 
-            # Extra column 4 for the '?' button
             for c in (0, 1, 2, 3, 4):
                 tbl.grid_columnconfigure(c, weight=(0 if c == 0 else 1))
 
             tk.Label(tbl, text="Trait",       font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w", padx=6)
             tk.Label(tbl, text="Chr.", font=("Segoe UI", 12, "bold")).grid(row=0, column=1, sticky="w", padx=6)
             tk.Label(tbl, text="Alleles",     font=("Segoe UI", 12, "bold")).grid(row=0, column=2, sticky="w", padx=6)
-            tk.Label(tbl, text="Why",         font=("Segoe UI", 12, "bold")).grid(row=0, column=3, sticky="w", padx=6)
+
+            # "How it works" — a real button now, not a plain header
+            # label: the short explanation sentence (columns 3) and each
+            # row's own "?" button (column 4, for the full popup detail)
+            # both start hidden, and clicking this reveals both together
+            # for every trait row in THIS table (this tab's own plant —
+            # each tab's header controls only its own table, no shared
+            # window-level state needed).
+            #
+            # Widgets are tracked directly in _how_it_works_widgets (each
+            # lbl_xxx/btn_xxx pair appended to it right after creation,
+            # below) rather than rediscovered later via grid_slaves() —
+            # grid_remove() actually unmaps a widget from the grid
+            # manager's own tracking, so grid_slaves() no longer returns
+            # it afterward. Relying on grid_slaves() here meant the
+            # toggle could never find any of the hidden widgets again
+            # once they were hidden, since they're removed the instant
+            # they're created — the button had nothing left to reveal.
+            _how_it_works_expanded = [False]
+            _how_it_works_widgets = []
+
+            def _toggle_how_it_works_this_tab(_widgets=_how_it_works_widgets, _state=_how_it_works_expanded):
+                _state[0] = not _state[0]
+                for _w in _widgets:
+                    try:
+                        if _state[0]:
+                            _w.grid()
+                        else:
+                            _w.grid_remove()
+                    except Exception:
+                        pass
+                # Button reads "?" collapsed (matching the small per-row
+                # "?" buttons it's revealing), "How it works" once
+                # expanded — a small visual cue for what state it's in,
+                # not just a static label.
+                try:
+                    btn_how_header.configure(
+                        text=("How it works" if _state[0] else "?"))
+                except Exception:
+                    pass
+                # Re-measure and resize the WINDOW (not just this table)
+                # now that a whole extra column's worth of content just
+                # appeared or disappeared — without this, the window kept
+                # whatever height/width it opened at (computed when
+                # everything was still hidden), so revealed content could
+                # end up visibly cramped/cut off rather than the window
+                # actually growing to fit it. Position also changes with
+                # it: expanding centers the window on screen (asked for
+                # explicitly — the slim/right-docked position stops
+                # making sense once it's showing the full explanatory
+                # width), collapsing back returns it to that same
+                # right-docked position the window opens at initially,
+                # for symmetry.
+                try:
+                    win.update_idletasks()
+                    req_w = win.winfo_reqwidth()
+                    req_h = win.winfo_reqheight()
+                    if req_w > 1 and req_h > 1:
+                        mult_w = 1.12 if _state[0] else 1.08
+                        w = int(req_w * mult_w)
+                        h = int(req_h * 1.0)
+                        screen_w = win.winfo_screenwidth()
+                        screen_h = win.winfo_screenheight()
+                        if _state[0]:
+                            x = max(0, (screen_w - w) // 2)
+                            y = max(0, (screen_h - h) // 2)
+                        else:
+                            x = max(0, screen_w - w - 24)
+                            y = 60
+                        win.geometry(f"{w}x{h}+{x}+{y}")
+                        # Re-centering can otherwise leave the window
+                        # sitting behind whatever else is on screen —
+                        # moving it doesn't automatically raise it, so
+                        # it needs an explicit lift() (and focus, so
+                        # keyboard/scroll input actually goes to it too)
+                        # to genuinely end up on top after the jump.
+                        win.lift()
+                        win.focus_force()
+                except Exception:
+                    pass
+
+            # Starts as a small "?" — same style as the per-row "?"
+            # buttons it reveals — rather than a bigger "How it works"
+            # label, so the collapsed state visually matches what it's
+            # about to turn into.
+            btn_how_header = self._make_flat_button(
+                tbl, "?", _toggle_how_it_works_this_tab,
+                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
+            btn_how_header.grid(row=0, column=3, sticky="w", padx=6)
+
             rowi = 1
 
             # --------------------------------------------------------
@@ -6324,12 +6729,68 @@ class GardenApp:
             expl_long_fc = (
                 "The A gene controls the plant’s ability to make anthocyanin pigment. Plants with "
                 "at least one A allele (A/A or A/a) produce purple flowers. Plants with the recessive "
-                "genotype a/a cannot produce anthocyanin and therefore have white flowers.\n\n"
-                "In short:\n"
-                "– A/_ → purple\n"
-                "– a/a → white"
+                "genotype a/a cannot produce anthocyanin and therefore have white flowers."
             )
+            # (genotype shorthand, phenotype value, trait+value for icon lookup)
+            summary_fc = [
+                ("A/_", "purple", ("flower_color", "purple")),
+                ("a/a", "white",  ("flower_color", "white")),
+            ]
 
+            def _show_fc_expl():
+                popup = tk.Toplevel(win)
+                popup.title("Flower color genetics")
+                popup.transient(win)
+                # Sized to fit its actual content exactly (measured after
+                # building, below) rather than a fixed guessed geometry —
+                # a fixed size was leaving a lot of empty space at the
+                # bottom once the icon rows made the content shorter than
+                # guessed.
+                popup.withdraw()
+
+                outer = tk.Frame(popup, bd=2, relief="groove", padx=14, pady=14)
+                outer.pack(fill="both", expand=True)
+
+                # Heading + body now match the main table's own font
+                # (Segoe UI 12/12 bold) instead of a slightly different
+                # 13pt heading — reads as one consistent style with the
+                # window that opened this popup, not a visually separate
+                # dialog.
+                tk.Label(
+                    outer,
+                    text=short_fc,
+                    font=("Segoe UI", 12, "bold"),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 8))
+
+                tk.Label(
+                    outer,
+                    text=expl_long_fc,
+                    font=("Segoe UI", 12),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 10))
+
+                tk.Label(
+                    outer, text="In short:", font=("Segoe UI", 12, "bold"),
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 4))
+                for geno_txt, pheno_txt, (trait_key, trait_val) in summary_fc:
+                    self._popup_icon_summary_row(
+                        outer,
+                        trait_icon_path(trait_key, trait_val),
+                        f"{geno_txt}  →  {pheno_txt}",
+                    )
+
+                self._popup_close_bar(outer, popup)
+                self._fit_popup_to_content(popup, win)
+
+            # Short explanation label, hidden by default (grid_remove) —
+            # shown together with the "?" button once "How it works" is
+            # clicked (see _toggle_how_it_works_this_tab above).
             lbl_fc = tk.Label(
                 tbl,
                 text=short_fc,
@@ -6339,37 +6800,20 @@ class GardenApp:
                 wraplength=350,
             )
             lbl_fc.grid(row=base_row, column=3, sticky="w", padx=6)
+            lbl_fc.grid_remove()
+            _how_it_works_widgets.append(lbl_fc)
 
-            def _show_fc_expl():
-                popup = tk.Toplevel(win)
-                popup.title("Flower color genetics")
-                popup.transient(win)
-
-                outer = tk.Frame(popup, bd=2, relief="groove", padx=12, pady=12)
-                outer.pack(fill="both", expand=True)
-
-                tk.Label(
-                    outer,
-                    text=short_fc,
-                    font=("Segoe UI", 13, "bold"),
-                    wraplength=520,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x", pady=(0, 8))
-
-                tk.Label(
-                    outer,
-                    text=expl_long_fc,
-                    font=("Segoe UI", 12),
-                    wraplength=520,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x")
-
-                tk.Button(outer, text="Close", command=popup.destroy).pack(pady=(10, 0), anchor="e")
-
-            btn_fc = tk.Button(tbl, text="?", width=2, command=_show_fc_expl)
+            # Small green "?" — same flat-button style as the Plant/All
+            # buttons and other popup windows' own action buttons, not a
+            # plain tk.Button (macOS ignores custom bg/fg on real
+            # Buttons). Also hidden by default, revealed alongside
+            # lbl_fc above.
+            btn_fc = self._make_flat_button(
+                tbl, "?", _show_fc_expl,
+                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
             btn_fc.grid(row=base_row, column=4, sticky="w", padx=6)
+            btn_fc.grid_remove()
+            _how_it_works_widgets.append(btn_fc)
 
             # --------------------------------------------------------
             # Plant height (Le)
@@ -6392,11 +6836,53 @@ class GardenApp:
             expl_long_phgt = (
                 "The Le gene regulates stem elongation. Plants with at least one Le allele (Le/Le or "
                 "Le/le) produce enough growth hormone to grow tall. Plants with le/le produce much less "
-                "and grow as short dwarf plants.\n\n"
-                "In short:\n"
-                "– Le/_ → tall\n"
-                "– le/le → dwarf"
+                "and grow as short dwarf plants."
             )
+            summary_phgt = [
+                ("Le/_",  "tall",  ("plant_height", "tall")),
+                ("le/le", "dwarf", ("plant_height", "short")),
+            ]
+
+            def _show_phgt_expl():
+                popup = tk.Toplevel(win)
+                popup.title("Plant height genetics")
+                popup.transient(win)
+                popup.withdraw()
+
+                outer = tk.Frame(popup, bd=2, relief="groove", padx=14, pady=14)
+                outer.pack(fill="both", expand=True)
+
+                tk.Label(
+                    outer,
+                    text=short_phgt,
+                    font=("Segoe UI", 12, "bold"),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 8))
+
+                tk.Label(
+                    outer,
+                    text=expl_long_phgt,
+                    font=("Segoe UI", 12),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 10))
+
+                tk.Label(
+                    outer, text="In short:", font=("Segoe UI", 12, "bold"),
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 4))
+                for geno_txt, pheno_txt, (trait_key, trait_val) in summary_phgt:
+                    self._popup_icon_summary_row(
+                        outer,
+                        trait_icon_path(trait_key, trait_val),
+                        f"{geno_txt}  →  {pheno_txt}",
+                    )
+
+                self._popup_close_bar(outer, popup)
+                self._fit_popup_to_content(popup, win)
 
             lbl_phgt = tk.Label(
                 tbl,
@@ -6407,130 +6893,215 @@ class GardenApp:
                 wraplength=350,
             )
             lbl_phgt.grid(row=base_row, column=3, sticky="w", padx=6)
+            lbl_phgt.grid_remove()
+            _how_it_works_widgets.append(lbl_phgt)
 
-            def _show_phgt_expl():
+            btn_phgt = self._make_flat_button(
+                tbl, "?", _show_phgt_expl,
+                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
+            btn_phgt.grid(row=base_row, column=4, sticky="w", padx=6)
+            btn_phgt.grid_remove()
+            _how_it_works_widgets.append(btn_phgt)
+
+            # --------------------------------------------------------
+            # Pod shape (P, V) and Pod color (Gp) — split into their own
+            # rows rather than combined into one "Pod color/shape" row.
+            # Pod shape's icon is greyscaled (same approach as
+            # traitinheritanceexplorer.py's own pod-shape ratio icons —
+            # see GardenApp._greyscale_icon_from_path): the only shape
+            # icon asset available is pod_shape_icon_path(shape, color),
+            # which always bakes in SOME color, so it's loaded with an
+            # arbitrary "green" and desaturated — a shape-only row
+            # shouldn't visually imply a specific color that belongs to
+            # the separate Pod color row instead. Pod color's own icon
+            # keeps the plant's actual color, since that's what that row
+            # is specifically about.
+            # --------------------------------------------------------
+            pod_shape = ph.get("pod_shape", "")
+            pod_color = ph.get("pod_color", "")
+
+            base_row = rowi
+            _pod_shape_icon_path = pod_shape_icon_path(pod_shape, "green")
+            # Native size (sx=sy=1, this function's own default) rather
+            # than trying to match safe_image_scaled's separate, opposite
+            # scale-factor convention (shrink-by vs. multiply-by) — that
+            # mismatch was the actual cause of the previous oversized
+            # icon, and matching it exactly turned out fragile, so
+            # simplifying to no scaling at all instead.
+            _pod_shape_grey = self._greyscale_icon_from_path(_pod_shape_icon_path, sx=1, sy=1)
+            pod_shape_alleles = f"{_allele_str(geno, ['P'])}; {_allele_str(geno, ['V'])}"
+            rowi = _table_row(
+                tbl, rowi,
+                "Pod shape",
+                _pod_shape_icon_path,
+                "1, 5",  # P: chr1; V: chr5
+                pod_shape_alleles,
+                "",
+                icon_img=_pod_shape_grey,
+            )
+
+            icon_pod_color = pod_shape_icon_path(pod_shape, pod_color)
+            pod_color_alleles = _allele_str(geno, ['Gp'])
+            rowi = _table_row(
+                tbl, rowi,
+                "Pod color",
+                icon_pod_color,
+                "3",  # Gp: chr3
+                pod_color_alleles,
+                ""
+            )
+
+            short_pod_shape = "Pod shape depends on two genes, P and V."
+            short_pod_color = "Pod color is controlled by the Gp gene."
+
+            expl_long_pod_shape = (
+                "For a pod to be fully inflated, the plant needs at least one dominant allele at "
+                "both loci (P/_ and V/_). If either gene is homozygous recessive (p/p or v/v), the "
+                "pods become constricted around the seeds and look more pointed."
+            )
+            expl_long_pod_color = (
+                "Plants with at least one Gp allele (Gp/Gp or Gp/gp) produce chlorophyll in the pod "
+                "wall, making pods green. Plants with gp/gp lack this green color and have yellow pods."
+            )
+            chrom_pod_shape = (
+                "Chromosome locations and linkage\n"
+                "• P is on chromosome 1.\n"
+                "• V is on chromosome 5, on the same chromosome as Le (plant height).\n\n"
+                "In this simulator, Le and V are modelled as closely linked (~12.6% recombination), "
+                "meaning some crosses involving these two loci deviate from the classic 9:3:3:1 F2 "
+                "ratio and illustrate genetic linkage as an exception to Mendel’s third law "
+                "(independent assortment)."
+            )
+            chrom_pod_color = (
+                "Chromosome location and linkage\n"
+                "• Gp is on chromosome 3, on the same chromosome as R (seed shape).\n\n"
+                "In this simulator, R and Gp are modelled as more weakly linked (~30% recombination), "
+                "meaning some crosses involving these two loci deviate from the classic 9:3:3:1 F2 "
+                "ratio and illustrate genetic linkage as an exception to Mendel’s third law "
+                "(independent assortment)."
+            )
+            # Shape rows use the same greyscaled, color-neutral icon the
+            # main table's own Pod shape row uses (a shape-only icon
+            # shouldn't visually imply a specific color); color rows use
+            # the full-color combined icon with "inflated" as a neutral
+            # baseline shape, since a color-only row doesn't imply a
+            # specific shape either.
+            _pod_infl_grey = self._greyscale_icon_from_path(
+                pod_shape_icon_path("inflated", "green"), sx=1, sy=1)
+            _pod_cons_grey = self._greyscale_icon_from_path(
+                pod_shape_icon_path("constricted", "green"), sx=1, sy=1)
+            summary_pod_shape = [
+                ("P/_ V/_",    "inflated pods",    None, _pod_infl_grey),
+                ("p/p or v/v", "constricted pods", None, _pod_cons_grey),
+            ]
+            summary_pod_color = [
+                ("Gp/_", "green pods",  pod_shape_icon_path("inflated", "green"), None),
+                ("gp/gp", "yellow pods", pod_shape_icon_path("inflated", "yellow"), None),
+            ]
+
+            def _build_pod_popup(title, short_txt, long_txt, chrom_txt, summary_rows):
                 popup = tk.Toplevel(win)
-                popup.title("Plant height genetics")
+                popup.title(title)
                 popup.transient(win)
+                popup.withdraw()
 
-                outer = tk.Frame(popup, bd=2, relief="groove", padx=12, pady=12)
+                outer = tk.Frame(popup, bd=2, relief="groove", padx=14, pady=14)
                 outer.pack(fill="both", expand=True)
 
                 tk.Label(
                     outer,
-                    text=short_phgt,
-                    font=("Segoe UI", 13, "bold"),
-                    wraplength=520,
+                    text=short_txt,
+                    font=("Segoe UI", 12, "bold"),
+                    wraplength=620,
                     justify="left",
                     anchor="w",
                 ).pack(fill="x", pady=(0, 8))
 
                 tk.Label(
                     outer,
-                    text=expl_long_phgt,
+                    text=long_txt,
                     font=("Segoe UI", 12),
-                    wraplength=520,
+                    wraplength=620,
                     justify="left",
                     anchor="w",
-                ).pack(fill="x")
+                ).pack(fill="x", pady=(0, 10))
 
-                tk.Button(outer, text="Close", command=popup.destroy).pack(pady=(10, 0), anchor="e")
+                tk.Label(
+                    outer, text="In short:", font=("Segoe UI", 12, "bold"),
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 4))
+                for geno_txt, pheno_txt, icon_path, icon_img in summary_rows:
+                    self._popup_icon_summary_row(
+                        outer, icon_path, f"{geno_txt}  →  {pheno_txt}",
+                        icon_img=icon_img,
+                    )
 
-            btn_phgt = tk.Button(tbl, text="?", width=2, command=_show_phgt_expl)
-            btn_phgt.grid(row=base_row, column=4, sticky="w", padx=6)
+                tk.Label(
+                    outer,
+                    text=chrom_txt,
+                    font=("Segoe UI", 12),
+                    wraplength=620,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(10, 0))
 
-            # --------------------------------------------------------
-            # Pod color / shape (P, V, Gp)
-            # --------------------------------------------------------
-            pod_shape = ph.get("pod_shape", "")
-            pod_color = ph.get("pod_color", "")
-            icon_pod = pod_shape_icon_path(pod_shape, pod_color)
+                self._popup_close_bar(outer, popup)
+                self._fit_popup_to_content(popup, win)
 
-            pod_alleles = (
-                f"{_allele_str(geno, ['P'])}; "
-                f"{_allele_str(geno, ['V'])} | "
-                f"{_allele_str(geno, ['Gp'])}"
-            )
+            def _show_pod_shape_expl():
+                _build_pod_popup(
+                    "Pod shape genetics", short_pod_shape, expl_long_pod_shape,
+                    chrom_pod_shape, summary_pod_shape)
 
-            base_row = rowi
-            rowi = _table_row(
-                tbl, rowi,
-                "Pod color/shape",
-                icon_pod,
-                "1, 3, 5",  # P: chr1; Gp: chr3; V: chr5
-                pod_alleles,
-                ""
-            )
+            def _show_pod_color_expl():
+                _build_pod_popup(
+                    "Pod color genetics", short_pod_color, expl_long_pod_color,
+                    chrom_pod_color, summary_pod_color)
 
-            short_pod = (
-                "Pod shape and color depend on P, V and Gp. "
-                "V shares a chromosome with Le (height) and Gp shares one with R (seed shape)."
-            )
-
-            expl_long_pod = (
-                "Pod shape depends on two genes, P and V. For a pod to be fully inflated, the plant "
-                "needs at least one dominant allele at both loci (P/_ and V/_). If either gene is "
-                "homozygous recessive (p/p or v/v), the pods become constricted around the seeds and "
-                "look more pointed.\n\n"
-                "Pod color is controlled by the Gp gene. Plants with at least one Gp allele (Gp/Gp or "
-                "Gp/gp) produce chlorophyll in the pod wall, making pods green. Plants with gp/gp lack "
-                "this green color and have yellow pods.\n\n"
-                "In short:\n"
-                "– P/_ V/_ → inflated\n"
-                "– p/p or v/v → constricted\n"
-                "– Gp/_ → green pods\n"
-                "– gp/gp → yellow pods\n\n"
-                "Chromosome locations and linkage\n"
-                "• P is on chromosome 1.\n"
-                "• Gp is on chromosome 3, on the same chromosome as R (seed shape).\n"
-                "• V is on chromosome 5, on the same chromosome as Le (plant height).\n\n"
-                "In this simulator, Le and V are modelled as closely linked (~12.6% recombination), "
-                "and R and Gp as more weakly linked (~30% recombination). That means some crosses involving these loci "
-                "deviate from the classic 9:3:3:1 F2 ratio and illustrate genetic linkage as an "
-                "exception to Mendel’s third law (independent assortment)."
-            )
-
-
-            lbl_pod = tk.Label(
+            # Pod shape and Pod color each get their OWN short-text label
+            # and "?" button, opening their OWN, fully separate popup —
+            # previously both rows shared one merged "Pod color and
+            # shape genetics" popup (and even the same short_pod text on
+            # both rows), which read as the two traits still being
+            # merged even though they'd been split into separate table
+            # rows already.
+            lbl_pod_shape = tk.Label(
                 tbl,
-                text=short_pod,
+                text=short_pod_shape,
                 font=("Segoe UI", 12),
                 justify="left",
                 anchor="w",
                 wraplength=350,
             )
-            lbl_pod.grid(row=base_row, column=3, sticky="w", padx=6)
+            lbl_pod_shape.grid(row=base_row, column=3, sticky="w", padx=6)
+            lbl_pod_shape.grid_remove()
+            _how_it_works_widgets.append(lbl_pod_shape)
 
-            def _show_pod_expl():
-                popup = tk.Toplevel(win)
-                popup.title("Pod color and shape genetics")
-                popup.transient(win)
+            btn_pod_shape = self._make_flat_button(
+                tbl, "?", _show_pod_shape_expl,
+                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
+            btn_pod_shape.grid(row=base_row, column=4, sticky="w", padx=6)
+            btn_pod_shape.grid_remove()
+            _how_it_works_widgets.append(btn_pod_shape)
 
-                outer = tk.Frame(popup, bd=2, relief="groove", padx=12, pady=12)
-                outer.pack(fill="both", expand=True)
+            lbl_pod_color = tk.Label(
+                tbl,
+                text=short_pod_color,
+                font=("Segoe UI", 12),
+                justify="left",
+                anchor="w",
+                wraplength=350,
+            )
+            lbl_pod_color.grid(row=base_row + 2, column=3, sticky="w", padx=6)
+            lbl_pod_color.grid_remove()
+            _how_it_works_widgets.append(lbl_pod_color)
 
-                tk.Label(
-                    outer,
-                    text=short_pod,
-                    font=("Segoe UI", 13, "bold"),
-                    wraplength=520,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x", pady=(0, 8))
-
-                tk.Label(
-                    outer,
-                    text=expl_long_pod,
-                    font=("Segoe UI", 12),
-                    wraplength=520,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x")
-
-                tk.Button(outer, text="Close", command=popup.destroy).pack(pady=(10, 0), anchor="e")
-
-            btn_pod = tk.Button(tbl, text="?", width=2, command=_show_pod_expl)
-            btn_pod.grid(row=base_row, column=4, sticky="w", padx=6)
+            btn_pod_color = self._make_flat_button(
+                tbl, "?", _show_pod_color_expl,
+                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
+            btn_pod_color.grid(row=base_row + 2, column=4, sticky="w", padx=6)
+            btn_pod_color.grid_remove()
+            _how_it_works_widgets.append(btn_pod_color)
 
             # --------------------------------------------------------
             # Seed shape (R)
@@ -6553,11 +7124,53 @@ class GardenApp:
             expl_long_sd_shape = (
                 "The R gene controls how starch fills the developing seed. Plants with at least one "
                 "R allele (R/R or R/r) produce normal starch, giving round seeds. Plants with r/r "
-                "produce less starch, causing seeds to wrinkle when they dry.\n\n"
-                "In short:\n"
-                "– R/_ → round\n"
-                "– r/r → wrinkled"
+                "produce less starch, causing seeds to wrinkle when they dry."
             )
+            summary_sd_shape = [
+                ("R/_", "round",    ("seed_shape", "round")),
+                ("r/r", "wrinkled", ("seed_shape", "wrinkled")),
+            ]
+
+            def _show_sdshape_expl():
+                popup = tk.Toplevel(win)
+                popup.title("Seed shape genetics")
+                popup.transient(win)
+                popup.withdraw()
+
+                outer = tk.Frame(popup, bd=2, relief="groove", padx=14, pady=14)
+                outer.pack(fill="both", expand=True)
+
+                tk.Label(
+                    outer,
+                    text=short_sd_shape,
+                    font=("Segoe UI", 12, "bold"),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 8))
+
+                tk.Label(
+                    outer,
+                    text=expl_long_sd_shape,
+                    font=("Segoe UI", 12),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 10))
+
+                tk.Label(
+                    outer, text="In short:", font=("Segoe UI", 12, "bold"),
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 4))
+                for geno_txt, pheno_txt, (trait_key, trait_val) in summary_sd_shape:
+                    self._popup_icon_summary_row(
+                        outer,
+                        trait_icon_path(trait_key, trait_val),
+                        f"{geno_txt}  →  {pheno_txt}",
+                    )
+
+                self._popup_close_bar(outer, popup)
+                self._fit_popup_to_content(popup, win)
 
             lbl_sd_shape = tk.Label(
                 tbl,
@@ -6568,37 +7181,15 @@ class GardenApp:
                 wraplength=350,
             )
             lbl_sd_shape.grid(row=base_row, column=3, sticky="w", padx=6)
+            lbl_sd_shape.grid_remove()
+            _how_it_works_widgets.append(lbl_sd_shape)
 
-            def _show_sdshape_expl():
-                popup = tk.Toplevel(win)
-                popup.title("Seed shape genetics")
-                popup.transient(win)
-
-                outer = tk.Frame(popup, bd=2, relief="groove", padx=12, pady=12)
-                outer.pack(fill="both", expand=True)
-
-                tk.Label(
-                    outer,
-                    text=short_sd_shape,
-                    font=("Segoe UI", 13, "bold"),
-                    wraplength=520,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x", pady=(0, 8))
-
-                tk.Label(
-                    outer,
-                    text=expl_long_sd_shape,
-                    font=("Segoe UI", 12),
-                    wraplength=520,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x")
-
-                tk.Button(outer, text="Close", command=popup.destroy).pack(pady=(10, 0), anchor="e")
-
-            btn_sdshape = tk.Button(tbl, text="?", width=2, command=_show_sdshape_expl)
+            btn_sdshape = self._make_flat_button(
+                tbl, "?", _show_sdshape_expl,
+                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
             btn_sdshape.grid(row=base_row, column=4, sticky="w", padx=6)
+            btn_sdshape.grid_remove()
+            _how_it_works_widgets.append(btn_sdshape)
 
             # --------------------------------------------------------
             # Seed color (I)
@@ -6621,11 +7212,53 @@ class GardenApp:
             expl_long_sd_color = (
                 "The I gene determines how much chlorophyll remains in the seed as it matures. "
                 "Plants with at least one I allele (I/I or I/i) break down chlorophyll and turn yellow. "
-                "Seeds with the recessive genotype i/i retain chlorophyll and stay green.\n\n"
-                "In short:\n"
-                "– I/_ → yellow\n"
-                "– i/i → green"
+                "Seeds with the recessive genotype i/i retain chlorophyll and stay green."
             )
+            summary_sd_color = [
+                ("I/_", "yellow", ("seed_color", "yellow")),
+                ("i/i", "green",  ("seed_color", "green")),
+            ]
+
+            def _show_sdcolor_expl():
+                popup = tk.Toplevel(win)
+                popup.title("Seed color genetics")
+                popup.transient(win)
+                popup.withdraw()
+
+                outer = tk.Frame(popup, bd=2, relief="groove", padx=14, pady=14)
+                outer.pack(fill="both", expand=True)
+
+                tk.Label(
+                    outer,
+                    text=short_sd_color,
+                    font=("Segoe UI", 12, "bold"),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 8))
+
+                tk.Label(
+                    outer,
+                    text=expl_long_sd_color,
+                    font=("Segoe UI", 12),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 10))
+
+                tk.Label(
+                    outer, text="In short:", font=("Segoe UI", 12, "bold"),
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 4))
+                for geno_txt, pheno_txt, (trait_key, trait_val) in summary_sd_color:
+                    self._popup_icon_summary_row(
+                        outer,
+                        trait_icon_path(trait_key, trait_val),
+                        f"{geno_txt}  →  {pheno_txt}",
+                    )
+
+                self._popup_close_bar(outer, popup)
+                self._fit_popup_to_content(popup, win)
 
             lbl_sd_color = tk.Label(
                 tbl,
@@ -6636,37 +7269,15 @@ class GardenApp:
                 wraplength=350,
             )
             lbl_sd_color.grid(row=base_row, column=3, sticky="w", padx=6)
+            lbl_sd_color.grid_remove()
+            _how_it_works_widgets.append(lbl_sd_color)
 
-            def _show_sdcolor_expl():
-                popup = tk.Toplevel(win)
-                popup.title("Seed color genetics")
-                popup.transient(win)
-
-                outer = tk.Frame(popup, bd=2, relief="groove", padx=12, pady=12)
-                outer.pack(fill="both", expand=True)
-
-                tk.Label(
-                    outer,
-                    text=short_sd_color,
-                    font=("Segoe UI", 13, "bold"),
-                    wraplength=520,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x", pady=(0, 8))
-
-                tk.Label(
-                    outer,
-                    text=expl_long_sd_color,
-                    font=("Segoe UI", 12),
-                    wraplength=520,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x")
-
-                tk.Button(outer, text="Close", command=popup.destroy).pack(pady=(10, 0), anchor="e")
-
-            btn_sdcolor = tk.Button(tbl, text="?", width=2, command=_show_sdcolor_expl)
+            btn_sdcolor = self._make_flat_button(
+                tbl, "?", _show_sdcolor_expl,
+                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
             btn_sdcolor.grid(row=base_row, column=4, sticky="w", padx=6)
+            btn_sdcolor.grid_remove()
+            _how_it_works_widgets.append(btn_sdcolor)
 
             # --------------------------------------------------------
             # Flower position (Fa + Mfa)  – your existing pattern
@@ -6688,18 +7299,8 @@ class GardenApp:
                 ""  # leave explanation empty; we will place our own
             )
 
-            # Short explanation (appears inline)
+            # Short explanation (used as the popup's heading text)
             short_expl = "Flower position is determined by Fa with modification by Mfa."
-
-            lbl_short = tk.Label(
-                tbl,
-                text=short_expl,
-                font=("Segoe UI", 12),
-                justify="left",
-                anchor="w",
-                wraplength=350,
-            )
-            lbl_short.grid(row=base_row, column=3, sticky="w", padx=6)
 
             # Long explanation (popup text)
             expl_long = (
@@ -6710,26 +7311,28 @@ class GardenApp:
                 "A second gene, Mfa, decides how strong this effect is. Plants with "
                 "fa/fa mfa/mfa often look almost normal again because the widening of the "
                 "stem tip is reduced. In contrast, fa/fa plants that still have at least "
-                "one Mfa allele (Mfa/_) usually show clear terminal flowers.\n\n"
-                "In short:\n"
-                "– Fa/_ Mfa/_ → normal axial flowers\n"
-                "– fa/fa Mfa/_ → clearly terminal flowers\n"
-                "– fa/fa mfa/mfa → weakly terminal or near-normal"
+                "one Mfa allele (Mfa/_) usually show clear terminal flowers."
             )
+            summary_fp = [
+                ("Fa/_ Mfa/_",     "normal axial flowers",           ("flower_position", "axial")),
+                ("fa/fa Mfa/_",    "clearly terminal flowers",       ("flower_position", "terminal")),
+                ("fa/fa mfa/mfa",  "weakly terminal or near-normal", ("flower_position", "terminal")),
+            ]
 
             def _show_flower_expl():
                 popup = tk.Toplevel(win)
                 popup.title("Flower position genetics")
                 popup.transient(win)
+                popup.withdraw()
 
-                outer = tk.Frame(popup, bd=2, relief="groove", padx=12, pady=12)
+                outer = tk.Frame(popup, bd=2, relief="groove", padx=14, pady=14)
                 outer.pack(fill="both", expand=True)
 
                 tk.Label(
                     outer,
                     text=short_expl,
-                    font=("Segoe UI", 13, "bold"),
-                    wraplength=520,
+                    font=("Segoe UI", 12, "bold"),
+                    wraplength=600,
                     justify="left",
                     anchor="w",
                 ).pack(fill="x", pady=(0, 8))
@@ -6738,16 +7341,43 @@ class GardenApp:
                     outer,
                     text=expl_long,
                     font=("Segoe UI", 12),
-                    wraplength=520,
+                    wraplength=600,
                     justify="left",
                     anchor="w",
-                ).pack(fill="x")
+                ).pack(fill="x", pady=(0, 10))
 
-                tk.Button(outer, text="Close", command=popup.destroy).pack(pady=(10, 0), anchor="e")
+                tk.Label(
+                    outer, text="In short:", font=("Segoe UI", 12, "bold"),
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 4))
+                for geno_txt, pheno_txt, (trait_key, trait_val) in summary_fp:
+                    self._popup_icon_summary_row(
+                        outer,
+                        trait_icon_path(trait_key, trait_val),
+                        f"{geno_txt}  →  {pheno_txt}",
+                    )
 
-            # '?' button placed after the short text
-            info_btn = tk.Button(tbl, text="?", width=2, command=_show_flower_expl)
+                self._popup_close_bar(outer, popup)
+                self._fit_popup_to_content(popup, win)
+
+            lbl_short = tk.Label(
+                tbl,
+                text=short_expl,
+                font=("Segoe UI", 12),
+                justify="left",
+                anchor="w",
+                wraplength=350,
+            )
+            lbl_short.grid(row=base_row, column=3, sticky="w", padx=6)
+            lbl_short.grid_remove()
+            _how_it_works_widgets.append(lbl_short)
+
+            info_btn = self._make_flat_button(
+                tbl, "?", _show_flower_expl,
+                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
             info_btn.grid(row=base_row, column=4, sticky="w", padx=6)
+            info_btn.grid_remove()
+            _how_it_works_widgets.append(info_btn)
 
         if not plant:
             tab = tk.Frame(nb); nb.add(tab, text="(none)")
@@ -6831,6 +7461,28 @@ class GardenApp:
             self._apply_inspector_theme(win)
         except Exception:
             pass
+
+        # Slim by default now that the why-text column is gone (replaced
+        # by the small "?" buttons next to Alleles) — natural width plus
+        # a little breathing room, docked toward the screen's right edge
+        # rather than centered, like a persistent side widget. Only on a
+        # genuinely fresh open (no _prev_geometry to restore), so this
+        # doesn't override a size already carried over from a previous
+        # open earlier in the session.
+        if not _prev_geometry:
+            try:
+                win.update_idletasks()
+                req_w = win.winfo_reqwidth()
+                req_h = win.winfo_reqheight()
+                if req_w > 1 and req_h > 1:
+                    w = int(req_w * 1.08)
+                    h = int(req_h * 1.0)
+                    screen_w = win.winfo_screenwidth()
+                    x = max(0, screen_w - w - 24)
+                    y = 60
+                    win.geometry(f"{w}x{h}+{x}+{y}")
+            except Exception:
+                pass
 
     # --- drag-selection helpers ---
 
@@ -11225,14 +11877,23 @@ class GardenApp:
             return pid
 
     def _starter_traits_for_next_seed(self):
-        # Balanced founders: independent 50/50 for each classic trait to avoid bias
+        # Balanced founders: independent 50/50 for each classic trait to
+        # avoid bias — pod_shape used to be the one exception, hardcoded
+        # to "inflated" only, while every other trait here (and pod_shape
+        # itself everywhere else in the codebase — see Plant.__init__'s
+        # own fallback defaults) is genuinely randomized. There's no
+        # structural reason for the difference: infer_genotype_from_traits
+        # already fully supports inferring a "constricted" starting
+        # genotype (randomly landing the P or V locus homozygous
+        # recessive) just as correctly as "inflated" — this was simply
+        # never wired up to random.choice like its neighbors were.
         return {
             "flower_color": random.choice(["purple","white"]),
             "seed_color":   random.choice(["yellow","green"]),
             "seed_shape":   random.choice(["round","wrinkled"]),
             "plant_height": random.choice(["tall","short"]),
             "pod_color":    random.choice(["green","yellow"]),
-            "pod_shape":    "inflated",
+            "pod_shape":    random.choice(["inflated","constricted"]),
             "flower_position": random.choice(["axial","terminal"]),
         }
 

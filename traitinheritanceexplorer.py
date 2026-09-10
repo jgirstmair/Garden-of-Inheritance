@@ -1167,12 +1167,15 @@ class TraitInheritanceExplorer(tk.Toplevel):
             except tk.TclError:
                 pass
 
-        # Toolbar button style (neutral, matches dark panel)
+        # Toolbar button style (neutral, matches dark panel) — font
+        # bumped slightly (was the ttk default, ~9-10pt) so these read
+        # more comfortably next to the rest of this window's text.
         self._style.configure(
             "Toolbar.TButton",
             padding=(10, 4),
             foreground=self.FG,
-            background=self.CARD
+            background=self.CARD,
+            font=("Segoe UI", 11),
         )
         self._style.map(
             "Toolbar.TButton",
@@ -1186,6 +1189,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             padding=(10, 4),
             foreground=self.FG,
             background="#1e4d6b",
+            font=("Segoe UI", 11),
         )
         self._style.map(
             "Action.TButton",
@@ -1199,6 +1203,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             padding=(8, 3),
             foreground="#ffffff",
             background="#2a5a7a",
+            font=("Segoe UI", 11),
         )
         self._style.map(
             "Nav.TButton",
@@ -1215,13 +1220,61 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 return ttk.Button(parent, text=text, command=command, style=style)
             else:
                 # On Windows/Linux classic tk.Button styling is fine
-                kw = dict(bg=self.CARD, fg=self.FG, relief="groove")
+                kw = dict(bg=self.CARD, fg=self.FG, relief="groove", font=("Segoe UI", 11))
                 kw.update(extra)
                 kw.pop("style", None)
                 return tk.Button(parent, text=text, command=command, **kw)
 
 
+        def _reveal_genotype():
+            # Same effect as the Genotype Viewer's own Reveal button
+            # (self.app._genotype_revealed — see GardenApp._on_genetics
+            # and _format_plant_alleles_for_hover in Garden-of-
+            # Inheritance.py): a persistent, session-wide flag, not
+            # specific to this window or this plant, so using it here
+            # also reveals alleles in the Genotype Viewer and the
+            # tile-hover tooltip, and vice versa. Re-renders whichever
+            # plant (or previewed ancestor) is currently showing so the
+            # allele suffixes in _render_traits appear immediately,
+            # without needing to reselect the plant.
+            self.app._genotype_revealed = True
+
+            # Actively widen the left panel NOW, not just next time this
+            # window happens to open fresh — _fix_sash (which normally
+            # sets this) only ever runs once, at construction, so without
+            # this an already-open window would just keep wrapping
+            # revealed text into more lines rather than the panel itself
+            # ever getting the extra room _desired_left_panel_w() says it
+            # should have once reveal has actually happened.
+            try:
+                new_left_w = self._desired_left_panel_w()
+                old_left_w = getattr(self, "_left_panel_w", None)
+                if old_left_w is not None and new_left_w > old_left_w:
+                    if not self._is_maximized():
+                        # Grow the WINDOW by the same amount the panel
+                        # needs to grow by — otherwise sashpos() below
+                        # just clamps back to whatever the window's
+                        # current (still-too-narrow) width actually
+                        # allows, same silent-clamp issue _fix_sash's own
+                        # widening step exists to avoid.
+                        grow_by = new_left_w - old_left_w
+                        cur_w = self.winfo_width()
+                        cur_h = self.winfo_height()
+                        self.geometry(f"{cur_w + grow_by}x{cur_h}")
+                        self.update_idletasks()
+                    self.pw.sashpos(0, new_left_w)
+                    self._left_panel_w = new_left_w
+            except Exception:
+                pass
+
+            pid = self.preview_pid or self.current_pid
+            if pid is not None:
+                snap = self._get_snap(pid)
+                if snap:
+                    self._render_traits(snap)
+
         _mkbtn(tb, "Close", self.destroy).pack(side="left")
+        _mkbtn(tb, "Reveal Genotype", _reveal_genotype).pack(side="left", padx=(6, 0))
         _mkbtn(tb, "Export Plant", self._export_selected_traits).pack(side="left", padx=(6, 0))
 
         tk.Label(tb, text=" Find #", bg=self.BG, fg=self.FG).pack(side="left", padx=(12,4))
@@ -1241,6 +1294,13 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self.bind("<Q>", _maybe_close_on_key)
 
         pw = ttk.Panedwindow(self, orient="horizontal")
+        self.pw = pw  # stored so _render_traits can query the sash's
+                       # actual current position live (self.pw.sashpos(0))
+                       # — the most directly authoritative source for the
+                       # left panel's real width, and the only one of the
+                       # options here that also stays correct if the user
+                       # drags the sash to resize it later, not just at
+                       # initial open.
         pw.pack(fill="both", expand=True, padx=self.PAD, pady=(4, self.PAD))
 
         left = tk.Frame(pw, bg=self.PANEL, highlightthickness=1, highlightbackground="#153242")
@@ -1254,17 +1314,24 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self.lbl_left_parents.pack(anchor="w", pady=(2,0))
 
         # ✅ Proper traits box for the explorer
+        # expand=False — this box's content is a fixed handful of trait
+        # rows, so letting it expand=True (as before) meant it claimed
+        # all the extra vertical space in a maximized window regardless,
+        # pushing "Archived plants" right below it far down toward the
+        # bottom. That list benefits from the extra room far more (it's
+        # a scrollable list of however many plants), so it's the one
+        # that now gets expand=True instead.
         traits_box = tk.LabelFrame(left, text="Traits", bg=self.PANEL, fg=self.FG, labelanchor="nw")
-        traits_box.pack(fill="both", expand=True, padx=self.PAD, pady=(0, self.PAD))
+        traits_box.pack(fill="x", expand=False, padx=self.PAD, pady=(0, self.PAD))
 
         self.traits_container = tk.Frame(traits_box, bg=self.PANEL)
         self.traits_container.pack(fill="both", expand=True, padx=6, pady=6)
 
         list_box = tk.LabelFrame(left, text="Archived plants", bg=self.PANEL, fg=self.FG, labelanchor="nw")
-        list_box.pack(fill="both", expand=False, padx=self.PAD, pady=(0, self.PAD))
+        list_box.pack(fill="both", expand=True, padx=self.PAD, pady=(0, self.PAD))
         list_wrap = tk.Frame(list_box, bg=self.PANEL)
         list_wrap.pack(fill="both", expand=True, padx=6, pady=6)
-        self.listbox = tk.Listbox(list_wrap, height=10)
+        self.listbox = tk.Listbox(list_wrap, height=10, font=("Segoe UI", 11))
         self.listbox.pack(side="left", fill="both", expand=True)
         self.listbox.bind("<<ListboxSelect>>", self._on_select)
         sb = tk.Scrollbar(list_wrap, command=self.listbox.yview)
@@ -1635,7 +1702,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
         def _fix_sash():
             try:
                 pw.update_idletasks()
-                left_w = 230   # plant list
+                left_w = self._desired_left_panel_w()
+                # Stored so _render_traits can compute its wraplength
+                # from this KNOWN, fixed value directly, instead of
+                # measuring traits_container.winfo_width() live — that
+                # measurement is timing-sensitive (Tk's pack/Panedwindow
+                # geometry propagation hasn't necessarily finished
+                # settling by the moment a render happens to run,
+                # particularly right after a fresh plant selection),
+                # and was still producing cropped text intermittently.
+                # A known constant sidesteps that whole class of
+                # measure-too-early bugs entirely.
+                self._left_panel_w = left_w
 
                 # Always compute a generous lineage width from SCREEN width,
                 # regardless of whether maximize-state detection below
@@ -1646,6 +1724,8 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 # much narrower 700px. Screen width has no such dependency.
                 avail_w = max(self.winfo_screenwidth(), 1024)
                 lineage_w = max(760, int((avail_w - left_w) * 0.5))
+                tabs_w = 760   # switching tabs pane
+                total_w = max(1024, left_w + lineage_w + tabs_w + 36)
 
                 maximized = self._is_maximized()
                 # state() checked unreliably right after requesting
@@ -1653,20 +1733,29 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 # an already-reasonably-wide window as "don't touch it"
                 # too, so a false "not maximized" reading here can't
                 # accidentally shrink a window that actually did maximize.
-                already_wide = self.winfo_width() > 1200
+                # Compared against the ACTUAL required total_w computed
+                # above, not a stale hardcoded 1200 — that hardcoded
+                # number stopped scaling the moment left_w grew past
+                # what it was tuned for, so a window merely left open
+                # wide from an earlier session (>1200px, but still
+                # narrower than what left_w now actually needs) would
+                # silently skip the widen-the-window step below entirely,
+                # and pw.sashpos(0, left_w) clamps to whatever's actually
+                # available — so the panel never actually grew to the
+                # requested width, even though the request itself was
+                # correct.
+                already_wide = self.winfo_width() >= total_w
 
                 print(f"[TIE _fix_sash] screen_w={self.winfo_screenwidth()} "
                       f"winfo_width={self.winfo_width()} state={self.state()!r} "
                       f"maximized={maximized} already_wide={already_wide} "
-                      f"computed_lineage_w={lineage_w}")
+                      f"computed_lineage_w={lineage_w} total_w={total_w}")
 
                 if not maximized and not already_wide:
                     # Don't call geometry() when maximized — that un-
                     # maximizes the window on most platforms. When not
                     # maximized, explicitly size the window wide enough to
                     # actually fit the generous lineage_w computed above.
-                    tabs_w = 760   # switching tabs pane
-                    total_w = max(1024, left_w + lineage_w + tabs_w + 36)
                     cur_h = self.winfo_height()
                     print(f"[TIE _fix_sash] calling geometry() -> {total_w}x...")
                     self.geometry(f"{total_w}x{max(600, cur_h if cur_h > 1 else 700)}")
@@ -1703,6 +1792,17 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self._ratio_font_large = False
 
         self._img_refs = []
+        # Cache for _icon_for_snap/_greyscale_icon_from_path's PIL-based
+        # icon loading — those previously re-decoded and re-resized the
+        # same icon file from disk via PIL on every single call, even for
+        # the exact same (path, size) pair requested moments earlier by
+        # the previous row/render. Keyed by whatever each caller finds
+        # natural (path+size, or path+size+"grey"); persists across
+        # renders (unlike _img_refs, which is deliberately cleared before
+        # each one) so repeated selections of plants sharing common trait
+        # values — the common case — hit this cache instead of re-hitting
+        # disk and PIL every time.
+        self._icon_pil_cache = {}
         self._all_ids, self._ids = [], []
         self.current_pid = None
         self._pods_pid = None
@@ -2980,14 +3080,24 @@ class TraitInheritanceExplorer(tk.Toplevel):
         trait types regardless of the native icon dimensions.
         """
         def _pil_load(path, px):
-            """Load any icon via PIL and resize to px × px."""
+            """Load any icon via PIL and resize to px × px — cached by
+            (path, px) on self._icon_pil_cache so repeated requests for
+            the same icon reuse the same PhotoImage instead of re-
+            decoding and re-resizing from disk every single time."""
+            cache_key = ("pil", path, px)
+            cached = self._icon_pil_cache.get(cache_key)
+            if cached is not None:
+                return cached
             try:
                 from PIL import Image as _PILImg, ImageTk as _PILTk
                 _pil = _PILImg.open(path).convert("RGBA")
                 _pil = _pil.resize((px, px), _PILImg.LANCZOS)
-                return _PILTk.PhotoImage(_pil)
+                result = _PILTk.PhotoImage(_pil)
             except Exception:
-                return None
+                result = None
+            if result is not None:
+                self._icon_pil_cache[cache_key] = result
+            return result
 
         try:
             traits = (snap.get("traits", {}) if isinstance(snap, dict) else getattr(snap, "traits", {}) or {})
@@ -3050,8 +3160,16 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     if im is not None:
                         return im
 
-            # Combined pod color/shape when asked for pod shape family
-            if trait_key in ("pod_shape", "pod_color_shape", "pod"):
+            # Combined pod color/shape when asked for either half of this
+            # trait pair — "pod_color" used to fall through to the
+            # generic, shape-agnostic lookup below instead, which always
+            # returned some default-shape icon for that color regardless
+            # of the plant's ACTUAL pod shape (e.g. showing an inflated
+            # yellow pod for a plant that's actually constricted yellow,
+            # even though a correctly-shaped constricted-yellow icon
+            # exists) — correlating shape with color here for both keys
+            # avoids that mismatch.
+            if trait_key in ("pod_shape", "pod_color", "pod_color_shape", "pod"):
                 c = str(traits.get("pod_color", "")).lower()
                 s = str(traits.get("pod_shape", "")).lower()
                 c = "green" if "green" in c else ("yellow" if "yellow" in c else c)
@@ -3579,9 +3697,36 @@ class TraitInheritanceExplorer(tk.Toplevel):
                               fill="#ffb4b4", font=("Segoe UI", 12, "bold"))
                 traceback.print_exc()
 
+    def _desired_left_panel_w(self):
+        """
+        Left panel's target sash width — wider once genotype has been
+        revealed (self.app._genotype_revealed), since revealed allele
+        text ("axial (fa/fa; Mfa/Mfa)") needs meaningfully more room
+        than the plain trait value alone. Shared by _fix_sash (the
+        initial, one-time width set when this window first opens — uses
+        the wider value immediately if reveal already happened earlier
+        this session) and _reveal_genotype (which re-applies this at the
+        moment reveal happens on an ALREADY-open window, since _fix_sash
+        itself only ever runs once, at construction, and nothing was
+        otherwise re-triggering a width grow when reveal changed what
+        actually needs to fit).
+        """
+        if bool(getattr(self.app, "_genotype_revealed", False)):
+            return 560  # was 230 -> 300 -> 345 -> 431 while chasing this
+                        # with the SAME width regardless of reveal state —
+                        # this is the first version that actually widens
+                        # specifically because revealed text needs it,
+                        # rather than guessing one fixed number for both
+                        # states.
+        return 350
+
     def _render_traits(self, snap):
         for w in self.traits_container.winfo_children():
             w.destroy()
+        # Reset for this render — repopulated below, then kept in sync
+        # by _on_traits_container_configure (bound once, near the end of
+        # this method) whenever traits_container's actual size changes.
+        self._trait_wrap_labels = []
 
         traits = {}
         try:
@@ -3598,6 +3743,52 @@ class TraitInheritanceExplorer(tk.Toplevel):
             ).pack(anchor="w")
             return
 
+        # Allele suffix next to each value (e.g. "purple (A/a)") — only
+        # once genotype reveal has happened this session, either via the
+        # Genotype Viewer's own Reveal button (self._genotype_revealed on
+        # the app) or this window's own "Reveal Genotype" button (see
+        # _toolbar build, which sets the same flag). trait_name -> locus
+        # mapping matches infer_genotype_from_traits/_on_genetics in
+        # Garden-of-Inheritance.py — pod_shape and flower_position are
+        # each controlled by two loci, not one.
+        _show_alleles = bool(getattr(self.app, "_genotype_revealed", False))
+        _geno = {}
+        if _show_alleles:
+            try:
+                _geno = (snap.get("genotype") if isinstance(snap, dict)
+                         else getattr(snap, "genotype", None)) or {}
+            except Exception:
+                _geno = {}
+        _trait_loci = {
+            "seed_shape":      ("R",),
+            "seed_color":      ("I",),
+            "flower_color":    ("A",),
+            "plant_height":    ("Le",),
+            "height":          ("Le",),
+            "pod_color":       ("Gp",),
+            "pod_shape":       ("P", "V"),
+            "flower_position":  ("Fa", "Mfa"),
+        }
+
+        def _allele_suffix(trait_name):
+            if not _show_alleles or not _geno:
+                return ""
+            loci = _trait_loci.get(trait_name)
+            if not loci:
+                return ""
+            parts = []
+            for loc in loci:
+                pair = _geno.get(loc)
+                if not pair:
+                    continue
+                a1 = pair[0] if len(pair) > 0 else "?"
+                a2 = pair[1] if len(pair) > 1 else "?"
+                # No "Fa:"/"Mfa:" locus prefix even for two-locus traits —
+                # the trait label ("Flower position:") already gives the
+                # context, so naming each locus again here was redundant.
+                parts.append(f"{a1}/{a2}")
+            return f" ({'; '.join(parts)})" if parts else ""
+
         priority = ["flower_color","flower_position","Flowers","pod_color",
                     "pod_shape","seed_color","seed_shape","plant_height","height"]
         ordered = sorted(
@@ -3610,6 +3801,48 @@ class TraitInheritanceExplorer(tk.Toplevel):
         icon_w = icon_h = 32 # was effectively 40 via canvas 40×40
         label_font = ("Segoe UI", 11, "bold")
         value_font = ("Segoe UI", 11)
+
+        # wraplength derived from the left panel's actual width, in order
+        # of preference:
+        #   1. self.pw.sashpos(0) — a live query of the Panedwindow's own
+        #      authoritative sash position. Most reliable: it's the
+        #      source of truth the pane's width is actually driven by,
+        #      not a derived measurement of some descendant widget that
+        #      depends on geometry propagation having already finished —
+        #      and it stays correct even if the user drags the sash to
+        #      resize the panel later, not just at initial open.
+        #   2. self._left_panel_w — the known constant _fix_sash requests
+        #      the sash to sit at, if the live query above isn't
+        #      available yet for some reason.
+        #   3. A live winfo_width() measurement of traits_container
+        #      itself, as a last resort — this was the original approach
+        #      and is the most timing-sensitive of the three (Tk's pack/
+        #      Panedwindow geometry propagation isn't guaranteed to have
+        #      settled by the moment a render happens to run), which is
+        #      why it was still producing cropped text intermittently
+        #      despite being "correct" in principle.
+        _left_w = None
+        try:
+            _sp = self.pw.sashpos(0)
+            if _sp and _sp > 80:
+                _left_w = _sp
+        except Exception:
+            pass
+        if not _left_w:
+            _left_w = getattr(self, "_left_panel_w", None)
+
+        if _left_w:
+            _overhead = (2 * self.PAD) + (2 * 6) + icon_w + 12 + 10  # +10 safety margin
+            _text_wrap = max(80, _left_w - _overhead)
+        else:
+            try:
+                self.traits_container.update_idletasks()
+                _container_w = self.traits_container.winfo_width()
+            except Exception:
+                _container_w = 0
+            if _container_w < 80:
+                _container_w = 300
+            _text_wrap = max(80, _container_w - icon_w - 8 - 4)
 
         for name, value in ordered:
             row = tk.Frame(self.traits_container, bg=self.PANEL)
@@ -3645,20 +3878,65 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
             text_col = tk.Frame(row, bg=self.PANEL)
             text_col.pack(side="left", padx=(8, 4))
-            tk.Label(
+            # wraplength — without it, long text (especially once the
+            # allele suffix is showing, e.g. "axial (fa/fa; Mfa/Mfa)")
+            # just overflowed this panel's fixed sash-constrained width
+            # instead of wrapping to a second line, getting visually
+            # cropped at the pane's edge rather than fully shown. The
+            # value used here at creation is only a starting estimate —
+            # _on_traits_container_configure (bound below) corrects it
+            # to the real value once the container's actual settled
+            # size is known, and keeps it correct afterward too.
+            name_lbl = tk.Label(
                 text_col,
                 text=f"{name.replace('_',' ')}:",
                 bg=self.PANEL,
                 fg=self.FG,
-                font=label_font
-            ).pack(anchor="w")
-            tk.Label(
+                font=label_font,
+                wraplength=_text_wrap,
+                justify="left",
+            )
+            name_lbl.pack(anchor="w")
+            value_lbl = tk.Label(
                 text_col,
-                text=f"{value}",
+                text=f"{value}{_allele_suffix(name)}",
                 bg=self.PANEL,
                 fg=self.FG,
-                font=value_font
-            ).pack(anchor="w")
+                font=value_font,
+                wraplength=_text_wrap,
+                justify="left",
+            )
+            value_lbl.pack(anchor="w")
+            self._trait_wrap_labels.append(name_lbl)
+            self._trait_wrap_labels.append(value_lbl)
+
+        # Bound once (not per-render — _traits_configure_bound guards
+        # against re-binding on every _render_traits call) so wraplength
+        # tracks traits_container's REAL, live width going forward,
+        # rather than relying on a single upfront estimate computed
+        # before layout necessarily settled. event.width in a <Configure>
+        # callback is Tk's own authoritative report of the widget's
+        # actual current size — the standard, robust pattern for
+        # responsive wrapping, and immune to the timing guesswork that
+        # made the sashpos/winfo_width estimate above still occasionally
+        # wrong. Fires whenever the container's size changes for any
+        # reason (initial layout settling, sash dragged, window resized),
+        # and reapplies the corrected wraplength to whatever labels are
+        # currently tracked in self._trait_wrap_labels — repopulated
+        # fresh at the top of every _render_traits call above.
+        if not getattr(self, "_traits_configure_bound", False):
+            self._traits_configure_bound = True
+
+            def _on_traits_container_configure(event):
+                new_wrap = max(80, event.width - icon_w - 8 - 4 - 12)
+                for lbl in getattr(self, "_trait_wrap_labels", []):
+                    try:
+                        if lbl.winfo_exists():
+                            lbl.configure(wraplength=new_wrap)
+                    except Exception:
+                        pass
+
+            self.traits_container.bind("<Configure>", _on_traits_container_configure)
 
     def _populate_ratio_panel(self, panel, ratio_text, law_parts):
         """Clear panel and render a boxed ratio display."""
@@ -3973,6 +4251,27 @@ class TraitInheritanceExplorer(tk.Toplevel):
                           state="normal" if cur < total_pages - 1 else "disabled"
                           ).pack(side="left", padx=(6, 0))
 
+        # Pending-redraw tracker for the low-risk "no fixed 120ms guess"
+        # fix below (see the reveal logic near the end of this function):
+        # each card increments this when created, and _redraw_card (its
+        # own rounded-corner background draw) decrements it exactly once,
+        # on whichever fires first — its scheduled after(20) or an actual
+        # <Configure> — since a genuinely-settled card only needs to
+        # count once, not on every subsequent <Configure> a resize might
+        # also trigger later. Reveal now happens the instant every card
+        # currently on this page has actually redrawn, not after a fixed
+        # wait guessed to probably be enough.
+        _pending_redraws = [0]
+        # No-op default — _redraw_card (below, inside the loop) always
+        # calls this unconditionally regardless of is_combo, but the
+        # real implementation is only defined further down, inside the
+        # "not is_combo" branch of the reveal logic (the combo path
+        # reveals through a separate, synchronous mechanism at the very
+        # end of this function instead, not by waiting on card redraws
+        # at all) — without this default, a combo-mode card's very first
+        # redraw would raise NameError the moment it fires.
+        _maybe_reveal = lambda: None
+
         for pidx in page_keys:
             # Determine maternal pod color, then choose tint
             try:
@@ -3992,13 +4291,30 @@ class TraitInheritanceExplorer(tk.Toplevel):
             card = tk.Frame(card_canvas, bg=col_bg)
             card_canvas.create_window(_CP, _CP, anchor="nw", window=card)
 
+            _pending_redraws[0] += 1
+            _counted = [False]  # ensures the decrement below only ever
+                                 # happens once per card, even though
+                                 # _redraw_card can fire again later from
+                                 # a genuine <Configure> (e.g. a window
+                                 # resize) well after the initial reveal.
+                                 # (Counts on the first successful pass —
+                                 # a stricter "wait for two matching
+                                 # passes" version was tried to remove a
+                                 # rare visible re-draw flicker, but the
+                                 # added latency mattered more, so this
+                                 # reverts to the faster, simpler version.)
+
             def _redraw_card(event=None, _cc=card_canvas, _cf=card,
-                             _bg=col_bg, _p=_CP, _r=_CR):
+                             _bg=col_bg, _p=_CP, _r=_CR, _counted=_counted):
                 try:
                     _cf.update_idletasks()
                     iw = _cf.winfo_reqwidth()
                     ih = _cf.winfo_reqheight()
                     if iw < 2 or ih < 2:
+                        # Not ready yet — don't count this as done; a
+                        # later genuine <Configure> (once the card
+                        # actually has a real size) will retry and count
+                        # it then instead.
                         return
                     w = iw + 2 * _p
                     h = ih + 2 * _p
@@ -4016,8 +4332,19 @@ class TraitInheritanceExplorer(tk.Toplevel):
                                        fill=_bg, outline="#2b4d59", width=1,
                                        tags="rrect")
                     _cc.tag_lower("rrect")
+                    if not _counted[0]:
+                        _counted[0] = True
+                        _pending_redraws[0] -= 1
+                        _maybe_reveal()
                 except Exception:
-                    pass
+                    # Genuine failure (not the "not ready yet" case above,
+                    # which returns before this point) — still count it,
+                    # so one persistently-erroring card can't permanently
+                    # block the reveal for the rest of the page.
+                    if not _counted[0]:
+                        _counted[0] = True
+                        _pending_redraws[0] -= 1
+                        _maybe_reveal()
             card.bind("<Configure>", _redraw_card)
             card_canvas.after(20, _redraw_card)
 
@@ -4183,8 +4510,11 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     pass
         except Exception:
             pass
-        # Reveal pods canvas — but wait until _redraw_card (after(20)) has settled.
-        # Keep canvas hidden and show a brief "Rendering…" label, then swap in at 120ms.
+        # Reveal pods canvas once every card on this page has actually
+        # finished its rounded-corner redraw (tracked via
+        # _pending_redraws above), instead of a fixed 120ms guess at how
+        # long that probably takes — reveals as soon as it's genuinely
+        # ready, and never later than necessary either.
         try:
             if not is_combo and getattr(self, "_pods_win", None):
                 # Show a placeholder while cards finish rendering
@@ -4198,7 +4528,12 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 except Exception:
                     pass
 
+                _revealed = [False]
+
                 def _reveal(_lbl=_loading_lbl):
+                    if _revealed[0]:
+                        return
+                    _revealed[0] = True
                     try:
                         if _lbl:
                             _lbl.destroy()
@@ -4211,7 +4546,23 @@ class TraitInheritanceExplorer(tk.Toplevel):
                         pass
                     self._schedule_auto_resize(200)
 
-                self.after(120, _reveal)
+                def _maybe_reveal():
+                    if _pending_redraws[0] <= 0:
+                        _reveal()
+
+                # Safety net only — reveals unconditionally after 400ms
+                # even if the counter never reaches zero for some
+                # unexpected reason (e.g. a card's <Configure> never
+                # fires again after an initial "not ready yet" skip).
+                # _reveal()'s own _revealed guard makes this a no-op if
+                # _maybe_reveal already triggered the real reveal first.
+                self.after(400, _reveal)
+
+                # In case every card already finished before this point
+                # (e.g. a page with cards that all had size ready on
+                # their very first after(20) fire, which can easily
+                # happen before this line even runs).
+                _maybe_reveal()
                 return   # skip the synchronous reveal and resize below
         except Exception:
             pass
@@ -4232,21 +4583,35 @@ class TraitInheritanceExplorer(tk.Toplevel):
             self._schedule_auto_resize(200)
 
     def _greyscale_icon_from_path(self, path, sx=1, sy=1):
-        """Load an icon from file path, convert to greyscale, return PhotoImage or None."""
+        """Load an icon from file path, convert to greyscale, return
+        PhotoImage or None — cached by (path, sx, sy) on
+        self._icon_pil_cache (same cache _icon_for_snap's _pil_load
+        uses), since this is called anew for every icon in every ratio
+        box on every render otherwise, repeatedly re-decoding and
+        re-desaturating the same handful of files."""
         if not path or not _PIL_AVAILABLE:
             return None
+        cache_key = ("grey", path, sx, sy)
+        cache = getattr(self, "_icon_pil_cache", None)
+        if cache is not None:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
         try:
             pil_img = Image.open(path).convert("RGBA")
             if sx != 1 or sy != 1:
                 w, h = pil_img.size
-                pil_img = pil_img.resize((w * sx, h * sy), Image.NEAREST)
+                pil_img = pil_img.resize((max(1, int(w * sx)), max(1, int(h * sy))), Image.NEAREST)
             # Desaturate: convert to L then back to RGBA to preserve alpha
             r, g, b, a = pil_img.split()
             grey_rgb = ImageOps.grayscale(pil_img.convert("RGB"))
             grey_rgba = Image.merge("RGBA", (grey_rgb, grey_rgb, grey_rgb, a))
-            return _PILImageTk.PhotoImage(grey_rgba)
+            result = _PILImageTk.PhotoImage(grey_rgba)
         except Exception:
-            return None
+            result = None
+        if result is not None and cache is not None:
+            cache[cache_key] = result
+        return result
 
     def _render_left_ratio(self, panel, tkey, ordered, total, law_parts):
         """Compact ratio display for the left panel: inline box + icon counts."""
