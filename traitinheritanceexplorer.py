@@ -34,6 +34,7 @@ from itertools import combinations
 # Third-party
 import tkinter as tk
 from tkinter import messagebox, ttk
+from tkinter import font as tkfont
 try:
     from PIL import Image, ImageOps, ImageTk as _PILImageTk
     _PIL_AVAILABLE = True
@@ -3699,26 +3700,20 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
     def _desired_left_panel_w(self):
         """
-        Left panel's target sash width — wider once genotype has been
-        revealed (self.app._genotype_revealed), since revealed allele
-        text ("axial (fa/fa; Mfa/Mfa)") needs meaningfully more room
-        than the plain trait value alone. Shared by _fix_sash (the
-        initial, one-time width set when this window first opens — uses
-        the wider value immediately if reveal already happened earlier
-        this session) and _reveal_genotype (which re-applies this at the
-        moment reveal happens on an ALREADY-open window, since _fix_sash
-        itself only ever runs once, at construction, and nothing was
-        otherwise re-triggering a width grow when reveal changed what
-        actually needs to fit).
+        Left panel's target sash width — driven by the actual measured
+        content width of the currently-shown plant's trait rows
+        (self._traits_content_w, set by _render_traits via real font-
+        metric measurement — see its own comment), not a fixed guess.
+        This used to return one of two hardcoded constants (350 normal,
+        560 once genotype is revealed) regardless of what the actual
+        rows needed, which was often noticeably less than that, leaving
+        a large empty gap on the right of this panel — the same class
+        of bug the lineage pane's own fixed-floor issue was. Falls back
+        to a modest floor only before the very first _render_traits call
+        this session has actually measured anything yet (e.g. right at
+        initial window construction).
         """
-        if bool(getattr(self.app, "_genotype_revealed", False)):
-            return 560  # was 230 -> 300 -> 345 -> 431 while chasing this
-                        # with the SAME width regardless of reveal state —
-                        # this is the first version that actually widens
-                        # specifically because revealed text needs it,
-                        # rather than guessing one fixed number for both
-                        # states.
-        return 350
+        return max(300, getattr(self, "_traits_content_w", 0))
 
     def _render_traits(self, snap):
         for w in self.traits_container.winfo_children():
@@ -3801,6 +3796,29 @@ class TraitInheritanceExplorer(tk.Toplevel):
         icon_w = icon_h = 32 # was effectively 40 via canvas 40×40
         label_font = ("Segoe UI", 11, "bold")
         value_font = ("Segoe UI", 11)
+
+        # Actual content-driven width this panel needs to show every
+        # row on ONE line — measured directly via font metrics
+        # (tkfont.Font(...).measure(text)), not inferred from a widget's
+        # current winfo_reqwidth() (which would already reflect
+        # whatever wraplength happens to be in effect at the moment,
+        # not the text's true natural width). Used by
+        # _desired_left_panel_w() as the actual target sash width — that
+        # used to be two fixed, guessed constants (350/560 depending on
+        # reveal state) regardless of what the content actually needed,
+        # which for THIS panel's actual rows was often noticeably less,
+        # leaving a large empty gap on the right (the same class of bug
+        # as the lineage pane's own fixed-floor issue, just here it was
+        # a fixed target rather than a fixed floor).
+        _name_font_obj = tkfont.Font(font=label_font)
+        _value_font_obj = tkfont.Font(font=value_font)
+        _max_row_text_w = 0
+        for _name, _value in ordered:
+            _name_w = _name_font_obj.measure(f"{_name.replace('_',' ')}:")
+            _value_w = _value_font_obj.measure(f"{_value}{_allele_suffix(_name)}")
+            _max_row_text_w = max(_max_row_text_w, _name_w, _value_w)
+        # icon + its own gap (8) + text_col's own right padding (4)
+        self._traits_content_w = icon_w + 8 + _max_row_text_w + 4
 
         # wraplength derived from the left panel's actual width, in order
         # of preference:
@@ -5368,10 +5386,47 @@ class TraitInheritanceExplorer(tk.Toplevel):
         """Resize window to fit active tab content. Capped at 1024px tall."""
         try:
             self.update_idletasks()
-            LEFT_W      = 230   # plant list pane
-            # Lineage pane width: use actual tree content width, with 700 as
-            # minimum (matches the more generous starting width set at open)
-            LINEAGE_W   = max(760, getattr(self, "_tree_content_w", 0))
+            # Was a hardcoded 230 — stale against the actual current left
+            # panel width (_desired_left_panel_w(), now up to 431+ since
+            # several increases this session, and itself grows further
+            # once genotype reveal happens). Every plant selection runs
+            # _auto_resize_window (via _draw_canvas_family's own
+            # _schedule_auto_resize call below), which both (a) re-pinned
+            # the left sash back to this stale 230 every single time,
+            # undoing whatever the real left-panel width should be, and
+            # (b) undersized total_w itself (LEFT_W + LINEAGE_W +
+            # notebook_w + CHROME) by the same amount — meaning the
+            # window never actually had enough room for the real left
+            # panel AND the full requested lineage width at once, so
+            # sashpos() would silently clamp the lineage pane narrower
+            # than the tree actually needed. This was likely the direct
+            # cause of "the right side doesn't get recalculated
+            # correctly depending on branches" — the window itself was
+            # quietly too narrow to begin with.
+            LEFT_W      = self._desired_left_panel_w()
+            # Lineage pane width: driven by the ACTUAL tree content width
+            # (measured per-selection in _draw_canvas_family — already
+            # includes appropriate padding for node circles + their
+            # label text), not a large fixed floor. That floor used to
+            # be 760 regardless of how small the actual tree was — for
+            # a narrow 1-2-column tree like an early F0-F1-F2 lineage,
+            # that left a large, genuinely empty gap between the tree's
+            # real rightmost node and wherever the pane border actually
+            # sat, AND ate into the space available for notebook_w
+            # (Pod Seeds/Punnett/Trait Ratio) since total_w below is a
+            # fixed budget — the bloated lineage pane was quietly
+            # stealing room that should have gone to those tabs instead,
+            # which is also why pod cards were showing cut off at the
+            # right edge. Floor now just guards against a near-zero-
+            # width pane for a single-node tree, not a wide tree's worth
+            # of space by default.
+            # Small extra margin beyond the measured content itself
+            # (which already has its own internal padding baked in, but
+            # that's padding around the tree's own drawn elements, not
+            # breathing room between the content and the pane's actual
+            # right border) — the pane was reading as uncomfortably
+            # tight against the tree with none at all.
+            LINEAGE_W   = max(340, getattr(self, "_tree_content_w", 0)) + 50
             CHROME      = 36
             PAD         = 60
             TAB_BAR     = 36
