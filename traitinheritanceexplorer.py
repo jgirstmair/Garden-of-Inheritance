@@ -3715,14 +3715,43 @@ class TraitInheritanceExplorer(tk.Toplevel):
         """
         return max(300, getattr(self, "_traits_content_w", 0))
 
-    def _render_traits(self, snap):
-        for w in self.traits_container.winfo_children():
-            w.destroy()
-        # Reset for this render — repopulated below, then kept in sync
-        # by _on_traits_container_configure (bound once, near the end of
-        # this method) whenever traits_container's actual size changes.
-        self._trait_wrap_labels = []
+    def _build_trait_icon_widget(self, row, im, name, icon_w, icon_h):
+        """
+        Builds either an image Label (icon found) or a fallback Canvas
+        (drawn placeholder circle + first letter, when no icon exists
+        for this trait/value) for one traits-panel row. Factored out of
+        _render_traits so both the fresh-row path and the row-reuse
+        path (when a row's icon MODE flips between these two — rare,
+        but possible) can build one without duplicating the two
+        branches. Does not pack the returned widget — the caller does,
+        since fresh rows and swapped-in-place rows pack it differently
+        (appended vs. placed before an existing sibling).
+        """
+        if im is not None:
+            lbl = tk.Label(row, image=im, bg=self.PANEL)
+            lbl.image = im
+            return lbl, False
+        ico = tk.Canvas(
+            row,
+            width=icon_w, height=icon_h,
+            bg=self.PANEL,
+            highlightthickness=0
+        )
+        r = icon_w // 2 - 4
+        cx = cy = icon_w // 2
+        ico.create_oval(
+            cx - r, cy - r, cx + r, cy + r,
+            fill="#223c4d", outline="#2ea1db"
+        )
+        ico.create_text(
+            cx, cy,
+            text=str(name)[:1].upper(),
+            fill=self.FG,
+            font=("Segoe UI", 11, "bold")
+        )
+        return ico, True
 
+    def _render_traits(self, snap):
         traits = {}
         try:
             traits = snap.get("traits", {}) if isinstance(snap, dict) else getattr(snap, "traits", {}) or {}
@@ -3730,6 +3759,15 @@ class TraitInheritanceExplorer(tk.Toplevel):
             traits = {}
 
         if not traits:
+            # No traits to show — clear whatever's there (including any
+            # previously-built reusable rows, so a LATER render with
+            # real traits rebuilds cleanly rather than trying to reuse
+            # rows that no longer correspond to anything) and show the
+            # placeholder.
+            for w in self.traits_container.winfo_children():
+                w.destroy()
+            self._trait_row_widgets = {}
+            self._trait_wrap_labels = []
             tk.Label(
                 self.traits_container,
                 text="No traits recorded in archive.",
@@ -3862,37 +3900,103 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 _container_w = 300
             _text_wrap = max(80, _container_w - icon_w - 8 - 4)
 
+        # Reuse existing row widgets when the set of trait names is
+        # exactly the same as last render (the normal case — every plant
+        # has the same 7 traits, just different values) instead of
+        # destroying and rebuilding the whole panel on every single
+        # selection. Only a genuinely new/changed trait KEY set (first
+        # render, or coming back from the "no traits" placeholder above)
+        # triggers a full rebuild; everything else just updates each
+        # row's icon/text in place. self._img_refs (which keeps
+        # PhotoImage objects alive) is intentionally left alone here —
+        # it accumulates across renders already and reusing the same
+        # rows doesn't change that.
+        _existing = getattr(self, "_trait_row_widgets", None)
+        _same_keys = (_existing is not None and
+                      set(_existing.keys()) == set(name for name, _ in ordered))
+
+        if not _same_keys:
+            for w in self.traits_container.winfo_children():
+                w.destroy()
+            self._trait_row_widgets = {}
+            self._trait_wrap_labels = []
+
         for name, value in ordered:
+            im = self._icon_for_snap(name, snap, sx=0.8, sy=0.8)  # was self.SCALE_TRAIT
+            value_text = f"{value}{_allele_suffix(name)}"
+            name_text = f"{name.replace('_',' ')}:"
+
+            existing_row = self._trait_row_widgets.get(name) if _same_keys else None
+
+            if existing_row is not None:
+                # Reuse: update text always; update the icon only if it
+                # actually changed (icons are already cached/reused by
+                # identity in _icon_for_snap for the same trait+value, so
+                # an identity check is a cheap, correct way to detect
+                # "nothing to do here").
+                try:
+                    existing_row["name_lbl"].configure(text=name_text)
+                    existing_row["value_lbl"].configure(text=value_text)
+                    self._trait_wrap_labels.append(existing_row["name_lbl"])
+                    self._trait_wrap_labels.append(existing_row["value_lbl"])
+
+                    was_canvas = existing_row["is_canvas"]
+                    needs_canvas = (im is None)
+                    if was_canvas == needs_canvas:
+                        # Same icon MODE as before (both real image, or
+                        # both fallback canvas) — reuse the existing
+                        # icon widget itself, only swapping the image if
+                        # it's actually different from what's currently
+                        # shown.
+                        if im is not None and existing_row.get("icon_img") is not im:
+                            existing_row["icon_widget"].configure(image=im)
+                            existing_row["icon_widget"].image = im
+                            existing_row["icon_img"] = im
+                            self._img_refs.append(im)
+                        elif im is None:
+                            # Fallback canvas mode — the letter shown
+                            # depends only on the trait name, which is
+                            # fixed for this row, so nothing to update.
+                            pass
+                        continue
+                    else:
+                        # Icon mode flipped (image now available where
+                        # there wasn't one before, or vice versa) — rare,
+                        # but rebuild just THIS row's icon widget rather
+                        # than falling back to a full-panel rebuild over
+                        # one row's edge case.
+                        existing_row["icon_widget"].destroy()
+                        row = existing_row["row"]
+                        icon_widget, is_canvas = self._build_trait_icon_widget(
+                            row, im, name, icon_w, icon_h)
+                        icon_widget.pack(side="left", before=existing_row["text_col"])
+                        existing_row["icon_widget"] = icon_widget
+                        existing_row["is_canvas"] = is_canvas
+                        existing_row["icon_img"] = im
+                        if im is not None:
+                            self._img_refs.append(im)
+                        continue
+                except Exception:
+                    # Something about the existing row is in a bad state
+                    # (shouldn't normally happen) — fall through and
+                    # rebuild this one row fresh instead of leaving a
+                    # broken one on screen.
+                    try:
+                        existing_row["row"].destroy()
+                    except Exception:
+                        pass
+                    self._trait_row_widgets.pop(name, None)
+
+            # Fresh row (first time this trait's been shown, or the
+            # reuse path above fell through) — same construction as the
+            # original always-rebuild version.
             row = tk.Frame(self.traits_container, bg=self.PANEL)
             row.pack(fill="x", pady=row_pad)
 
-            # slightly smaller icons
-            im = self._icon_for_snap(name, snap, sx=0.8, sy=0.8)  # was self.SCALE_TRAIT
+            icon_widget, is_canvas = self._build_trait_icon_widget(row, im, name, icon_w, icon_h)
+            icon_widget.pack(side="left")
             if im is not None:
-                lbl = tk.Label(row, image=im, bg=self.PANEL)
-                lbl.image = im
-                lbl.pack(side="left")
                 self._img_refs.append(im)
-            else:
-                ico = tk.Canvas(
-                    row,
-                    width=icon_w, height=icon_h,
-                    bg=self.PANEL,
-                    highlightthickness=0
-                )
-                ico.pack(side="left")
-                r = icon_w // 2 - 4
-                cx = cy = icon_w // 2
-                ico.create_oval(
-                    cx - r, cy - r, cx + r, cy + r,
-                    fill="#223c4d", outline="#2ea1db"
-                )
-                ico.create_text(
-                    cx, cy,
-                    text=str(name)[:1].upper(),
-                    fill=self.FG,
-                    font=("Segoe UI", 11, "bold")
-                )
 
             text_col = tk.Frame(row, bg=self.PANEL)
             text_col.pack(side="left", padx=(8, 4))
@@ -3907,7 +4011,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             # size is known, and keeps it correct afterward too.
             name_lbl = tk.Label(
                 text_col,
-                text=f"{name.replace('_',' ')}:",
+                text=name_text,
                 bg=self.PANEL,
                 fg=self.FG,
                 font=label_font,
@@ -3917,7 +4021,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             name_lbl.pack(anchor="w")
             value_lbl = tk.Label(
                 text_col,
-                text=f"{value}{_allele_suffix(name)}",
+                text=value_text,
                 bg=self.PANEL,
                 fg=self.FG,
                 font=value_font,
@@ -3927,6 +4031,16 @@ class TraitInheritanceExplorer(tk.Toplevel):
             value_lbl.pack(anchor="w")
             self._trait_wrap_labels.append(name_lbl)
             self._trait_wrap_labels.append(value_lbl)
+
+            self._trait_row_widgets[name] = {
+                "row": row,
+                "icon_widget": icon_widget,
+                "is_canvas": is_canvas,
+                "icon_img": im,
+                "text_col": text_col,
+                "name_lbl": name_lbl,
+                "value_lbl": value_lbl,
+            }
 
         # Bound once (not per-render — _traits_configure_bound guards
         # against re-binding on every _render_traits call) so wraplength
@@ -3956,27 +4070,150 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
             self.traits_container.bind("<Configure>", _on_traits_container_configure)
 
-    def _populate_ratio_panel(self, panel, ratio_text, law_parts):
-        """Clear panel and render a boxed ratio display."""
-        for w in panel.winfo_children():
-            w.destroy()
-        # outer box
-        box = tk.Frame(panel, bg="#12303f",
-                       highlightthickness=2, highlightbackground="#2a5a7a")
-        box.pack(fill="x", padx=10, pady=16)
-        tk.Label(box, text="Total ratio",
-                 bg="#12303f", fg=self.MUTED,
-                 font=("Segoe UI", 11)).pack(pady=(10, 2))
-        tk.Label(box, text=ratio_text,
-                 bg="#12303f", fg=self.FG,
-                 font=("Segoe UI", 14, "bold"),
-                 wraplength=150, justify="center").pack(padx=8, pady=(0, 10))
-        for lp in law_parts:
-            tk.Frame(panel, height=1, bg="#2a5a7a").pack(fill="x", padx=10, pady=(4, 4))
-            tk.Label(panel, text=lp,
-                     bg=self.PANEL, fg=self.MUTED,
-                     font=("Segoe UI", 10, "italic"),
-                     wraplength=160, justify="center").pack(fill="x", padx=6)
+    def _build_pod_card(self, pods_row, pidx, sibling_pairs, mid, highlight_id,
+                         is_combo, sib_trait_key, pending_redraws, maybe_reveal,
+                         _norm, _lookup_trait, reduced_ratio):
+        """
+        Builds one rounded-corner pod card (title + one icon row per
+        sibling + ratio label) — the exact same construction
+        _render_siblings always did inline, factored out so it can be
+        called once per NEW/changed pod while _render_siblings's fast
+        reuse path (see its own comment) skips this entirely for pods
+        whose sibling set hasn't actually changed. Returns a state dict
+        {"ratio_lbl": ..., "siblings": [{"canvas":, "icon_img":,
+        "img_id":, "canvas_w":, "canvas_h":}, ...]} that the reuse path
+        uses to find and update each widget later without rebuilding it.
+        _norm/_lookup_trait/reduced_ratio are passed in rather than
+        looked up here since all three are nested closures defined
+        inside _render_siblings itself, not accessible from a separate
+        method.
+        """
+        try:
+            mother_snap = self._get_snap(mid)
+            m_traits = mother_snap.get("traits", {}) if isinstance(mother_snap, dict) else getattr(mother_snap, "traits", {}) or {}
+            pod_color_val = str(m_traits.get("pod_color", "")).lower()
+        except Exception:
+            pod_color_val = ""
+        col_bg = self._pod_tint_from_color(pod_color_val)
+
+        _CR = 20
+        _CP = 6
+        card_canvas = tk.Canvas(pods_row, bg=self.PANEL,
+                                 highlightthickness=0, bd=0)
+        card_canvas.pack(side="left", padx=10, pady=8, fill="y")
+        card = tk.Frame(card_canvas, bg=col_bg)
+        card_canvas.create_window(_CP, _CP, anchor="nw", window=card)
+
+        pending_redraws[0] += 1
+        _counted = [False]
+
+        def _redraw_card(event=None, _cc=card_canvas, _cf=card,
+                         _bg=col_bg, _p=_CP, _r=_CR, _counted=_counted):
+            try:
+                _cf.update_idletasks()
+                iw = _cf.winfo_reqwidth()
+                ih = _cf.winfo_reqheight()
+                if iw < 2 or ih < 2:
+                    return
+                w = iw + 2 * _p
+                h = ih + 2 * _p
+                _cc.configure(width=w, height=h)
+                _cc.delete("rrect")
+                pts = [
+                    _r, 0,  w-_r, 0,
+                    w,  0,  w,    _r,
+                    w,  h-_r, w,  h,
+                    w-_r, h, _r,  h,
+                    0,  h,  0,    h-_r,
+                    0,  _r, 0,    0,
+                ]
+                _cc.create_polygon(pts, smooth=True,
+                                   fill=_bg, outline="#2b4d59", width=1,
+                                   tags="rrect")
+                _cc.tag_lower("rrect")
+                if not _counted[0]:
+                    _counted[0] = True
+                    pending_redraws[0] -= 1
+                    maybe_reveal()
+            except Exception:
+                if not _counted[0]:
+                    _counted[0] = True
+                    pending_redraws[0] -= 1
+                    maybe_reveal()
+        card.bind("<Configure>", _redraw_card)
+        card_canvas.after(20, _redraw_card)
+
+        tk.Label(card, text=f"Pod #{pidx if pidx is not None else '?'}",
+                 bg=col_bg, fg=self.FG, font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=10, pady=(10,6))
+
+        col = tk.Frame(card, bg=col_bg)
+        col.pack(padx=10, pady=(0,8))
+
+        local_counter = Counter()
+        siblings_state = []
+
+        for cid, csnap in sibling_pairs:
+            tval = _norm(_lookup_trait(csnap, sib_trait_key))
+            local_counter[tval] += 1
+
+            row = tk.Frame(col, bg=col_bg)
+            row.pack(anchor="w", pady=4)
+
+            _target_px = 32 if (self._pods_icon_small and not is_combo) else 56
+            im = self._icon_for_snap(sib_trait_key, csnap,
+                                     sx=self.SCALE_SIB, sy=self.SCALE_SIB,
+                                     target_px=_target_px)
+            _default_sz = _target_px
+            if im is not None:
+                try:
+                    canvas_w = im.width()
+                    canvas_h = im.height()
+                except Exception:
+                    canvas_w = canvas_h = _default_sz
+            else:
+                canvas_w = canvas_h = _default_sz
+
+            c = tk.Canvas(row, width=canvas_w, height=canvas_h, bg=col_bg, highlightthickness=0)
+            c.pack()
+            img_id = None
+
+            if im is not None:
+                img_id = c.create_image(canvas_w // 2, canvas_h // 2, image=im, tags="icon")
+                self._img_refs.append(im)
+            else:
+                r = min(canvas_w, canvas_h) // 2 - 6
+                img_id = c.create_oval(
+                    canvas_w // 2 - r, canvas_h // 2 - r,
+                    canvas_w // 2 + r, canvas_h // 2 + r,
+                    outline="#34b3e6", width=1, tags="fallback"
+                )
+
+            if str(cid) == highlight_id and img_id is not None:
+                rect_id = c.create_rectangle(
+                    2, 2, canvas_w - 2, canvas_h - 2,
+                    outline="#ffd166", width=3, tags="hl"
+                )
+                try:
+                    c.tag_lower(rect_id, img_id)
+                except Exception:
+                    pass
+
+            siblings_state.append({
+                "canvas": c, "icon_img": im, "img_id": img_id,
+                "canvas_w": canvas_w, "canvas_h": canvas_h,
+            })
+
+        if local_counter:
+            ordered_local = sorted(local_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
+            counts_local = [cnt for _name, cnt in ordered_local]
+            ratio_local = reduced_ratio(counts_local)
+        else:
+            ratio_local = "0"
+        ratio_lbl = tk.Label(card, text=ratio_local, bg=col_bg, fg=self.FG,
+                              font=("Segoe UI", 12, "bold"))
+        ratio_lbl.pack(padx=10, pady=(4,10), anchor="center")
+
+        return {"ratio_lbl": ratio_lbl, "siblings": siblings_state}
 
     def _render_siblings(self, pid, target_sibs=None, target_ratio=None):
         _sibs_frame  = target_sibs  if target_sibs  is not None else self.sibs_inner
@@ -4127,6 +4364,12 @@ class TraitInheritanceExplorer(tk.Toplevel):
             # clear content frames
             for w in pods_row_frame.winfo_children(): w.destroy()
             for w in nav_frame.winfo_children(): w.destroy()
+            # Clears the stale reuse-state reference too, not just the
+            # actual child widgets — without this, the nav-bar reuse
+            # logic further down would find nav_frame._nav_widgets still
+            # "set" and try to .configure() widgets that were just
+            # destroyed above, raising a TclError.
+            nav_frame._nav_widgets = None
             for w in self.combo_ratio_frame.winfo_children(): w.destroy()
         else:
             pods_canvas = self.pods_scroll_canvas
@@ -4139,11 +4382,21 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     pods_canvas.itemconfig(_win_id, state="hidden")
             except Exception:
                 pass
-            for w in pods_row_frame.winfo_children(): w.destroy()
-            for w in nav_frame.winfo_children(): w.destroy()
+            # pods_row_frame's children are NOT destroyed here anymore —
+            # moved to just before the card-building loop further down,
+            # since deciding whether to destroy at all now depends on
+            # page_keys (computed below), which this used to run ahead
+            # of entirely.
+            # nav_frame's own children are NOT unconditionally destroyed
+            # here anymore — the pagination-nav section further down now
+            # reuses its 3 widgets (prev/label/next) in place instead,
+            # since a page flip just calls _render_siblings again, which
+            # was destroying and rebuilding this same tiny, fixed-
+            # structure nav bar on every single click for no real reason.
 
         sel = self._get_snap(pid)
         if not sel:
+            for w in pods_row_frame.winfo_children(): w.destroy()
             tk.Label(pods_row_frame, text="No archived siblings.", bg=self.PANEL, fg=self.MUTED,
                      font=("Segoe UI", 11)).pack(anchor="w", padx=12, pady=16)
             # Reveal canvas so the message is visible
@@ -4172,18 +4425,37 @@ class TraitInheritanceExplorer(tk.Toplevel):
         mid, fid = g(sel, "mother_id"), g(sel, "father_id")
 
         # Build pods -> list of children snapshots (include the selected one if it matches)
+        # Building `pods` means scanning EVERY plant in the archive
+        # (checking each one's mother/father against mid/fid) — but a
+        # page flip only changes self._pods_page, not which sibling
+        # group is being shown (mid/fid stay the same), so that full
+        # rescan was happening again on every single "next page" click
+        # for no reason. Cached per (mid, fid) — and invalidated if the
+        # archive's plant count changes (a new plant could have been
+        # bred while this window's open), not just on a literal re-visit
+        # of the exact same plant.
         plants = self.app.archive.get("plants", {}) if hasattr(self, 'app') and isinstance(getattr(self.app, 'archive', None), dict) else {}
-        pods = {}
-        for cid, csnap in (plants.items() if isinstance(plants, dict) else []):
-            cm, cf = g(csnap, "mother_id"), g(csnap, "father_id")
-            same = ((mid is not None and fid is not None and cm == mid and cf == fid) or
-                    (mid is not None and fid is None and cm == mid) or
-                    (mid is None and fid is not None and cf == fid))
-            if same:
-                pidx = g(csnap, "source_pod_index")
-                pods.setdefault(pidx, []).append((cid, csnap))
+        _plants_len = len(plants) if isinstance(plants, dict) else 0
+        _pods_cache = getattr(self, "_pods_scan_cache", None)
+        if (_pods_cache is not None and _pods_cache.get("mid") == mid
+                and _pods_cache.get("fid") == fid
+                and _pods_cache.get("plants_len") == _plants_len):
+            pods = _pods_cache["pods"]
+        else:
+            pods = {}
+            for cid, csnap in (plants.items() if isinstance(plants, dict) else []):
+                cm, cf = g(csnap, "mother_id"), g(csnap, "father_id")
+                same = ((mid is not None and fid is not None and cm == mid and cf == fid) or
+                        (mid is not None and fid is None and cm == mid) or
+                        (mid is None and fid is not None and cf == fid))
+                if same:
+                    pidx = g(csnap, "source_pod_index")
+                    pods.setdefault(pidx, []).append((cid, csnap))
+            self._pods_scan_cache = {"mid": mid, "fid": fid,
+                                      "plants_len": _plants_len, "pods": pods}
 
         if not pods:
+            for w in pods_row_frame.winfo_children(): w.destroy()
             tk.Label(_sibs_frame, text="No siblings found for this plant.", bg=self.PANEL, fg=self.MUTED,
                      font=("Segoe UI", 11)).pack(anchor="w", padx=12, pady=16)
             # Reveal canvas so the message is visible
@@ -4209,12 +4481,57 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self._pods_page = max(0, min(self._pods_page, total_pages - 1))
         page_keys = ordered_keys[self._pods_page * PODS_PER_PAGE : (self._pods_page + 1) * PODS_PER_PAGE]
 
+        # Fast path: only the view-mode radio (Flowers/Pod color/Pod
+        # shape/Seed color/Seed shape) changed since the last render of
+        # this exact plant+page — the far more common interaction than
+        # actually switching plants or pages. Confirmed via trace_add on
+        # self.trait_mode → _refresh_views → this same pid, same
+        # self._pods_page, just a different _sib_trait_key. In that
+        # case, the card/row STRUCTURE (how many pods, how many siblings
+        # in each, which one's highlighted) is guaranteed identical, so
+        # this only swaps each row's icon image via itemconfig instead
+        # of tearing down and rebuilding every card — skips the rounded-
+        # corner redraw and reveal-timing machinery entirely too, since
+        # the cards are already on screen, correctly sized, and don't
+        # need any of that to run again. Guarded to non-combo only, for
+        # now — combo mode's own parent frame is still unconditionally
+        # cleared further up, so this signature could never actually
+        # match there.
+        _sig = None
+        if not is_combo:
+            _sig = (str(pid), self._pods_page,
+                    tuple(page_keys),
+                    tuple(tuple(str(cid) for cid, _ in pods[k]) for k in page_keys))
+        _cached = getattr(self, "_pods_card_state", None)
+        if (not is_combo and _cached is not None and _cached.get("sig") == _sig):
+            for card_state in _cached["cards"]:
+                for row_state in card_state["rows"]:
+                    csnap = row_state["csnap"]
+                    _target_px = 32 if (self._pods_icon_small and not is_combo) else 56
+                    im = self._icon_for_snap(_sib_trait_key, csnap,
+                                             sx=self.SCALE_SIB, sy=self.SCALE_SIB,
+                                             target_px=_target_px)
+                    if im is not None and row_state.get("icon_img") is not im:
+                        c = row_state["canvas"]
+                        try:
+                            c.itemconfig(row_state["img_id"], image=im)
+                            row_state["icon_img"] = im
+                            self._img_refs.append(im)
+                        except Exception:
+                            pass
+            return
+
         # Grand counter still covers ALL pods for the total ratio
         for pidx_all in ordered_keys:
             for cid, csnap in pods[pidx_all]:
                 grand_counter[_norm(_lookup_trait(csnap, _sib_trait_key))] += 1
 
-        # Pagination nav bar — shown when >1 page
+        # Pagination nav bar — shown when >1 page. Reuses its 3 widgets
+        # (prev/label/next) across renders instead of destroying and
+        # rebuilding them — a page flip just calls _render_siblings
+        # again, so without this, clicking "next" was tearing down and
+        # recreating this same tiny, fixed-structure nav bar on every
+        # single click for no real reason.
         if is_combo:
             nav_frame.pack_forget()
         else:
@@ -4240,34 +4557,64 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 self._render_siblings(_pid, target_sibs=_ts, target_ratio=_tr)
             BTN_BG = "#2a5a7a"
             _is_mac = getattr(self, "_is_mac", False)
-            if _is_mac:
-                _prev_btn = ttk.Button(nav, text="\u25c0", style="Nav.TButton",
-                                       command=lambda: _go_page(cur - 1))
-                _prev_btn.pack(side="left", padx=(0, 6))
-                if cur <= 0:
-                    try: _prev_btn.state(["disabled"])
-                    except Exception: pass
+
+            def _set_nav_btn_enabled(btn, enabled, is_mac_btn):
+                try:
+                    if is_mac_btn:
+                        btn.state(["!disabled"] if enabled else ["disabled"])
+                    else:
+                        btn.configure(state="normal" if enabled else "disabled")
+                except Exception:
+                    pass
+
+            _nav_state = getattr(nav, "_nav_widgets", None)
+            if _nav_state is not None and _nav_state.get("is_mac") == _is_mac:
+                # Reuse: same widget types as last time this nav bar was
+                # built (mac vs. non-mac never changes mid-session, but
+                # guard against it anyway) — just repoint each button's
+                # command to the current cur/page closure and update
+                # enabled state + the page-count label text.
+                _nav_state["prev_btn"].configure(command=lambda: _go_page(cur - 1))
+                _set_nav_btn_enabled(_nav_state["prev_btn"], cur > 0, _is_mac)
+                _nav_state["label"].configure(text=f"{cur + 1} / {total_pages}")
+                _nav_state["next_btn"].configure(command=lambda: _go_page(cur + 1))
+                _set_nav_btn_enabled(_nav_state["next_btn"], cur < total_pages - 1, _is_mac)
             else:
-                tk.Button(nav, text="\u25c0", command=lambda: _go_page(cur - 1),
-                          bg=BTN_BG, fg="#ffffff", relief="flat", bd=0,
-                          font=("Segoe UI", 11), padx=8,
-                          state="normal" if cur > 0 else "disabled"
-                          ).pack(side="left", padx=(0, 6))
-            tk.Label(nav, text=f"{cur + 1} / {total_pages}",
-                     bg=self.PANEL, fg=self.FG, font=("Segoe UI", 10)).pack(side="left")
-            if _is_mac:
-                _next_btn = ttk.Button(nav, text="\u25b6", style="Nav.TButton",
-                                       command=lambda: _go_page(cur + 1))
-                _next_btn.pack(side="left", padx=(6, 0))
-                if cur >= total_pages - 1:
-                    try: _next_btn.state(["disabled"])
-                    except Exception: pass
-            else:
-                tk.Button(nav, text="\u25b6", command=lambda: _go_page(cur + 1),
-                          bg=BTN_BG, fg="#ffffff", relief="flat", bd=0,
-                          font=("Segoe UI", 11), padx=8,
-                          state="normal" if cur < total_pages - 1 else "disabled"
-                          ).pack(side="left", padx=(6, 0))
+                for w in nav.winfo_children():
+                    w.destroy()
+                if _is_mac:
+                    _prev_btn = ttk.Button(nav, text="\u25c0", style="Nav.TButton",
+                                           command=lambda: _go_page(cur - 1))
+                    _prev_btn.pack(side="left", padx=(0, 6))
+                    if cur <= 0:
+                        try: _prev_btn.state(["disabled"])
+                        except Exception: pass
+                else:
+                    _prev_btn = tk.Button(nav, text="\u25c0", command=lambda: _go_page(cur - 1),
+                              bg=BTN_BG, fg="#ffffff", relief="flat", bd=0,
+                              font=("Segoe UI", 11), padx=8,
+                              state="normal" if cur > 0 else "disabled")
+                    _prev_btn.pack(side="left", padx=(0, 6))
+                _page_lbl = tk.Label(nav, text=f"{cur + 1} / {total_pages}",
+                         bg=self.PANEL, fg=self.FG, font=("Segoe UI", 10))
+                _page_lbl.pack(side="left")
+                if _is_mac:
+                    _next_btn = ttk.Button(nav, text="\u25b6", style="Nav.TButton",
+                                           command=lambda: _go_page(cur + 1))
+                    _next_btn.pack(side="left", padx=(6, 0))
+                    if cur >= total_pages - 1:
+                        try: _next_btn.state(["disabled"])
+                        except Exception: pass
+                else:
+                    _next_btn = tk.Button(nav, text="\u25b6", command=lambda: _go_page(cur + 1),
+                              bg=BTN_BG, fg="#ffffff", relief="flat", bd=0,
+                              font=("Segoe UI", 11), padx=8,
+                              state="normal" if cur < total_pages - 1 else "disabled")
+                    _next_btn.pack(side="left", padx=(6, 0))
+                nav._nav_widgets = {
+                    "prev_btn": _prev_btn, "label": _page_lbl,
+                    "next_btn": _next_btn, "is_mac": _is_mac,
+                }
 
         # Pending-redraw tracker for the low-risk "no fixed 120ms guess"
         # fix below (see the reveal logic near the end of this function):
@@ -4290,149 +4637,105 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # redraw would raise NameError the moment it fires.
         _maybe_reveal = lambda: None
 
-        for pidx in page_keys:
-            # Determine maternal pod color, then choose tint
-            try:
-                mother_snap = self._get_snap(mid)
-                m_traits = mother_snap.get("traits", {}) if isinstance(mother_snap, dict) else getattr(mother_snap, "traits", {}) or {}
-                pod_color_val = str(m_traits.get("pod_color", "")).lower()
-            except Exception:
-                pod_color_val = ""
-            col_bg = self._pod_tint_from_color(pod_color_val)
+        # Whole-page reuse check: if the exact same pod/sibling set is
+        # being shown again (only the highlight target or trait_mode
+        # changed — e.g. browsing between siblings, or flipping the
+        # Flowers/Pod color/etc. radio), update every card IN PLACE
+        # instead of destroying and recreating up to 5 rounded-canvas
+        # cards (each with its own background redraw) for a change that
+        # doesn't touch which pods/siblings are shown at all. Any real
+        # difference — a new page, or a genuinely different sibling
+        # group — falls back to the full destroy-and-rebuild below,
+        # unchanged from before, so correctness for that case doesn't
+        # depend on any of this new logic.
+        _page_sig = (self._pods_page,
+                     tuple((pidx, tuple(cid for cid, _ in pods[pidx])) for pidx in page_keys))
+        _existing_cards = getattr(pods_row_frame, "_pod_cards", None)
+        _existing_sig = getattr(pods_row_frame, "_pod_sig", None)
 
-            # ── Rounded card: outer Canvas draws bg, inner Frame holds content ──
-            _CR = 20  # corner radius — pronounced smooth curves
-            _CP = 6   # internal padding
-            card_canvas = tk.Canvas(pods_row, bg=self.PANEL,
-                                     highlightthickness=0, bd=0)
-            card_canvas.pack(side="left", padx=10, pady=8, fill="y")
-            card = tk.Frame(card_canvas, bg=col_bg)
-            card_canvas.create_window(_CP, _CP, anchor="nw", window=card)
-
-            _pending_redraws[0] += 1
-            _counted = [False]  # ensures the decrement below only ever
-                                 # happens once per card, even though
-                                 # _redraw_card can fire again later from
-                                 # a genuine <Configure> (e.g. a window
-                                 # resize) well after the initial reveal.
-                                 # (Counts on the first successful pass —
-                                 # a stricter "wait for two matching
-                                 # passes" version was tried to remove a
-                                 # rare visible re-draw flicker, but the
-                                 # added latency mattered more, so this
-                                 # reverts to the faster, simpler version.)
-
-            def _redraw_card(event=None, _cc=card_canvas, _cf=card,
-                             _bg=col_bg, _p=_CP, _r=_CR, _counted=_counted):
-                try:
-                    _cf.update_idletasks()
-                    iw = _cf.winfo_reqwidth()
-                    ih = _cf.winfo_reqheight()
-                    if iw < 2 or ih < 2:
-                        # Not ready yet — don't count this as done; a
-                        # later genuine <Configure> (once the card
-                        # actually has a real size) will retry and count
-                        # it then instead.
-                        return
-                    w = iw + 2 * _p
-                    h = ih + 2 * _p
-                    _cc.configure(width=w, height=h)
-                    _cc.delete("rrect")
-                    pts = [
-                        _r, 0,  w-_r, 0,
-                        w,  0,  w,    _r,
-                        w,  h-_r, w,  h,
-                        w-_r, h, _r,  h,
-                        0,  h,  0,    h-_r,
-                        0,  _r, 0,    0,
-                    ]
-                    _cc.create_polygon(pts, smooth=True,
-                                       fill=_bg, outline="#2b4d59", width=1,
-                                       tags="rrect")
-                    _cc.tag_lower("rrect")
-                    if not _counted[0]:
-                        _counted[0] = True
-                        _pending_redraws[0] -= 1
-                        _maybe_reveal()
-                except Exception:
-                    # Genuine failure (not the "not ready yet" case above,
-                    # which returns before this point) — still count it,
-                    # so one persistently-erroring card can't permanently
-                    # block the reveal for the rest of the page.
-                    if not _counted[0]:
-                        _counted[0] = True
-                        _pending_redraws[0] -= 1
-                        _maybe_reveal()
-            card.bind("<Configure>", _redraw_card)
-            card_canvas.after(20, _redraw_card)
-
-            tk.Label(card, text=f"Pod #{pidx if pidx is not None else '?'}",
-                     bg=col_bg, fg=self.FG, font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=10, pady=(10,6))
-
-            col = tk.Frame(card, bg=col_bg)
-            col.pack(padx=10, pady=(0,8))
-
-            local_counter = Counter()
-
-            for cid, csnap in pods[pidx]:
-                tval = _norm(_lookup_trait(csnap, _sib_trait_key))
-                local_counter[tval] += 1
-
-                row = tk.Frame(col, bg=col_bg)
-                row.pack(anchor="w", pady=4)
-
-                # All icons loaded via PIL at a consistent pixel size so that
-                # ALL trait types (flower color, pod shape, etc.) scale uniformly.
-                _target_px = 32 if (self._pods_icon_small and not is_combo) else 56
-                im = self._icon_for_snap(_sib_trait_key, csnap,
-                                         sx=self.SCALE_SIB, sy=self.SCALE_SIB,
-                                         target_px=_target_px)
-                _default_sz = _target_px
-                if im is not None:
+        if _existing_cards is not None and _existing_sig == _page_sig:
+            # ---- FAST PATH: same cards/siblings, refresh values only ----
+            for pidx in page_keys:
+                cs = _existing_cards[pidx]
+                local_counter = Counter()
+                for (cid, csnap), sib in zip(pods[pidx], cs["siblings"]):
+                    tval = _norm(_lookup_trait(csnap, _sib_trait_key))
+                    local_counter[tval] += 1
+                    _target_px = 32 if (self._pods_icon_small and not is_combo) else 56
+                    im = self._icon_for_snap(_sib_trait_key, csnap,
+                                             sx=self.SCALE_SIB, sy=self.SCALE_SIB,
+                                             target_px=_target_px)
+                    c = sib["canvas"]
+                    if im is not sib.get("icon_img"):
+                        # Trait mode changed (or first pass) — icon
+                        # itself needs swapping, which can also change
+                        # the canvas's own size (different trait icons
+                        # aren't guaranteed the same pixel dimensions).
+                        try:
+                            if im is not None:
+                                canvas_w, canvas_h = im.width(), im.height()
+                            else:
+                                canvas_w = canvas_h = _target_px
+                            c.configure(width=canvas_w, height=canvas_h)
+                            c.delete("icon", "fallback")
+                            if im is not None:
+                                img_id = c.create_image(canvas_w // 2, canvas_h // 2,
+                                                        image=im, tags="icon")
+                                self._img_refs.append(im)
+                            else:
+                                r = min(canvas_w, canvas_h) // 2 - 6
+                                img_id = c.create_oval(
+                                    canvas_w // 2 - r, canvas_h // 2 - r,
+                                    canvas_w // 2 + r, canvas_h // 2 + r,
+                                    outline="#34b3e6", width=1, tags="fallback")
+                            sib["icon_img"] = im
+                            sib["img_id"] = img_id
+                            sib["canvas_w"] = canvas_w
+                            sib["canvas_h"] = canvas_h
+                        except Exception:
+                            pass
+                    # Highlight border — re-evaluated every pass
+                    # regardless of whether the icon itself changed,
+                    # since it's which plant is SELECTED that moves, not
+                    # necessarily the icon.
                     try:
-                        canvas_w = im.width()
-                        canvas_h = im.height()
-                    except Exception:
-                        canvas_w = canvas_h = _default_sz
-                else:
-                    canvas_w = canvas_h = _default_sz
-
-                c = tk.Canvas(row, width=canvas_w, height=canvas_h, bg=col_bg, highlightthickness=0)
-                c.pack()
-                img_id = None
-
-                if im is not None:
-                    img_id = c.create_image(canvas_w // 2, canvas_h // 2, image=im)
-                    self._img_refs.append(im)
-                else:
-                    # Fallback: simple disk placeholder when we have no icon
-                    r = min(canvas_w, canvas_h) // 2 - 6
-                    img_id = c.create_oval(
-                        canvas_w // 2 - r, canvas_h // 2 - r,
-                        canvas_w // 2 + r, canvas_h // 2 + r,
-                        outline="#34b3e6", width=1
-                    )
-
-                # Highlight *behind* the icon so it never hides the trait icon
-                if str(cid) == highlight_id and img_id is not None:
-                    rect_id = c.create_rectangle(
-                        2, 2, canvas_w - 2, canvas_h - 2,
-                        outline="#ffd166", width=3
-                    )
-                    try:
-                        # ensure the border sits underneath the icon in z-order
-                        c.tag_lower(rect_id, img_id)
+                        c.delete("hl")
+                        if str(cid) == highlight_id and sib.get("img_id") is not None:
+                            rect_id = c.create_rectangle(
+                                2, 2, sib["canvas_w"] - 2, sib["canvas_h"] - 2,
+                                outline="#ffd166", width=3, tags="hl")
+                            c.tag_lower(rect_id, sib["img_id"])
                     except Exception:
                         pass
+                try:
+                    if local_counter:
+                        ordered_local = sorted(local_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
+                        counts_local = [cnt for _name, cnt in ordered_local]
+                        ratio_local = reduced_ratio(counts_local)
+                    else:
+                        ratio_local = "0"
+                    cs["ratio_lbl"].configure(text=ratio_local)
+                except Exception:
+                    pass
+            # Reveal is handled uniformly by the unchanged logic further
+            # down in this function either way — it reveals as soon as
+            # _pending_redraws reaches zero, which it already is here
+            # since nothing in this path ever incremented it (no card
+            # needed a background redraw), so no separate reveal call is
+            # needed for this path specifically.
+        else:
+            # ---- FULL REBUILD: genuinely different page/sibling set ----
+            for w in pods_row_frame.winfo_children():
+                w.destroy()
+            _new_cards = {}
+            for pidx in page_keys:
+                _new_cards[pidx] = self._build_pod_card(
+                    pods_row, pidx, pods[pidx], mid, highlight_id, is_combo,
+                    _sib_trait_key, _pending_redraws, _maybe_reveal,
+                    _norm, _lookup_trait, reduced_ratio)
+            pods_row_frame._pod_cards = _new_cards
+            pods_row_frame._pod_sig = _page_sig
 
-            # Single per-pod ratio (no duplicates)
-            if local_counter:
-                ordered_local = sorted(local_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
-                counts_local = [cnt for _name, cnt in ordered_local]
-                ratio_local = reduced_ratio(counts_local)
-            else:
-                ratio_local = "0"
-            tk.Label(card, text=ratio_local, bg=col_bg, fg=self.FG, font=("Segoe UI", 12, "bold")).pack(padx=10, pady=(4,10), anchor="center")
 
         # --- inline ratio section below pods ---
         if grand_counter:
@@ -4464,8 +4767,21 @@ class TraitInheritanceExplorer(tk.Toplevel):
             # Pods tab: render ratio inline in pods_row, right after the last pod card
             try:
                 ordered_pods = sorted(grand_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
+                # Destroy any previous ratio_inline first — this frame is
+                # ALWAYS rebuilt (unlike the pod cards above, which may
+                # now be reused), so without this it would silently
+                # accumulate a new, duplicate ratio box appended to
+                # pods_row on every single fast-path render, since that
+                # path no longer wipes pods_row_frame's children first.
+                _old_ratio_inline = getattr(pods_row_frame, "_ratio_inline", None)
+                if _old_ratio_inline is not None:
+                    try:
+                        _old_ratio_inline.destroy()
+                    except Exception:
+                        pass
                 ratio_inline = tk.Frame(pods_row, bg=self.PANEL)
                 ratio_inline.pack(side="left", padx=(16, 10), pady=8, anchor="n")
+                pods_row_frame._ratio_inline = ratio_inline
                 self._render_ratio_box(ratio_inline, _sib_trait_key, ordered_pods,
                                        sum(grand_counter.values()), law_parts, compact=True)
             except Exception:
