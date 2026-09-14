@@ -651,20 +651,3 @@ class Plant:
             return "#f90000"
         else:
             return "#f33000"
-    
-    @classmethod
-    def get_icons(cls):
-        """
-        Lazy-load icon resources (class method).
-        
-        Returns:
-            Dictionary of icon PhotoImages
-        """
-        if cls._ICONS is None:
-            print("Loading icons from disk...")
-            cls._ICONS = {
-                'seedling': tk.PhotoImage(file="seedling.png"),
-                'adult': tk.PhotoImage(file="plant.png"),
-                'dead': tk.PhotoImage(file="withered.png")
-            }
-        return cls._ICONS

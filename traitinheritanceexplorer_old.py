@@ -3271,483 +3271,401 @@ class TraitInheritanceExplorer(tk.Toplevel):
     ]
 
     def _draw_canvas_family(self, pid, target_canvas=None):
+            c = target_canvas if target_canvas is not None else self.canvas
+            c.delete("all")
+
             try:
-                c = target_canvas if target_canvas is not None else self.canvas
+                c.update_idletasks()
+            except Exception:
+                pass
 
-                try:
-                    c.update_idletasks()
-                except Exception:
-                    pass
+            vp_w = max(c.winfo_width(),  480)
+            vp_h = max(c.winfo_height(), 400)
 
-                vp_w = max(c.winfo_width(),  480)
-                vp_h = max(c.winfo_height(), 400)
+            node_outer = "#34b3e6"
+            node_fill  = "#193644"
 
-                node_outer = "#34b3e6"
-                node_fill  = "#193644"
+            layers = self._build_layers_archive(pid)
+            if not layers:
+                c.create_text(vp_w // 2, vp_h // 2, text="No archive data",
+                              fill=self.MUTED, font=("Segoe UI", 12, "bold"))
+                c.configure(scrollregion=(0, 0, vp_w, vp_h))
+                return
 
-                layers = self._build_layers_archive(pid)
-                if not layers:
-                    # Was c.delete("all") unconditionally at the very top of this
-                    # function, before layout was even computed — now that a
-                    # fast reuse path (further down) needs to run the layout
-                    # first and only clear the canvas when it actually decides
-                    # to redraw, this early-return branch clears it explicitly
-                    # itself instead.
-                    c.delete("all")
-                    c.create_text(vp_w // 2, vp_h // 2, text="No archive data",
-                                  fill=self.MUTED, font=("Segoe UI", 12, "bold"))
-                    c.configure(scrollregion=(0, 0, vp_w, vp_h))
-                    return
+            # ── Vertical spacing — fixed generous step, canvas scrolls ────────
+            L = len(layers)
+            try:
+                title_h = tk.font.Font(family="Segoe UI", size=16).metrics("linespace")
+            except Exception:
+                title_h = 24
+            top_margin  = 12 + title_h + 20
+            y_step      = max(100, int(130 * (getattr(self, "SPACING_SCALE_Y", 0.75) or 0.75))) + 15
+            y_positions = [top_margin + i * y_step for i in range(L)]
 
-                # ── Vertical spacing — fixed generous step, canvas scrolls ────────
-                L = len(layers)
-                try:
-                    title_h = tk.font.Font(family="Segoe UI", size=16).metrics("linespace")
-                except Exception:
-                    title_h = 24
-                top_margin  = 12 + title_h + 20
-                y_step      = max(100, int(130 * (getattr(self, "SPACING_SCALE_Y", 0.75) or 0.75))) + 15
-                y_positions = [top_margin + i * y_step for i in range(L)]
+            # ── Helpers ───────────────────────────────────────────────────────
+            def parents_of(sid):
+                s = self._get_snap(sid)
+                return self._parents_from_snapshot(s) if s else (None, None)
 
-                # ── Helpers ───────────────────────────────────────────────────────
-                def parents_of(sid):
-                    s = self._get_snap(sid)
-                    return self._parents_from_snapshot(s) if s else (None, None)
+            def is_selfed(sid):
+                m, f = parents_of(sid)
+                return (m is not None and f is not None and str(m) == str(f))
 
-                def is_selfed(sid):
-                    m, f = parents_of(sid)
-                    return (m is not None and f is not None and str(m) == str(f))
+            child_map = {}
+            for _lbl, row in layers:
+                for p in row:
+                    m, f = parents_of(p)
+                    for par in (m, f):
+                        if par is not None:
+                            sp = str(par)
+                            child_map.setdefault(sp, [])
+                            if p not in child_map[sp]:
+                                child_map[sp].append(p)
 
-                child_map = {}
-                for _lbl, row in layers:
-                    for p in row:
-                        m, f = parents_of(p)
-                        for par in (m, f):
-                            if par is not None:
-                                sp = str(par)
-                                child_map.setdefault(sp, [])
-                                if p not in child_map[sp]:
-                                    child_map[sp].append(p)
+            # ── Uniform grid horizontal layout ────────────────────────────────
+            # All nodes live on a shared column grid.  Column index is a float
+            # so a single node centred between two others sits at e.g. col 0.5.
+            # Minimum spacing between siblings in the same row: 1.0 column.
+            # The widest layer is anchored first; every other layer is derived
+            # by cascading outward (upward toward ancestors, downward toward
+            # offspring), always centering a node over the mean column of its
+            # adjacent-layer relatives.
+            # Tightened from 60 -> 28: this is a flat offset added equally to
+            # every node's x position (see x_of below), so shrinking it just
+            # narrows the left margin before F0 without touching relative
+            # node spacing or alignment.
+            x_pad       = 28
+            GEN_LABEL_W = 48
+            NODE_STEP   = 120   # pixels per column unit
 
-                # ── Uniform grid horizontal layout ────────────────────────────────
-                # All nodes live on a shared column grid.  Column index is a float
-                # so a single node centred between two others sits at e.g. col 0.5.
-                # Minimum spacing between siblings in the same row: 1.0 column.
-                # The widest layer is anchored first; every other layer is derived
-                # by cascading outward (upward toward ancestors, downward toward
-                # offspring), always centering a node over the mean column of its
-                # adjacent-layer relatives.
-                # Tightened from 60 -> 28: this is a flat offset added equally to
-                # every node's x position (see x_of below), so shrinking it just
-                # narrows the left margin before F0 without touching relative
-                # node spacing or alignment.
-                x_pad       = 28
-                GEN_LABEL_W = 48
-                NODE_STEP   = 120   # pixels per column unit
+            n_max = max(len(row) for _, row in layers)
+            content_w = GEN_LABEL_W + x_pad + n_max * NODE_STEP + x_pad
 
-                n_max = max(len(row) for _, row in layers)
-                content_w = GEN_LABEL_W + x_pad + n_max * NODE_STEP + x_pad
+            def _cx(col_f):
+                """Float column index → pixel x, centred within its slot."""
+                return GEN_LABEL_W + x_pad + (col_f + 0.5) * NODE_STEP
 
-                def _cx(col_f):
-                    """Float column index → pixel x, centred within its slot."""
-                    return GEN_LABEL_W + x_pad + (col_f + 0.5) * NODE_STEP
+            col = {}   # str(pid) → float column index
 
-                col = {}   # str(pid) → float column index
+            def _place_layer(row, desired):
+                """
+                Assign final column indices to all nodes in `row`.
 
-                def _place_layer(row, desired):
-                    """
-                    Assign final column indices to all nodes in `row`.
+                1. Sort nodes by desired column (left to right).
+                2. Enforce a minimum gap of 1.0 column between neighbours.
+                3. Re-centre the whole row around the mean desired column so
+                   the group stays over its children / parents.
+                """
+                ordered = sorted([str(p) for p in row],
+                                 key=lambda sp: desired.get(sp, (n_max - 1) / 2.0))
+                mid_ref = (n_max - 1) / 2.0
+                cs = [desired.get(sp, mid_ref) for sp in ordered]
+                # enforce minimum 1-column gap
+                for j in range(1, len(cs)):
+                    if cs[j] - cs[j - 1] < 1.0:
+                        cs[j] = cs[j - 1] + 1.0
+                # re-centre around the mean of the desired (pre-push) positions
+                if len(cs) > 1:
+                    desired_mid = sum(desired.get(sp, mid_ref) for sp in ordered) / len(ordered)
+                    current_mid = (cs[0] + cs[-1]) / 2.0
+                    shift = desired_mid - current_mid
+                    cs = [c + shift for c in cs]
+                for sp, c in zip(ordered, cs):
+                    col[sp] = c
 
-                    1. Sort nodes by desired column (left to right).
-                    2. Enforce a minimum gap of 1.0 column between neighbours.
-                    3. Re-centre the whole row around the mean desired column so
-                       the group stays over its children / parents.
-                    """
-                    ordered = sorted([str(p) for p in row],
-                                     key=lambda sp: desired.get(sp, (n_max - 1) / 2.0))
-                    mid_ref = (n_max - 1) / 2.0
-                    cs = [desired.get(sp, mid_ref) for sp in ordered]
-                    # enforce minimum 1-column gap
-                    for j in range(1, len(cs)):
-                        if cs[j] - cs[j - 1] < 1.0:
-                            cs[j] = cs[j - 1] + 1.0
-                    # re-centre around the mean of the desired (pre-push) positions
-                    if len(cs) > 1:
-                        desired_mid = sum(desired.get(sp, mid_ref) for sp in ordered) / len(ordered)
-                        current_mid = (cs[0] + cs[-1]) / 2.0
-                        shift = desired_mid - current_mid
-                        cs = [c + shift for c in cs]
-                    for sp, c in zip(ordered, cs):
-                        col[sp] = c
+            # 1. Anchor the widest layer at evenly-spaced integer columns.
+            widest_idx  = max(range(len(layers)), key=lambda i: len(layers[i][1]))
+            _, wide_row = layers[widest_idx]
+            n_wide      = len(wide_row)
+            start_col   = (n_max - n_wide) / 2.0   # centre within the grid
+            for i, p in enumerate(wide_row):
+                col[str(p)] = start_col + float(i)
 
-                # 1. Anchor the widest layer at evenly-spaced integer columns.
-                widest_idx  = max(range(len(layers)), key=lambda i: len(layers[i][1]))
-                _, wide_row = layers[widest_idx]
-                n_wide      = len(wide_row)
-                start_col   = (n_max - n_wide) / 2.0   # centre within the grid
-                for i, p in enumerate(wide_row):
-                    col[str(p)] = start_col + float(i)
+            # 2. Cascade UPWARD: centre each ancestor over its children's columns.
+            for i in range(widest_idx - 1, -1, -1):
+                _, row     = layers[i]
+                _, adj_row = layers[i + 1]
+                adj_set    = set(adj_row)
+                desired    = {}
+                for p in row:
+                    sp   = str(p)
+                    kids = [k for k in child_map.get(sp, [])
+                            if k in col and k in adj_set]
+                    if not kids:
+                        kids = [k for k in child_map.get(sp, []) if k in col]
+                    desired[sp] = (sum(col[k] for k in kids) / len(kids)
+                                   if kids else (n_max - 1) / 2.0)
+                _place_layer(row, desired)
 
-                # 2. Cascade UPWARD: centre each ancestor over its children's columns.
-                for i in range(widest_idx - 1, -1, -1):
-                    _, row     = layers[i]
-                    _, adj_row = layers[i + 1]
-                    adj_set    = set(adj_row)
-                    desired    = {}
-                    for p in row:
-                        sp   = str(p)
-                        kids = [k for k in child_map.get(sp, [])
-                                if k in col and k in adj_set]
-                        if not kids:
-                            kids = [k for k in child_map.get(sp, []) if k in col]
-                        desired[sp] = (sum(col[k] for k in kids) / len(kids)
-                                       if kids else (n_max - 1) / 2.0)
-                    _place_layer(row, desired)
-
-                # 3. Cascade DOWNWARD: centre each offspring below its parents' columns.
-                for i in range(widest_idx + 1, len(layers)):
-                    _, row     = layers[i]
-                    _, adj_row = layers[i - 1]
-                    adj_set    = set(adj_row)
-                    desired    = {}
-                    for p in row:
-                        sp   = str(p)
-                        m, f = parents_of(sp)
+            # 3. Cascade DOWNWARD: centre each offspring below its parents' columns.
+            for i in range(widest_idx + 1, len(layers)):
+                _, row     = layers[i]
+                _, adj_row = layers[i - 1]
+                adj_set    = set(adj_row)
+                desired    = {}
+                for p in row:
+                    sp   = str(p)
+                    m, f = parents_of(sp)
+                    pcols = [col[str(par)] for par in (m, f)
+                             if par is not None and str(par) in col
+                             and str(par) in adj_set]
+                    if not pcols:
                         pcols = [col[str(par)] for par in (m, f)
-                                 if par is not None and str(par) in col
-                                 and str(par) in adj_set]
-                        if not pcols:
-                            pcols = [col[str(par)] for par in (m, f)
-                                     if par is not None and str(par) in col]
-                        desired[sp] = (sum(pcols) / len(pcols)
-                                       if pcols else (n_max - 1) / 2.0)
-                    _place_layer(row, desired)
+                                 if par is not None and str(par) in col]
+                    desired[sp] = (sum(pcols) / len(pcols)
+                                   if pcols else (n_max - 1) / 2.0)
+                _place_layer(row, desired)
 
-                # 4. Convert column indices → pixel positions.
-                pos = {}
-                for li, (_, row) in enumerate(layers):
-                    for p in row:
-                        sp = str(p)
-                        if sp in col:
-                            pos[sp] = (_cx(col[sp]), y_positions[li])
+            # 4. Convert column indices → pixel positions.
+            pos = {}
+            for li, (_, row) in enumerate(layers):
+                for p in row:
+                    sp = str(p)
+                    if sp in col:
+                        pos[sp] = (_cx(col[sp]), y_positions[li])
 
-                # ── Snap selfed-only parents to exactly their child's x ───────────
-                for i in range(len(layers) - 2, -1, -1):
-                    _, row = layers[i]
-                    _, nxt = layers[i + 1]
-                    adj    = set(nxt)
-                    for p in row:
-                        sp       = str(p)
-                        adj_kids = [k for k in child_map.get(sp, [])
-                                    if k in pos and k in adj]
-                        if len(adj_kids) == 1:
-                            ck = adj_kids[0]
-                            cm, cf = parents_of(ck)
-                            if (cm is not None and cf is not None
-                                    and str(cm) == sp and str(cf) == sp):
-                                pos[sp] = (pos[ck][0], pos[sp][1])
+            # ── Snap selfed-only parents to exactly their child's x ───────────
+            for i in range(len(layers) - 2, -1, -1):
+                _, row = layers[i]
+                _, nxt = layers[i + 1]
+                adj    = set(nxt)
+                for p in row:
+                    sp       = str(p)
+                    adj_kids = [k for k in child_map.get(sp, [])
+                                if k in pos and k in adj]
+                    if len(adj_kids) == 1:
+                        ck = adj_kids[0]
+                        cm, cf = parents_of(ck)
+                        if (cm is not None and cf is not None
+                                and str(cm) == sp and str(cf) == sp):
+                            pos[sp] = (pos[ck][0], pos[sp][1])
 
-                # ── Prune orphans ─────────────────────────────────────────────────
-                # Keep a node only if it has at least one child that is also in pos.
-                # The bottom row is always kept.  Repeat until stable (handles chains).
-                _, bottom_row = layers[-1]
-                for _ in range(len(layers)):   # max passes = depth of tree
-                    has_child = set(bottom_row)
-                    for idx in range(1, len(layers)):
-                        _, row = layers[idx]
-                        for sid in row:
-                            if sid not in pos:
-                                continue
-                            m, f = parents_of(sid)
-                            for ppid in (m, f):
-                                if ppid is not None and str(ppid) in pos:
-                                    has_child.add(str(ppid))
-                    new_pos = {p: xy for p, xy in pos.items() if p in has_child}
-                    if new_pos == pos:
-                        break
-                    pos = new_pos
-                # Rebuild layers to match pruned pos
-                layers = [(lbl, [p for p in row if p in pos]) for lbl, row in layers]
-                layers = [(lbl, row) for lbl, row in layers if row]
-                if not layers:
-                    c.delete("all")
-                    c.create_text(vp_w // 2, vp_h // 2, text="No archive data",
-                                  fill=self.MUTED, font=("Segoe UI", 12, "bold"))
-                    c.configure(scrollregion=(0, 0, vp_w, vp_h))
-                    return
-
-                # ── Recompute y_positions for the (possibly smaller) pruned layer set ──
-                # The original y_positions were based on pre-prune layer count.  Any
-                # removed rows would leave a gap, so we recompute from scratch and
-                # re-synchronise every node's y-coordinate in pos.
-                L_pruned    = len(layers)
-                y_positions = [top_margin + i * y_step for i in range(L_pruned)]
-                for li, (_, row) in enumerate(layers):
-                    for pid_str in row:
-                        if pid_str in pos:
-                            pos[pid_str] = (pos[pid_str][0], y_positions[li])
-
-                # Actual bounding box → scrollregion
-                all_xs = [x for x, _ in pos.values()]
-                all_ys = [y for _, y in pos.values()]
-                # Use actual rightmost node position — don't pad with full content_w
-                actual_max_x = (max(all_xs) if all_xs else 0)
-                real_w = actual_max_x + x_pad + 80
-                # Use actual content height (not clamped to viewport) so tall F3/F4
-                # trees correctly drive the auto-resize.
-                content_h = (max(all_ys) if all_ys else 0) + 120
-                real_h    = max(content_h, vp_h)
-                c.configure(scrollregion=(0, 0, real_w, real_h))
-
-                # ── Store raw content size for auto-resize (no vp_h floor) ────────
-                is_combo = (target_canvas is not None)
-                if is_combo:
-                    self._combo_tree_w = int(actual_max_x + x_pad + 80)
-                    self._combo_tree_h = int(content_h)
-                    try:
-                        # Size the tree canvas exactly to its content
-                        self.combo_canvas.configure(
-                            width=self._combo_tree_w,
-                            height=self._combo_tree_h)
-                        self._update_combo_scrollregion()
-                    except Exception:
-                        pass
-                else:
-                    self._tree_content_w = int(actual_max_x + x_pad + 80)
-                    self._tree_content_h = int(content_h)
-                    # Resize window to fit the tree — lineage tab has no other resize trigger
-                    self._schedule_auto_resize(80)
-
-                # ── Highlight logic ───────────────────────────────────────────────
-                # Preview active → previewed node = gold, bottom plant = plain
-                # No preview     → bottom (current) plant = gold
-                cur_id         = str(getattr(self, "current_pid", "") or "")
-                prev_id        = str(getattr(self, "preview_pid", "") or "")
-                gold_id        = prev_id if prev_id else cur_id
-
-                def _node_colors(pid_str):
-                    if pid_str == gold_id:
-                        return "#f4c542", "#5a3b00", self.NODE_OUTER_W + 1
-                    return node_outer, node_fill, self.NODE_OUTER_W
-
-                # ── Trait icon key ────────────────────────────────────────────────
-                try:
-                    mode = (self.trait_mode.get() or "Flowers").lower()
-                except Exception:
-                    mode = "flowers"
-                icon_key = {
-                    "flowers":    "flower_color",
-                    "pod color":  "pod_color",
-                    "pod shape":  "pod_shape",
-                    "seed color": "seed_color",
-                    "seed shape": "seed_shape",
-                    "height":     "plant_height",
-                }.get(mode, "flower_color")
-
-                # ── Reuse check ───────────────────────────────────────────────────
-                # The tree's STRUCTURE (which nodes exist, their positions, the
-                # parent-child edges) depends only on pid and the archive data —
-                # never on trait_mode or which node is highlighted. But this
-                # function used to redraw everything from scratch (c.delete("all")
-                # + full rebuild) on every call, including the two triggers that
-                # DON'T change the structure at all: switching the trait-mode
-                # radio (_refresh_views) and changing which node is highlighted.
-                # Signature is (pid, positions) only — icon_key/gold_id are
-                # exactly the "values" the fast path below updates in place, so
-                # they're deliberately NOT part of what decides fast vs. full
-                # rebuild (a change in either is what the fast path exists for).
-                _struct_sig  = (str(pid), tuple(sorted(pos.items())))
-                _prev_state  = getattr(c, "_tree_state", None)
-
-                if _prev_state is not None and _prev_state.get("struct_sig") == _struct_sig:
-                    # ---- FAST PATH: same tree, only icons/highlight may differ ----
-                    for pid_str, items in _prev_state["nodes"].items():
-                        snap = self._get_snap(pid_str)
-                        outer_color, inner_color, outer_w = _node_colors(pid_str)
-                        try:
-                            c.itemconfig(items["outer"], outline=outer_color, width=outer_w)
-                            c.itemconfig(items["inner"], fill=inner_color)
-                        except Exception:
-                            pass
-                        try:
-                            im = self._icon_for_snap(icon_key, snap,
-                                                     sx=self.SCALE_NODE, sy=self.SCALE_NODE)
-                        except Exception:
-                            im = None
-                        if im is not None:
-                            # Re-append even when the icon object itself is
-                            # unchanged (same trait value as last render, same
-                            # cached PhotoImage by identity) — self._img_refs was
-                            # reset to [] by _refresh_views before this ran, and
-                            # a canvas item's own internal reference to a
-                            # PhotoImage isn't reliably enough to keep it alive
-                            # on its own (a well-known Tk gotcha); skipping this
-                            # for "unchanged" icons would risk them silently
-                            # disappearing after a trait-mode switch.
-                            self._img_refs.append(im)
-                            if items.get("icon") is not None and items.get("icon_img") is not im:
-                                try:
-                                    c.itemconfig(items["icon"], image=im)
-                                    items["icon_img"] = im
-                                except Exception:
-                                    pass
-                    _prev_state["icon_key"] = icon_key
-                    _prev_state["gold_id"] = gold_id
-                    return
-
-                # ---- FULL REBUILD: genuinely different tree (or first draw) ----
-                c.delete("all")
-                _tree_node_items = {}
-
-                # ── Title ─────────────────────────────────────────────────────────
-                c.create_text(12, 12, anchor="nw", text="Lineage",
-                              fill=self.MUTED, font=("Segoe UI", 16))
-
-                # ── Build per-parent-node color map ──────────────────────────────
-                # Each unique parent node gets its own color from the palette.
-                # Edges are then drawn in the color of their source (parent) node,
-                # so you can instantly see which lines come from which plant.
-                # When two parents connect to two children the four curves cross and
-                # each "arm" of the X is in the parent's individual color.
-                node_color_map = {}   # str(parent_pid) → hex color
-                palette = self._EDGE_PALETTE
-                palette_idx = [0]
-
-                def _node_color(pid_str):
-                    if pid_str not in node_color_map:
-                        node_color_map[pid_str] = palette[palette_idx[0] % len(palette)]
-                        palette_idx[0] += 1
-                    return node_color_map[pid_str]
-
-                # Pre-assign colors top-down so the assignment is deterministic.
-                for _lbl, row in layers:
-                    for p in row:
-                        m, f = parents_of(p)
-                        for par in (m, f):
-                            if par is not None:
-                                _node_color(str(par))
-
-                # ── Draw connectors ───────────────────────────────────────────────
-                # Style: cubic S-curve that departs *vertically* from the parent node
-                # and arrives *vertically* at the child node.  The two Bezier control
-                # points stay at the same x as their respective endpoints, so the curve
-                # is smooth and tree-like but still sweeps diagonally between nodes at
-                # different x positions.  When two parents each connect to two children
-                # (a cross), the two curves physically intersect mid-way, forming a
-                # graceful × that makes the breeding event immediately readable.
-                #
-                # Approximation via tkinter smooth=True spline with 4 points:
-                #   P0 = (x1, y1+r)                          — parent bottom
-                #   P1 = (x1, y1+r + span*0.45)              — upper ctrl, x locked to parent
-                #   P2 = (x2, y2-r - span*0.45)              — lower ctrl, x locked to child
-                #   P3 = (x2, y2-r)                          — child top
-                r_connect = 26
-                drawn_edges = set()
-
+            # ── Prune orphans ─────────────────────────────────────────────────
+            # Keep a node only if it has at least one child that is also in pos.
+            # The bottom row is always kept.  Repeat until stable (handles chains).
+            _, bottom_row = layers[-1]
+            for _ in range(len(layers)):   # max passes = depth of tree
+                has_child = set(bottom_row)
                 for idx in range(1, len(layers)):
                     _, row = layers[idx]
                     for sid in row:
-                        m, f   = parents_of(sid)
-                        selfed = (m is not None and f is not None and str(m) == str(f))
-
-                        for ppid in (m, f):
-                            if ppid is None:
-                                continue
-                            sp       = str(ppid)
-                            edge_key = (sp, sid)
-                            if edge_key in drawn_edges or sp not in pos or sid not in pos:
-                                continue
-                            drawn_edges.add(edge_key)
-
-                            color  = _node_color(sp)
-                            x1, y1 = pos[sp]
-                            x2, y2 = pos[sid]
-                            span   = max(1, (y2 - r_connect) - (y1 + r_connect))
-                            ctrl   = span * 0.45
-
-                            if selfed:
-                                # Selfed → x1 ≈ x2: draw a clean vertical S so any
-                                # tiny residual x-offset stays invisible.
-                                c.create_line(
-                                    x1, y1 + r_connect,
-                                    x1, y1 + r_connect + ctrl,
-                                    x2, y2 - r_connect - ctrl,
-                                    x2, y2 - r_connect,
-                                    smooth=True, width=self.LINK_W, fill=color,
-                                    tags=("edge",),
-                                )
-                            else:
-                                # Cross → elegant cubic S that sweeps from parent x
-                                # to child x.  Opposite-direction curves from two
-                                # parents will naturally intersect to form a visible ×.
-                                c.create_line(
-                                    x1, y1 + r_connect,
-                                    x1, y1 + r_connect + ctrl,
-                                    x2, y2 - r_connect - ctrl,
-                                    x2, y2 - r_connect,
-                                    smooth=True, width=self.LINK_W, fill=color,
-                                    tags=("edge",),
-                                )
-                try:
-                    c.tag_lower("edge")
-                except Exception:
-                    pass
-
-                # ── Draw nodes ────────────────────────────────────────────────────
-                for (label, row), y in zip(layers, y_positions):
-                    c.create_text(14, y, anchor="w", text=str(label),
-                                  fill=self.MUTED, font=("Segoe UI", 12, "bold"))
-                    for pid_str in row:
-                        if pid_str not in pos:
+                        if sid not in pos:
                             continue
-                        x, y    = pos[pid_str]
-                        snap    = self._get_snap(pid_str)
-                        r1, r2  = 28, 24
-                        outer_color, inner_color, outer_w = _node_colors(pid_str)
+                        m, f = parents_of(sid)
+                        for ppid in (m, f):
+                            if ppid is not None and str(ppid) in pos:
+                                has_child.add(str(ppid))
+                new_pos = {p: xy for p, xy in pos.items() if p in has_child}
+                if new_pos == pos:
+                    break
+                pos = new_pos
+            # Rebuild layers to match pruned pos
+            layers = [(lbl, [p for p in row if p in pos]) for lbl, row in layers]
+            layers = [(lbl, row) for lbl, row in layers if row]
+            if not layers:
+                c.create_text(vp_w // 2, vp_h // 2, text="No archive data",
+                              fill=self.MUTED, font=("Segoe UI", 12, "bold"))
+                c.configure(scrollregion=(0, 0, vp_w, vp_h))
+                return
 
-                        outer_item = c.create_oval(x - r1, y - r1, x + r1, y + r1,
-                                      outline=outer_color, width=outer_w,
-                                      tags=(f"node_{pid_str}", "node"))
-                        inner_item = c.create_oval(x - r2, y - r2, x + r2, y + r2,
-                                      fill=inner_color, outline="",
-                                      tags=(f"node_{pid_str}", "node"))
-                        icon_item = None
-                        icon_img = None
-                        try:
-                            im = self._icon_for_snap(icon_key, snap,
-                                                     sx=self.SCALE_NODE, sy=self.SCALE_NODE)
-                            if im is not None:
-                                icon_item = c.create_image(x, y, image=im,
-                                               tags=(f"node_{pid_str}", "node"))
-                                icon_img = im
-                                self._img_refs.append(im)
-                        except Exception:
-                            pass
-                        c.create_text(x + r1 + 4, y, anchor="w",
-                                      text=f"#{pid_str}", fill=self.FG,
-                                      font=self.NODE_LABEL_FONT,
-                                      tags=(f"node_{pid_str}", "node"))
-                        # Tracked here (rather than only via the "node_{pid}"
-                        # canvas tag) so the fast-reuse path above can update
-                        # exactly the outer ring / inner fill / icon items for
-                        # this node directly by id, without a find_withtag
-                        # lookup-and-filter on every call.
-                        _tree_node_items[pid_str] = {
-                            "outer": outer_item, "inner": inner_item,
-                            "icon": icon_item, "icon_img": icon_img,
-                        }
+            # ── Recompute y_positions for the (possibly smaller) pruned layer set ──
+            # The original y_positions were based on pre-prune layer count.  Any
+            # removed rows would leave a gap, so we recompute from scratch and
+            # re-synchronise every node's y-coordinate in pos.
+            L_pruned    = len(layers)
+            y_positions = [top_margin + i * y_step for i in range(L_pruned)]
+            for li, (_, row) in enumerate(layers):
+                for pid_str in row:
+                    if pid_str in pos:
+                        pos[pid_str] = (pos[pid_str][0], y_positions[li])
 
+            # Actual bounding box → scrollregion
+            all_xs = [x for x, _ in pos.values()]
+            all_ys = [y for _, y in pos.values()]
+            # Use actual rightmost node position — don't pad with full content_w
+            actual_max_x = (max(all_xs) if all_xs else 0)
+            real_w = actual_max_x + x_pad + 80
+            # Use actual content height (not clamped to viewport) so tall F3/F4
+            # trees correctly drive the auto-resize.
+            content_h = (max(all_ys) if all_ys else 0) + 120
+            real_h    = max(content_h, vp_h)
+            c.configure(scrollregion=(0, 0, real_w, real_h))
+
+            # ── Store raw content size for auto-resize (no vp_h floor) ────────
+            is_combo = (target_canvas is not None)
+            if is_combo:
+                self._combo_tree_w = int(actual_max_x + x_pad + 80)
+                self._combo_tree_h = int(content_h)
                 try:
-                    c.tag_bind("node", "<Button-1>", self._on_canvas_node_click)
+                    # Size the tree canvas exactly to its content
+                    self.combo_canvas.configure(
+                        width=self._combo_tree_w,
+                        height=self._combo_tree_h)
+                    self._update_combo_scrollregion()
                 except Exception:
                     pass
+            else:
+                self._tree_content_w = int(actual_max_x + x_pad + 80)
+                self._tree_content_h = int(content_h)
+                # Resize window to fit the tree — lineage tab has no other resize trigger
+                self._schedule_auto_resize(80)
 
-                c._tree_state = {
-                    "struct_sig": _struct_sig,
-                    "icon_key": icon_key,
-                    "gold_id": gold_id,
-                    "nodes": _tree_node_items,
-                }
+            # ── Title ─────────────────────────────────────────────────────────
+            c.create_text(12, 12, anchor="nw", text="Lineage",
+                          fill=self.MUTED, font=("Segoe UI", 16))
+
+            # ── Build per-parent-node color map ──────────────────────────────
+            # Each unique parent node gets its own color from the palette.
+            # Edges are then drawn in the color of their source (parent) node,
+            # so you can instantly see which lines come from which plant.
+            # When two parents connect to two children the four curves cross and
+            # each "arm" of the X is in the parent's individual color.
+            node_color_map = {}   # str(parent_pid) → hex color
+            palette = self._EDGE_PALETTE
+            palette_idx = [0]
+
+            def _node_color(pid_str):
+                if pid_str not in node_color_map:
+                    node_color_map[pid_str] = palette[palette_idx[0] % len(palette)]
+                    palette_idx[0] += 1
+                return node_color_map[pid_str]
+
+            # Pre-assign colors top-down so the assignment is deterministic.
+            for _lbl, row in layers:
+                for p in row:
+                    m, f = parents_of(p)
+                    for par in (m, f):
+                        if par is not None:
+                            _node_color(str(par))
+
+            # ── Draw connectors ───────────────────────────────────────────────
+            # Style: cubic S-curve that departs *vertically* from the parent node
+            # and arrives *vertically* at the child node.  The two Bezier control
+            # points stay at the same x as their respective endpoints, so the curve
+            # is smooth and tree-like but still sweeps diagonally between nodes at
+            # different x positions.  When two parents each connect to two children
+            # (a cross), the two curves physically intersect mid-way, forming a
+            # graceful × that makes the breeding event immediately readable.
+            #
+            # Approximation via tkinter smooth=True spline with 4 points:
+            #   P0 = (x1, y1+r)                          — parent bottom
+            #   P1 = (x1, y1+r + span*0.45)              — upper ctrl, x locked to parent
+            #   P2 = (x2, y2-r - span*0.45)              — lower ctrl, x locked to child
+            #   P3 = (x2, y2-r)                          — child top
+            r_connect = 26
+            drawn_edges = set()
+
+            for idx in range(1, len(layers)):
+                _, row = layers[idx]
+                for sid in row:
+                    m, f   = parents_of(sid)
+                    selfed = (m is not None and f is not None and str(m) == str(f))
+
+                    for ppid in (m, f):
+                        if ppid is None:
+                            continue
+                        sp       = str(ppid)
+                        edge_key = (sp, sid)
+                        if edge_key in drawn_edges or sp not in pos or sid not in pos:
+                            continue
+                        drawn_edges.add(edge_key)
+
+                        color  = _node_color(sp)
+                        x1, y1 = pos[sp]
+                        x2, y2 = pos[sid]
+                        span   = max(1, (y2 - r_connect) - (y1 + r_connect))
+                        ctrl   = span * 0.45
+
+                        if selfed:
+                            # Selfed → x1 ≈ x2: draw a clean vertical S so any
+                            # tiny residual x-offset stays invisible.
+                            c.create_line(
+                                x1, y1 + r_connect,
+                                x1, y1 + r_connect + ctrl,
+                                x2, y2 - r_connect - ctrl,
+                                x2, y2 - r_connect,
+                                smooth=True, width=self.LINK_W, fill=color,
+                                tags=("edge",),
+                            )
+                        else:
+                            # Cross → elegant cubic S that sweeps from parent x
+                            # to child x.  Opposite-direction curves from two
+                            # parents will naturally intersect to form a visible ×.
+                            c.create_line(
+                                x1, y1 + r_connect,
+                                x1, y1 + r_connect + ctrl,
+                                x2, y2 - r_connect - ctrl,
+                                x2, y2 - r_connect,
+                                smooth=True, width=self.LINK_W, fill=color,
+                                tags=("edge",),
+                            )
+            try:
+                c.tag_lower("edge")
+            except Exception:
+                pass
+
+            # ── Highlight logic ───────────────────────────────────────────────
+            # Preview active → previewed node = gold, bottom plant = plain
+            # No preview     → bottom (current) plant = gold
+            cur_id         = str(getattr(self, "current_pid", "") or "")
+            prev_id        = str(getattr(self, "preview_pid", "") or "")
+            gold_id        = prev_id if prev_id else cur_id
+
+            def _node_colors(pid_str):
+                if pid_str == gold_id:
+                    return "#f4c542", "#5a3b00", self.NODE_OUTER_W + 1
+                return node_outer, node_fill, self.NODE_OUTER_W
+
+            # ── Trait icon key ────────────────────────────────────────────────
+            try:
+                mode = (self.trait_mode.get() or "Flowers").lower()
+            except Exception:
+                mode = "flowers"
+            icon_key = {
+                "flowers":    "flower_color",
+                "pod color":  "pod_color",
+                "pod shape":  "pod_shape",
+                "seed color": "seed_color",
+                "seed shape": "seed_shape",
+                "height":     "plant_height",
+            }.get(mode, "flower_color")
+
+            # ── Draw nodes ────────────────────────────────────────────────────
+            for (label, row), y in zip(layers, y_positions):
+                c.create_text(14, y, anchor="w", text=str(label),
+                              fill=self.MUTED, font=("Segoe UI", 12, "bold"))
+                for pid_str in row:
+                    if pid_str not in pos:
+                        continue
+                    x, y    = pos[pid_str]
+                    snap    = self._get_snap(pid_str)
+                    r1, r2  = 28, 24
+                    outer_color, inner_color, outer_w = _node_colors(pid_str)
+
+                    c.create_oval(x - r1, y - r1, x + r1, y + r1,
+                                  outline=outer_color, width=outer_w,
+                                  tags=(f"node_{pid_str}", "node"))
+                    c.create_oval(x - r2, y - r2, x + r2, y + r2,
+                                  fill=inner_color, outline="",
+                                  tags=(f"node_{pid_str}", "node"))
+                    try:
+                        im = self._icon_for_snap(icon_key, snap,
+                                                 sx=self.SCALE_NODE, sy=self.SCALE_NODE)
+                        if im is not None:
+                            c.create_image(x, y, image=im,
+                                           tags=(f"node_{pid_str}", "node"))
+                            self._img_refs.append(im)
+                    except Exception:
+                        pass
+                    c.create_text(x + r1 + 4, y, anchor="w",
+                                  text=f"#{pid_str}", fill=self.FG,
+                                  font=self.NODE_LABEL_FONT,
+                                  tags=(f"node_{pid_str}", "node"))
+
+            try:
+                c.tag_bind("node", "<Button-1>", self._on_canvas_node_click)
+            except Exception:
+                pass
 
             except Exception as e:
                 c.create_text(20, 20, anchor="nw", text=f"Tree error: {e}",
@@ -4126,78 +4044,6 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
             self.traits_container.bind("<Configure>", _on_traits_container_configure)
 
-    def _refresh_pod_card_values(self, cs, sibling_pairs, sib_trait_key,
-                                  highlight_id, is_combo, _norm, _lookup_trait,
-                                  reduced_ratio):
-        """
-        Updates one already-built pod card's icons, highlight border, and
-        ratio label in place — no widgets created or destroyed. Shared by
-        both reuse paths in _render_siblings: the same-page fast path
-        (trait-mode/highlight changed, cards untouched) and the page-
-        navigation cache-reuse path (a previously-built card is being
-        re-shown after being hidden, and may need the same kind of
-        refresh if trait_mode changed while it was off-screen).
-        """
-        local_counter = Counter()
-        for (cid, csnap), sib in zip(sibling_pairs, cs["siblings"]):
-            tval = _norm(_lookup_trait(csnap, sib_trait_key))
-            local_counter[tval] += 1
-            _target_px = 32 if (self._pods_icon_small and not is_combo) else 56
-            im = self._icon_for_snap(sib_trait_key, csnap,
-                                     sx=self.SCALE_SIB, sy=self.SCALE_SIB,
-                                     target_px=_target_px)
-            c = sib["canvas"]
-            if im is not sib.get("icon_img"):
-                # Trait mode changed (or first pass) — icon itself needs
-                # swapping, which can also change the canvas's own size
-                # (different trait icons aren't guaranteed the same
-                # pixel dimensions).
-                try:
-                    if im is not None:
-                        canvas_w, canvas_h = im.width(), im.height()
-                    else:
-                        canvas_w = canvas_h = _target_px
-                    c.configure(width=canvas_w, height=canvas_h)
-                    c.delete("icon", "fallback")
-                    if im is not None:
-                        img_id = c.create_image(canvas_w // 2, canvas_h // 2,
-                                                image=im, tags="icon")
-                        self._img_refs.append(im)
-                    else:
-                        r = min(canvas_w, canvas_h) // 2 - 6
-                        img_id = c.create_oval(
-                            canvas_w // 2 - r, canvas_h // 2 - r,
-                            canvas_w // 2 + r, canvas_h // 2 + r,
-                            outline="#34b3e6", width=1, tags="fallback")
-                    sib["icon_img"] = im
-                    sib["img_id"] = img_id
-                    sib["canvas_w"] = canvas_w
-                    sib["canvas_h"] = canvas_h
-                except Exception:
-                    pass
-            # Highlight border — re-evaluated every pass regardless of
-            # whether the icon itself changed, since it's which plant is
-            # SELECTED that moves, not necessarily the icon.
-            try:
-                c.delete("hl")
-                if str(cid) == highlight_id and sib.get("img_id") is not None:
-                    rect_id = c.create_rectangle(
-                        2, 2, sib["canvas_w"] - 2, sib["canvas_h"] - 2,
-                        outline="#ffd166", width=3, tags="hl")
-                    c.tag_lower(rect_id, sib["img_id"])
-            except Exception:
-                pass
-        try:
-            if local_counter:
-                ordered_local = sorted(local_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
-                counts_local = [cnt for _name, cnt in ordered_local]
-                ratio_local = reduced_ratio(counts_local)
-            else:
-                ratio_local = "0"
-            cs["ratio_lbl"].configure(text=ratio_local)
-        except Exception:
-            pass
-
     def _build_pod_card(self, pods_row, pidx, sibling_pairs, mid, highlight_id,
                          is_combo, sib_trait_key, pending_redraws, maybe_reveal,
                          _norm, _lookup_trait, reduced_ratio):
@@ -4341,8 +4187,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                               font=("Segoe UI", 12, "bold"))
         ratio_lbl.pack(padx=10, pady=(4,10), anchor="center")
 
-        return {"ratio_lbl": ratio_lbl, "siblings": siblings_state,
-                "card_canvas": card_canvas}
+        return {"ratio_lbl": ratio_lbl, "siblings": siblings_state}
 
     def _render_siblings(self, pid, target_sibs=None, target_ratio=None):
         _sibs_frame  = target_sibs  if target_sibs  is not None else self.sibs_inner
@@ -4484,6 +4329,12 @@ class TraitInheritanceExplorer(tk.Toplevel):
             pods_row_frame = self.pods_row
             nav_frame = self.pods_nav_frame
             _win_id = getattr(self, "_pods_win", None)
+            # hide during rebuild to prevent flicker
+            try:
+                if _win_id:
+                    pods_canvas.itemconfig(_win_id, state="hidden")
+            except Exception:
+                pass
             # pods_row_frame's children are NOT destroyed here anymore —
             # moved to just before the card-building loop further down,
             # since deciding whether to destroy at all now depends on
@@ -4582,6 +4433,46 @@ class TraitInheritanceExplorer(tk.Toplevel):
         if not hasattr(self, '_pods_page'): self._pods_page = 0
         self._pods_page = max(0, min(self._pods_page, total_pages - 1))
         page_keys = ordered_keys[self._pods_page * PODS_PER_PAGE : (self._pods_page + 1) * PODS_PER_PAGE]
+
+        # Fast path: only the view-mode radio (Flowers/Pod color/Pod
+        # shape/Seed color/Seed shape) changed since the last render of
+        # this exact plant+page — the far more common interaction than
+        # actually switching plants or pages. Confirmed via trace_add on
+        # self.trait_mode → _refresh_views → this same pid, same
+        # self._pods_page, just a different _sib_trait_key. In that
+        # case, the card/row STRUCTURE (how many pods, how many siblings
+        # in each, which one's highlighted) is guaranteed identical, so
+        # this only swaps each row's icon image via itemconfig instead
+        # of tearing down and rebuilding every card — skips the rounded-
+        # corner redraw and reveal-timing machinery entirely too, since
+        # the cards are already on screen, correctly sized, and don't
+        # need any of that to run again. Guarded to non-combo only, for
+        # now — combo mode's own parent frame is still unconditionally
+        # cleared further up, so this signature could never actually
+        # match there.
+        _sig = None
+        if not is_combo:
+            _sig = (str(pid), self._pods_page,
+                    tuple(page_keys),
+                    tuple(tuple(str(cid) for cid, _ in pods[k]) for k in page_keys))
+        _cached = getattr(self, "_pods_card_state", None)
+        if (not is_combo and _cached is not None and _cached.get("sig") == _sig):
+            for card_state in _cached["cards"]:
+                for row_state in card_state["rows"]:
+                    csnap = row_state["csnap"]
+                    _target_px = 32 if (self._pods_icon_small and not is_combo) else 56
+                    im = self._icon_for_snap(_sib_trait_key, csnap,
+                                             sx=self.SCALE_SIB, sy=self.SCALE_SIB,
+                                             target_px=_target_px)
+                    if im is not None and row_state.get("icon_img") is not im:
+                        c = row_state["canvas"]
+                        try:
+                            c.itemconfig(row_state["img_id"], image=im)
+                            row_state["icon_img"] = im
+                            self._img_refs.append(im)
+                        except Exception:
+                            pass
+            return
 
         # Grand counter still covers ALL pods for the total ratio
         for pidx_all in ordered_keys:
@@ -4717,11 +4608,68 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
         if _existing_cards is not None and _existing_sig == _page_sig:
             # ---- FAST PATH: same cards/siblings, refresh values only ----
-            _took_fast_path = True
             for pidx in page_keys:
-                self._refresh_pod_card_values(
-                    _existing_cards[pidx], pods[pidx], _sib_trait_key,
-                    highlight_id, is_combo, _norm, _lookup_trait, reduced_ratio)
+                cs = _existing_cards[pidx]
+                local_counter = Counter()
+                for (cid, csnap), sib in zip(pods[pidx], cs["siblings"]):
+                    tval = _norm(_lookup_trait(csnap, _sib_trait_key))
+                    local_counter[tval] += 1
+                    _target_px = 32 if (self._pods_icon_small and not is_combo) else 56
+                    im = self._icon_for_snap(_sib_trait_key, csnap,
+                                             sx=self.SCALE_SIB, sy=self.SCALE_SIB,
+                                             target_px=_target_px)
+                    c = sib["canvas"]
+                    if im is not sib.get("icon_img"):
+                        # Trait mode changed (or first pass) — icon
+                        # itself needs swapping, which can also change
+                        # the canvas's own size (different trait icons
+                        # aren't guaranteed the same pixel dimensions).
+                        try:
+                            if im is not None:
+                                canvas_w, canvas_h = im.width(), im.height()
+                            else:
+                                canvas_w = canvas_h = _target_px
+                            c.configure(width=canvas_w, height=canvas_h)
+                            c.delete("icon", "fallback")
+                            if im is not None:
+                                img_id = c.create_image(canvas_w // 2, canvas_h // 2,
+                                                        image=im, tags="icon")
+                                self._img_refs.append(im)
+                            else:
+                                r = min(canvas_w, canvas_h) // 2 - 6
+                                img_id = c.create_oval(
+                                    canvas_w // 2 - r, canvas_h // 2 - r,
+                                    canvas_w // 2 + r, canvas_h // 2 + r,
+                                    outline="#34b3e6", width=1, tags="fallback")
+                            sib["icon_img"] = im
+                            sib["img_id"] = img_id
+                            sib["canvas_w"] = canvas_w
+                            sib["canvas_h"] = canvas_h
+                        except Exception:
+                            pass
+                    # Highlight border — re-evaluated every pass
+                    # regardless of whether the icon itself changed,
+                    # since it's which plant is SELECTED that moves, not
+                    # necessarily the icon.
+                    try:
+                        c.delete("hl")
+                        if str(cid) == highlight_id and sib.get("img_id") is not None:
+                            rect_id = c.create_rectangle(
+                                2, 2, sib["canvas_w"] - 2, sib["canvas_h"] - 2,
+                                outline="#ffd166", width=3, tags="hl")
+                            c.tag_lower(rect_id, sib["img_id"])
+                    except Exception:
+                        pass
+                try:
+                    if local_counter:
+                        ordered_local = sorted(local_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
+                        counts_local = [cnt for _name, cnt in ordered_local]
+                        ratio_local = reduced_ratio(counts_local)
+                    else:
+                        ratio_local = "0"
+                    cs["ratio_lbl"].configure(text=ratio_local)
+                except Exception:
+                    pass
             # Reveal is handled uniformly by the unchanged logic further
             # down in this function either way — it reveals as soon as
             # _pending_redraws reaches zero, which it already is here
@@ -4730,126 +4678,16 @@ class TraitInheritanceExplorer(tk.Toplevel):
             # needed for this path specifically.
         else:
             # ---- FULL REBUILD: genuinely different page/sibling set ----
-            _took_fast_path = False
-            # Hide only now, right before the actual rebuild — moved
-            # from unconditionally at the top of this function, since
-            # the fast path above never needed anything hidden at all
-            # (nothing gets torn down there). Guarded to non-combo, same
-            # as pods_canvas/_win_id's own definition further up.
-            try:
-                if not is_combo and _win_id:
-                    pods_canvas.itemconfig(_win_id, state="hidden")
-            except Exception:
-                pass
-
-            if is_combo:
-                # combo mode's own parent frame is already unconditionally
-                # destroyed further up in this function (pre-existing,
-                # untouched behavior) — so there is nothing left here to
-                # reuse regardless; keep the original destroy-everything-
-                # and-rebuild-everything approach for this path.
-                for w in pods_row_frame.winfo_children():
-                    w.destroy()
-                _new_cards = {}
-                for pidx in page_keys:
-                    _new_cards[pidx] = self._build_pod_card(
-                        pods_row, pidx, pods[pidx], mid, highlight_id, is_combo,
-                        _sib_trait_key, _pending_redraws, _maybe_reveal,
-                        _norm, _lookup_trait, reduced_ratio)
-                pods_row_frame._pod_cards = _new_cards
-                pods_row_frame._pod_sig = _page_sig
-            else:
-                # Per-pod cache spanning the WHOLE sibling family (mid,
-                # fid) rather than just the currently-displayed page —
-                # pods are static once archived, so navigating to a page
-                # you've already visited earlier this session shouldn't
-                # need rebuilding at all, only re-showing. Cards for
-                # pages you're navigating AWAY from are hidden
-                # (pack_forget), not destroyed, so they're still here to
-                # bring back; only switching to a genuinely different
-                # sibling family (mid/fid changed) actually discards them.
-                _family_cache = getattr(pods_row_frame, "_pod_family_cache", None)
-                if (_family_cache is None or _family_cache.get("mid") != mid
-                        or _family_cache.get("fid") != fid
-                        or _family_cache.get("plants_len") != _plants_len):
-                    # plants_len check: a new sibling could have been
-                    # archived to this same family while this window
-                    # stayed open (the main game running alongside it) —
-                    # mid/fid alone wouldn't notice that, and a stale
-                    # cache would then just be missing the new pod/sibling
-                    # entirely. Same invalidation signal the pods-scan
-                    # cache itself already uses, for the same reason.
-                    if _family_cache is not None:
-                        for _cs_old in _family_cache.get("cards", {}).values():
-                            try:
-                                _cs_old["card_canvas"].destroy()
-                            except Exception:
-                                pass
-                    _family_cache = {"mid": mid, "fid": fid,
-                                      "plants_len": _plants_len, "cards": {}}
-                    pods_row_frame._pod_family_cache = _family_cache
-
-                # Hide whatever was showing before (the OLD page's
-                # cards) rather than destroying it — it stays alive in
-                # _family_cache for potential reuse if navigated back to.
-                for _cs_old in (_existing_cards or {}).values():
-                    try:
-                        _cs_old["card_canvas"].pack_forget()
-                    except Exception:
-                        pass
-
-                _new_cards = {}
-                _fam_cards = _family_cache["cards"]
-                for pidx in page_keys:
-                    if pidx in _fam_cards:
-                        # Already built on an earlier visit to this page
-                        # this session — bring it back into view (pack
-                        # respects call order, so re-packing in
-                        # page_keys order keeps left-to-right order
-                        # correct regardless of what was shown before)
-                        # and refresh its values in case trait_mode or
-                        # the highlighted plant changed while it was
-                        # hidden. No redraw, no _pending_redraws
-                        # increment — it's already correctly sized.
-                        cs = _fam_cards[pidx]
-                        try:
-                            cs["card_canvas"].pack(side="left", padx=10, pady=8, fill="y")
-                        except Exception:
-                            pass
-                        self._refresh_pod_card_values(
-                            cs, pods[pidx], _sib_trait_key, highlight_id,
-                            is_combo, _norm, _lookup_trait, reduced_ratio)
-                        _new_cards[pidx] = cs
-                    else:
-                        # Genuinely never built before — only these
-                        # actually need the expensive path.
-                        cs = self._build_pod_card(
-                            pods_row, pidx, pods[pidx], mid, highlight_id,
-                            is_combo, _sib_trait_key, _pending_redraws,
-                            _maybe_reveal, _norm, _lookup_trait, reduced_ratio)
-                        _fam_cards[pidx] = cs
-                        _new_cards[pidx] = cs
-                pods_row_frame._pod_cards = _new_cards
-                pods_row_frame._pod_sig = _page_sig
-            # Force layout to settle for every NEWLY built card RIGHT
-            # NOW, once, rather than letting each one's own deferred
-            # after(20, _redraw_card) discover its size only when it
-            # happens to fire. Without this, a card whose content wasn't
-            # laid out yet by the 20ms mark just silently waits for a
-            # LATER <Configure> event instead of retrying — with several
-            # new cards on a page, that can cascade toward the 400ms
-            # safety-net reveal instead of the near-instant reveal a
-            # settled layout gets on the very first attempt. Doesn't
-            # touch the flicker-avoidance behavior of the redraw
-            # mechanism itself (still the same deferred-first-pass
-            # approach) — just ensures the numbers it reads are already
-            # correct the first time it reads them. Harmless no-op for
-            # reused cards too — their layout was already settled long
-            # ago.
-            try:
-                pods_row_frame.update_idletasks()
-            except Exception:
-                pass
+            for w in pods_row_frame.winfo_children():
+                w.destroy()
+            _new_cards = {}
+            for pidx in page_keys:
+                _new_cards[pidx] = self._build_pod_card(
+                    pods_row, pidx, pods[pidx], mid, highlight_id, is_combo,
+                    _sib_trait_key, _pending_redraws, _maybe_reveal,
+                    _norm, _lookup_trait, reduced_ratio)
+            pods_row_frame._pod_cards = _new_cards
+            pods_row_frame._pod_sig = _page_sig
 
 
         # --- inline ratio section below pods ---
@@ -4964,24 +4802,6 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # _pending_redraws above), instead of a fixed 120ms guess at how
         # long that probably takes — reveals as soon as it's genuinely
         # ready, and never later than necessary either.
-        #
-        # Fast path (_took_fast_path) skips all of this entirely — no
-        # card was rebuilt, so there's nothing to wait for and nothing
-        # was ever actually hidden mid-rebuild. Before this, a "Loading…"
-        # label still got created and then immediately destroyed again
-        # within the same synchronous call every single time (since
-        # _pending_redraws stays at 0 for a fast-path render, _maybe_reveal
-        # fires straight away) — invisible to the user either way since Tk
-        # never got a chance to actually paint it, but still a real,
-        # pointless widget create+destroy on every trait-mode switch or
-        # highlight change.
-        if _took_fast_path:
-            try:
-                if not is_combo and getattr(self, "_pods_win", None):
-                    self.pods_scroll_canvas.itemconfig(self._pods_win, state="normal")
-            except Exception:
-                pass
-            return
         try:
             if not is_combo and getattr(self, "_pods_win", None):
                 # Show a placeholder while cards finish rendering

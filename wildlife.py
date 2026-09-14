@@ -384,9 +384,6 @@ class WildlifeManager:
             else:
                 print(f"[Wildlife] {type_name}: no icons found")
 
-    def reload_icons(self):
-        self._init_pools()
-
     # ── Tick ─────────────────────────────────────────────────────────────────
 
     def tick(self):
@@ -444,13 +441,10 @@ class WildlifeManager:
 
     def _spawn(self, type_name: str, pods_only: bool, variant: _Variant):
         try:
-            tile = self._pick_tile(pods_only, type_name)
+            tile = self._pick_tile(pods_only)
             if tile is None:
                 return
-            if getattr(tile, "special_object", None) == "beehive":
-                result = self._pick_beehive_pixel(tile)
-            else:
-                result = self._pick_pixel(tile, pods_only)
+            result = self._pick_pixel(tile, pods_only)
             if result is None:
                 return
             cx, cy, cluster_key = result
@@ -493,26 +487,7 @@ class WildlifeManager:
 
     # ── Tile picking ──────────────────────────────────────────────────────────
 
-    def _find_beehive_tile(self):
-        """The beehive special-object tile on the current plot, or None."""
-        try:
-            for t in self.app.tiles:
-                if getattr(t, "special_object", None) == "beehive":
-                    return t
-        except Exception:
-            pass
-        return None
-
-    def _pick_tile(self, pods_only: bool, type_name: str = None):
-        # Bees frequently visit the beehive itself, not just flowers —
-        # checked before the normal flower-tile pool so it's a real,
-        # routine destination rather than something that only happens
-        # when nothing else is available.
-        if type_name == "bee" and not pods_only:
-            beehive_tile = self._find_beehive_tile()
-            if beehive_tile is not None and random.random() < 0.5:
-                return beehive_tile
-
+    def _pick_tile(self, pods_only: bool):
         try:
             tiles = list(self.app.tiles)
         except Exception:
@@ -527,32 +502,6 @@ class WildlifeManager:
                 eligible.append(t)
 
         return random.choice(eligible) if eligible else None
-
-    def _pick_beehive_pixel(self, tile):
-        """
-        Return (cx, cy, cluster_key) for a landing spot near the
-        beehive's entrance, or None if every spot is currently taken.
-        Unlike _pick_pixel (which scans the plant's rendered icon for
-        flower-colored pixels), the beehive has no flowers to scan for —
-        bees just land on/near the hive itself, so this picks from a
-        small, fixed set of nearby spots instead, clustered around
-        roughly where the hive's entrance boards sit in the icon.
-        """
-        ts = getattr(tile, "w", 85)
-        cx0, cy0 = ts // 2, int(ts * 0.62)
-        candidates = [
-            (cx0, cy0),
-            (cx0 - 10, cy0 + 4),
-            (cx0 + 10, cy0 + 4),
-            (cx0 - 6, cy0 - 8),
-            (cx0 + 6, cy0 - 8),
-        ]
-        tile_id = id(tile)
-        free = [(sx, sy, (tile_id, sx, sy)) for (sx, sy) in candidates
-                if (tile_id, sx, sy) not in self._occupied]
-        if not free:
-            return None
-        return random.choice(free)
 
     # ── Pixel picking ─────────────────────────────────────────────────────────
 

@@ -4126,78 +4126,6 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
             self.traits_container.bind("<Configure>", _on_traits_container_configure)
 
-    def _refresh_pod_card_values(self, cs, sibling_pairs, sib_trait_key,
-                                  highlight_id, is_combo, _norm, _lookup_trait,
-                                  reduced_ratio):
-        """
-        Updates one already-built pod card's icons, highlight border, and
-        ratio label in place — no widgets created or destroyed. Shared by
-        both reuse paths in _render_siblings: the same-page fast path
-        (trait-mode/highlight changed, cards untouched) and the page-
-        navigation cache-reuse path (a previously-built card is being
-        re-shown after being hidden, and may need the same kind of
-        refresh if trait_mode changed while it was off-screen).
-        """
-        local_counter = Counter()
-        for (cid, csnap), sib in zip(sibling_pairs, cs["siblings"]):
-            tval = _norm(_lookup_trait(csnap, sib_trait_key))
-            local_counter[tval] += 1
-            _target_px = 32 if (self._pods_icon_small and not is_combo) else 56
-            im = self._icon_for_snap(sib_trait_key, csnap,
-                                     sx=self.SCALE_SIB, sy=self.SCALE_SIB,
-                                     target_px=_target_px)
-            c = sib["canvas"]
-            if im is not sib.get("icon_img"):
-                # Trait mode changed (or first pass) — icon itself needs
-                # swapping, which can also change the canvas's own size
-                # (different trait icons aren't guaranteed the same
-                # pixel dimensions).
-                try:
-                    if im is not None:
-                        canvas_w, canvas_h = im.width(), im.height()
-                    else:
-                        canvas_w = canvas_h = _target_px
-                    c.configure(width=canvas_w, height=canvas_h)
-                    c.delete("icon", "fallback")
-                    if im is not None:
-                        img_id = c.create_image(canvas_w // 2, canvas_h // 2,
-                                                image=im, tags="icon")
-                        self._img_refs.append(im)
-                    else:
-                        r = min(canvas_w, canvas_h) // 2 - 6
-                        img_id = c.create_oval(
-                            canvas_w // 2 - r, canvas_h // 2 - r,
-                            canvas_w // 2 + r, canvas_h // 2 + r,
-                            outline="#34b3e6", width=1, tags="fallback")
-                    sib["icon_img"] = im
-                    sib["img_id"] = img_id
-                    sib["canvas_w"] = canvas_w
-                    sib["canvas_h"] = canvas_h
-                except Exception:
-                    pass
-            # Highlight border — re-evaluated every pass regardless of
-            # whether the icon itself changed, since it's which plant is
-            # SELECTED that moves, not necessarily the icon.
-            try:
-                c.delete("hl")
-                if str(cid) == highlight_id and sib.get("img_id") is not None:
-                    rect_id = c.create_rectangle(
-                        2, 2, sib["canvas_w"] - 2, sib["canvas_h"] - 2,
-                        outline="#ffd166", width=3, tags="hl")
-                    c.tag_lower(rect_id, sib["img_id"])
-            except Exception:
-                pass
-        try:
-            if local_counter:
-                ordered_local = sorted(local_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
-                counts_local = [cnt for _name, cnt in ordered_local]
-                ratio_local = reduced_ratio(counts_local)
-            else:
-                ratio_local = "0"
-            cs["ratio_lbl"].configure(text=ratio_local)
-        except Exception:
-            pass
-
     def _build_pod_card(self, pods_row, pidx, sibling_pairs, mid, highlight_id,
                          is_combo, sib_trait_key, pending_redraws, maybe_reveal,
                          _norm, _lookup_trait, reduced_ratio):
@@ -4341,8 +4269,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                               font=("Segoe UI", 12, "bold"))
         ratio_lbl.pack(padx=10, pady=(4,10), anchor="center")
 
-        return {"ratio_lbl": ratio_lbl, "siblings": siblings_state,
-                "card_canvas": card_canvas}
+        return {"ratio_lbl": ratio_lbl, "siblings": siblings_state}
 
     def _render_siblings(self, pid, target_sibs=None, target_ratio=None):
         _sibs_frame  = target_sibs  if target_sibs  is not None else self.sibs_inner
@@ -4719,9 +4646,67 @@ class TraitInheritanceExplorer(tk.Toplevel):
             # ---- FAST PATH: same cards/siblings, refresh values only ----
             _took_fast_path = True
             for pidx in page_keys:
-                self._refresh_pod_card_values(
-                    _existing_cards[pidx], pods[pidx], _sib_trait_key,
-                    highlight_id, is_combo, _norm, _lookup_trait, reduced_ratio)
+                cs = _existing_cards[pidx]
+                local_counter = Counter()
+                for (cid, csnap), sib in zip(pods[pidx], cs["siblings"]):
+                    tval = _norm(_lookup_trait(csnap, _sib_trait_key))
+                    local_counter[tval] += 1
+                    _target_px = 32 if (self._pods_icon_small and not is_combo) else 56
+                    im = self._icon_for_snap(_sib_trait_key, csnap,
+                                             sx=self.SCALE_SIB, sy=self.SCALE_SIB,
+                                             target_px=_target_px)
+                    c = sib["canvas"]
+                    if im is not sib.get("icon_img"):
+                        # Trait mode changed (or first pass) — icon
+                        # itself needs swapping, which can also change
+                        # the canvas's own size (different trait icons
+                        # aren't guaranteed the same pixel dimensions).
+                        try:
+                            if im is not None:
+                                canvas_w, canvas_h = im.width(), im.height()
+                            else:
+                                canvas_w = canvas_h = _target_px
+                            c.configure(width=canvas_w, height=canvas_h)
+                            c.delete("icon", "fallback")
+                            if im is not None:
+                                img_id = c.create_image(canvas_w // 2, canvas_h // 2,
+                                                        image=im, tags="icon")
+                                self._img_refs.append(im)
+                            else:
+                                r = min(canvas_w, canvas_h) // 2 - 6
+                                img_id = c.create_oval(
+                                    canvas_w // 2 - r, canvas_h // 2 - r,
+                                    canvas_w // 2 + r, canvas_h // 2 + r,
+                                    outline="#34b3e6", width=1, tags="fallback")
+                            sib["icon_img"] = im
+                            sib["img_id"] = img_id
+                            sib["canvas_w"] = canvas_w
+                            sib["canvas_h"] = canvas_h
+                        except Exception:
+                            pass
+                    # Highlight border — re-evaluated every pass
+                    # regardless of whether the icon itself changed,
+                    # since it's which plant is SELECTED that moves, not
+                    # necessarily the icon.
+                    try:
+                        c.delete("hl")
+                        if str(cid) == highlight_id and sib.get("img_id") is not None:
+                            rect_id = c.create_rectangle(
+                                2, 2, sib["canvas_w"] - 2, sib["canvas_h"] - 2,
+                                outline="#ffd166", width=3, tags="hl")
+                            c.tag_lower(rect_id, sib["img_id"])
+                    except Exception:
+                        pass
+                try:
+                    if local_counter:
+                        ordered_local = sorted(local_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
+                        counts_local = [cnt for _name, cnt in ordered_local]
+                        ratio_local = reduced_ratio(counts_local)
+                    else:
+                        ratio_local = "0"
+                    cs["ratio_lbl"].configure(text=ratio_local)
+                except Exception:
+                    pass
             # Reveal is handled uniformly by the unchanged logic further
             # down in this function either way — it reveals as soon as
             # _pending_redraws reaches zero, which it already is here
@@ -4741,111 +4726,29 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     pods_canvas.itemconfig(_win_id, state="hidden")
             except Exception:
                 pass
-
-            if is_combo:
-                # combo mode's own parent frame is already unconditionally
-                # destroyed further up in this function (pre-existing,
-                # untouched behavior) — so there is nothing left here to
-                # reuse regardless; keep the original destroy-everything-
-                # and-rebuild-everything approach for this path.
-                for w in pods_row_frame.winfo_children():
-                    w.destroy()
-                _new_cards = {}
-                for pidx in page_keys:
-                    _new_cards[pidx] = self._build_pod_card(
-                        pods_row, pidx, pods[pidx], mid, highlight_id, is_combo,
-                        _sib_trait_key, _pending_redraws, _maybe_reveal,
-                        _norm, _lookup_trait, reduced_ratio)
-                pods_row_frame._pod_cards = _new_cards
-                pods_row_frame._pod_sig = _page_sig
-            else:
-                # Per-pod cache spanning the WHOLE sibling family (mid,
-                # fid) rather than just the currently-displayed page —
-                # pods are static once archived, so navigating to a page
-                # you've already visited earlier this session shouldn't
-                # need rebuilding at all, only re-showing. Cards for
-                # pages you're navigating AWAY from are hidden
-                # (pack_forget), not destroyed, so they're still here to
-                # bring back; only switching to a genuinely different
-                # sibling family (mid/fid changed) actually discards them.
-                _family_cache = getattr(pods_row_frame, "_pod_family_cache", None)
-                if (_family_cache is None or _family_cache.get("mid") != mid
-                        or _family_cache.get("fid") != fid
-                        or _family_cache.get("plants_len") != _plants_len):
-                    # plants_len check: a new sibling could have been
-                    # archived to this same family while this window
-                    # stayed open (the main game running alongside it) —
-                    # mid/fid alone wouldn't notice that, and a stale
-                    # cache would then just be missing the new pod/sibling
-                    # entirely. Same invalidation signal the pods-scan
-                    # cache itself already uses, for the same reason.
-                    if _family_cache is not None:
-                        for _cs_old in _family_cache.get("cards", {}).values():
-                            try:
-                                _cs_old["card_canvas"].destroy()
-                            except Exception:
-                                pass
-                    _family_cache = {"mid": mid, "fid": fid,
-                                      "plants_len": _plants_len, "cards": {}}
-                    pods_row_frame._pod_family_cache = _family_cache
-
-                # Hide whatever was showing before (the OLD page's
-                # cards) rather than destroying it — it stays alive in
-                # _family_cache for potential reuse if navigated back to.
-                for _cs_old in (_existing_cards or {}).values():
-                    try:
-                        _cs_old["card_canvas"].pack_forget()
-                    except Exception:
-                        pass
-
-                _new_cards = {}
-                _fam_cards = _family_cache["cards"]
-                for pidx in page_keys:
-                    if pidx in _fam_cards:
-                        # Already built on an earlier visit to this page
-                        # this session — bring it back into view (pack
-                        # respects call order, so re-packing in
-                        # page_keys order keeps left-to-right order
-                        # correct regardless of what was shown before)
-                        # and refresh its values in case trait_mode or
-                        # the highlighted plant changed while it was
-                        # hidden. No redraw, no _pending_redraws
-                        # increment — it's already correctly sized.
-                        cs = _fam_cards[pidx]
-                        try:
-                            cs["card_canvas"].pack(side="left", padx=10, pady=8, fill="y")
-                        except Exception:
-                            pass
-                        self._refresh_pod_card_values(
-                            cs, pods[pidx], _sib_trait_key, highlight_id,
-                            is_combo, _norm, _lookup_trait, reduced_ratio)
-                        _new_cards[pidx] = cs
-                    else:
-                        # Genuinely never built before — only these
-                        # actually need the expensive path.
-                        cs = self._build_pod_card(
-                            pods_row, pidx, pods[pidx], mid, highlight_id,
-                            is_combo, _sib_trait_key, _pending_redraws,
-                            _maybe_reveal, _norm, _lookup_trait, reduced_ratio)
-                        _fam_cards[pidx] = cs
-                        _new_cards[pidx] = cs
-                pods_row_frame._pod_cards = _new_cards
-                pods_row_frame._pod_sig = _page_sig
-            # Force layout to settle for every NEWLY built card RIGHT
-            # NOW, once, rather than letting each one's own deferred
-            # after(20, _redraw_card) discover its size only when it
-            # happens to fire. Without this, a card whose content wasn't
-            # laid out yet by the 20ms mark just silently waits for a
-            # LATER <Configure> event instead of retrying — with several
-            # new cards on a page, that can cascade toward the 400ms
-            # safety-net reveal instead of the near-instant reveal a
-            # settled layout gets on the very first attempt. Doesn't
-            # touch the flicker-avoidance behavior of the redraw
-            # mechanism itself (still the same deferred-first-pass
-            # approach) — just ensures the numbers it reads are already
-            # correct the first time it reads them. Harmless no-op for
-            # reused cards too — their layout was already settled long
-            # ago.
+            for w in pods_row_frame.winfo_children():
+                w.destroy()
+            _new_cards = {}
+            for pidx in page_keys:
+                _new_cards[pidx] = self._build_pod_card(
+                    pods_row, pidx, pods[pidx], mid, highlight_id, is_combo,
+                    _sib_trait_key, _pending_redraws, _maybe_reveal,
+                    _norm, _lookup_trait, reduced_ratio)
+            pods_row_frame._pod_cards = _new_cards
+            pods_row_frame._pod_sig = _page_sig
+            # Force layout to settle for every card RIGHT NOW, once, rather
+            # than letting each card's own deferred after(20, _redraw_card)
+            # discover its size only when it happens to fire. Without this,
+            # a card whose content wasn't laid out yet by the 20ms mark just
+            # silently waits for a LATER <Configure> event instead of
+            # retrying — with several new cards on a page (this is a
+            # genuine full rebuild, unlike the trait-mode/highlight fast
+            # path above), that can cascade toward the 400ms safety-net
+            # reveal instead of the near-instant reveal a settled layout
+            # gets on the very first attempt. Doesn't touch the flicker-
+            # avoidance behavior of the redraw mechanism itself (still the
+            # same deferred-first-pass approach) — just ensures the numbers
+            # it reads are already correct the first time it reads them.
             try:
                 pods_row_frame.update_idletasks()
             except Exception:

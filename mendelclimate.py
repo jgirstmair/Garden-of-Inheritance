@@ -389,22 +389,6 @@ class MendelClimate:
         t = (date.day - 1) / max(1, dim - 1)
         return tuple(self._lerp(cur[i], nxt[i], t) for i in range(3))
     
-    def _daily_mean_from_5day(self, date):
-        """
-        Get the 5-day climatological mean for a given date.
-        
-        Args:
-            date: Date to lookup
-            
-        Returns:
-            Mean temperature in °C (default 10.0)
-        """
-        doy = date.timetuple().tm_yday
-        for s, e, t in self.five:
-            if s <= doy <= e:
-                return t
-        return 10.0
-    
     def _piecewise_cosine(self, t0, T0, t1, T1, hours):
         """
         Interpolate temperatures between two time points using cosine curve.

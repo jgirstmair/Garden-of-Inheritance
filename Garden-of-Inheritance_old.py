@@ -3017,6 +3017,14 @@ class GardenApp:
             except Exception:
                 icon_path = None
 
+            # fallback
+            if not icon_path or not isinstance(icon_path, str) or not os.path.exists(icon_path):
+                fb = os.path.join(ICONS_DIR, "plant.png")
+                if os.path.exists(fb):
+                    icon_path = fb
+                else:
+                    return
+
             is_weak = getattr(plant, "is_weak", False)
             is_late = getattr(plant, "late_season_stress", False)
             # Tint late-season plants only once health drops below 80
@@ -3026,35 +3034,8 @@ class GardenApp:
             key = (icon_path, int(getattr(plant, "stage", -1)),
                    is_weak, is_late, getattr(plant, "health", 100) // 20)
 
-            # Cache hit — checked BEFORE the filesystem fallback
-            # validation below (an os.path.exists() call), which used to
-            # run unconditionally for every live plant on every single
-            # render_all() call regardless of whether anything about
-            # this plant's icon had actually changed. A cache hit means
-            # this exact icon_path already resolved and loaded
-            # successfully last time, so there's nothing left to
-            # validate or reload — filesystem calls are meaningfully
-            # slower than the plain attribute comparisons above, and on
-            # a full grid the vast majority of plants hit this cache on
-            # most renders (their stage/health bucket/weak/late-stress
-            # state hasn't moved since the last call).
             if getattr(plant, "_icon_key", None) == key and getattr(plant, "img_obj", None) is not None:
                 return
-
-            # fallback (only reached on an actual cache miss now)
-            if not icon_path or not isinstance(icon_path, str) or not cached_path_exists(icon_path):
-                fb = os.path.join(ICONS_DIR, "plant.png")
-                if cached_path_exists(fb):
-                    icon_path = fb
-                    # icon_path just changed to the fallback — key above
-                    # still references the original (invalid) icon_path,
-                    # so it needs recomputing or the icon would get
-                    # cached under the wrong key and never actually hit
-                    # next time.
-                    key = (icon_path, int(getattr(plant, "stage", -1)),
-                           is_weak, is_late, getattr(plant, "health", 100) // 20)
-                else:
-                    return
 
             if needs_tint:
                 try:
@@ -3865,23 +3846,12 @@ class GardenApp:
             self._ensure_auto_loop(delay_ms=max(600, getattr(self, 'phase_ms', 600)))
             return
 
-        # If fast-forward is active, the FF loop itself already calls
-        # render_all() + root.update() at its own controlled interval —
-        # this branch used to ALSO call render_all() here, on its own
-        # independent ~300ms real-time cadence completely unrelated to
-        # simulated time. Since the FF loop's own root.update() calls
-        # process pending Tk events (including this very after()
-        # callback once its timer's due), that meant an extra, fully
-        # redundant render on top of the FF loop's own — and each one
-        # went through _render_selection_panel's debug print() calls
-        # too, which is what was actually flooding the console and
-        # burning real wall-clock time (print() to a Windows console is
-        # far from free at that volume). Kept rescheduling itself here —
-        # removing that would leave this loop permanently dead once FF
-        # ends, since nothing else restarts it — just dropped the
-        # render_all() call the FF loop's own rendering already makes
-        # redundant.
+        # If fast-forward is active, keep UI responsive but don't advance here
         if getattr(self, "fast_forward", False):
+            try:
+                self.render_all()
+            except Exception:
+                pass
             self._ensure_auto_loop(delay_ms=max(300, getattr(self, 'sub_ms', 300)))
             return
 
@@ -5782,6 +5752,9 @@ class GardenApp:
             self.id_label.configure(text=f"#{plant.id}")
             self.gen_label.configure(text=plant.generation)
             
+            # Debug output
+            print(f"[SELECTION] Updating: #{plant.id} {plant.generation}")
+            
             # Update plant icon
             try:
                 # Ensure the icon is loaded
@@ -5790,10 +5763,12 @@ class GardenApp:
                 if hasattr(plant, 'img_obj') and plant.img_obj:
                     self.plant_icon_label.configure(image=plant.img_obj, text="")
                     self.plant_icon_label.image = plant.img_obj  # Keep reference
+                    print(f"[SELECTION] Updated plant icon")
                 else:
                     # Show placeholder if no icon
                     if hasattr(self, 'placeholder_label') and self.placeholder_label:
                         self.plant_icon_label.configure(image='')
+                    print(f"[SELECTION] No plant icon available")
             except Exception as e:
                 print(f"[WARNING] Failed to update plant icon: {e}")
             
@@ -10130,24 +10105,6 @@ class GardenApp:
         total_hours = days * 24  # simulate N full days
         last_day_key = None
 
-        # ---- Temporary profiling instrumentation ----
-        # Times each phase of the FF loop separately (daily setup, the
-        # per-hour simulation step, dead-plant cleanup, actual rendering,
-        # and the Tk event-pump calls) so a real slowdown can be
-        # attributed to a specific phase instead of guessed at from
-        # reading the code. _render_times specifically tracks EACH
-        # render_all() call's own duration (not just the total) so a
-        # trend — calls getting slower as the run progresses, which is
-        # the signature of something scaling with archive size — would
-        # show up as first-vs-last here, not just hide inside an average.
-        # Safe to remove entirely once done chasing this; every timing
-        # call is perf_counter() (negligible overhead) and none of it
-        # changes any actual behavior.
-        _prof = {"daily_setup": 0.0, "sim_hour": 0.0, "cleanup": 0.0,
-                  "render": 0.0, "event_pump": 0.0}
-        _render_times = []
-        _ff_start_t = time.perf_counter()
-
         for step in range(total_hours):
             # ---------------- New day detection & daily setup ----------------
             try:
@@ -10160,7 +10117,6 @@ class GardenApp:
                 day_key = None
 
             if day_key != last_day_key:
-                _t0 = time.perf_counter()
                 # Daily climate & weather
                 try:
                     sim_date = dt.date(
@@ -10201,10 +10157,8 @@ class GardenApp:
 
                 # Choose a watering phase for this FF day
                 last_day_key = day_key
-                _prof["daily_setup"] += time.perf_counter() - _t0
 
             # ---------------- One simulated HOUR step ----------------
-            _t0 = time.perf_counter()
 
             self.garden.water_all_smart()
 
@@ -10223,33 +10177,24 @@ class GardenApp:
                 self._update_snow_covers()
             except Exception:
                 pass
-            _prof["sim_hour"] += time.perf_counter() - _t0
 
             # Clean up old dead plants
-            _t0 = time.perf_counter()
             try:
                 self._cleanup_old_dead_plants()
             except Exception:
                 pass
-            _prof["cleanup"] += time.perf_counter() - _t0
 
             # ---------------- UI refresh logic ----------------
             try:
                 if getattr(self, "ff_render_daily", None) is not None and self.ff_render_daily.get():
                     # Daily mode: render once per simulated day
                     if (step + 1) % 24 == 0:
-                        _t0 = time.perf_counter()
                         self.render_all()
-                        _dt = time.perf_counter() - _t0
-                        _prof["render"] += _dt
-                        _render_times.append(_dt)
-                        _t0 = time.perf_counter()
                         try:
                             self.root.update_idletasks()
                             self.root.update()
                         except Exception:
                             pass
-                        _prof["event_pump"] += time.perf_counter() - _t0
                 else:
                     # Normal FF mode: render every N simulated hours (user-defined)
                     try:
@@ -10263,18 +10208,12 @@ class GardenApp:
 
                     self._ff_ui_counter = getattr(self, "_ff_ui_counter", 0) + 1
                     if (self._ff_ui_counter % interval) == 0:
-                        _t0 = time.perf_counter()
                         self.render_all()
-                        _dt = time.perf_counter() - _t0
-                        _prof["render"] += _dt
-                        _render_times.append(_dt)
-                        _t0 = time.perf_counter()
                         try:
                             self.root.update_idletasks()
                             self.root.update()
                         except Exception:
                             pass
-                        _prof["event_pump"] += time.perf_counter() - _t0
             except Exception:
                 pass
 
@@ -10284,40 +10223,21 @@ class GardenApp:
         self._daynight_last_advance = time.time()  # start interpolation from landed hour
 
         # After the loop, always do a final render so the clock & header are correct
-        _t0 = time.perf_counter()
         self.render_all()
-        _dt = time.perf_counter() - _t0
-        _prof["render"] += _dt
-        _render_times.append(_dt)
-        _t0 = time.perf_counter()
         try:
             self.root.update_idletasks()
             self.root.update()
         except Exception:
             pass
-        _prof["event_pump"] += time.perf_counter() - _t0
 
-        _ff_total_t = time.perf_counter() - _ff_start_t
-        try:
-            _n = len(_render_times)
-            print(f"[FF PROFILE] {days} day(s) simulated, {total_hours} sim-hours, "
-                  f"{_n} render_all() call(s), total wall time {_ff_total_t:.2f}s")
-            print(f"[FF PROFILE]   daily_setup: {_prof['daily_setup']:.2f}s  "
-                  f"sim_hour: {_prof['sim_hour']:.2f}s  "
-                  f"cleanup: {_prof['cleanup']:.2f}s  "
-                  f"render: {_prof['render']:.2f}s  "
-                  f"event_pump: {_prof['event_pump']:.2f}s")
-            if _n:
-                print(f"[FF PROFILE]   render_all() per-call: "
-                      f"first={_render_times[0]*1000:.1f}ms  "
-                      f"last={_render_times[-1]*1000:.1f}ms  "
-                      f"min={min(_render_times)*1000:.1f}ms  "
-                      f"max={max(_render_times)*1000:.1f}ms  "
-                      f"avg={(sum(_render_times)/_n)*1000:.1f}ms")
-        except Exception:
-            pass
 
         # (fast_forward already cleared above)
+        self.running = was_running
+        self.pause_btn.configure(
+            text="⏸ Pause" if self.running else "⏵ Resume"
+        )
+
+
         self.running = was_running
         try:
             self.pause_btn.configure(text="⏸" if self.running else "⏵")

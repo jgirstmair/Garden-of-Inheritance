@@ -24,6 +24,25 @@ ICONS_DIR = os.path.join(ROOT_DIR, "icons")
 # Image cache
 _image_cache = {}
 
+# os.path.exists() cache — the set of icon files on disk is fixed for
+# the entire session (nothing adds or removes icon assets at runtime),
+# but stage_icon_path_for_plant() was calling os.path.exists() several
+# times per plant, on every single render_all() call, for every live
+# plant on the grid — real filesystem stat() calls, not free, running
+# unconditionally even though the answer for any given path never
+# actually changes after the first check. Cached here once and reused
+# for the rest of the session.
+_path_exists_cache = {}
+
+
+def cached_path_exists(path):
+    """os.path.exists(), memoized for the session — see _path_exists_cache."""
+    hit = _path_exists_cache.get(path)
+    if hit is None:
+        hit = os.path.exists(path)
+        _path_exists_cache[path] = hit
+    return hit
+
 
 # ============================================================================
 # Stage Icon Resolution
@@ -58,7 +77,7 @@ def stage_icon_path(stage: int) -> str:
     ]
     
     for path in candidates:
-        if os.path.exists(path):
+        if cached_path_exists(path):
             return path
     
     return ""
@@ -88,14 +107,14 @@ def stage_icon_path_for_plant(plant) -> str:
     if plant is not None and not getattr(plant, "alive", True):
         path = os.path.join(ICONS_DIR, "dead.png")
         path_hires = path.replace(".png", "_64x64.png")
-        result = path_hires if os.path.exists(path_hires) else path
+        result = path_hires if cached_path_exists(path_hires) else path
         return result
 
     # Empty plot
     if plant is None:
         path = stage_icon_path(0)
         path_hires = path.replace(".png", "_64x64.png")
-        return path_hires if os.path.exists(path_hires) else path
+        return path_hires if cached_path_exists(path_hires) else path
 
     stage = getattr(plant, "stage", 0)
 
@@ -128,7 +147,7 @@ def stage_icon_path_for_plant(plant) -> str:
                     os.path.join(ICONS_DIR, "leafy_late_64x64.png"),
                     os.path.join(ICONS_DIR, "leafy_late.png")
                 ]:
-                    if os.path.exists(path):
+                    if cached_path_exists(path):
                         return path
         except Exception:
             pass
@@ -150,7 +169,7 @@ def stage_icon_path_for_plant(plant) -> str:
                     os.path.join(ICONS_DIR, f"seed_{seed_color}_64x64.png"),
                     os.path.join(ICONS_DIR, f"seed_{seed_color}.png")
                 ]:
-                    if os.path.exists(path):
+                    if cached_path_exists(path):
                         return path
             
             # Fallback to trait-based
@@ -161,7 +180,7 @@ def stage_icon_path_for_plant(plant) -> str:
                     os.path.join(ICONS_DIR, f"seed_{seed_color}_64x64.png"),
                     os.path.join(ICONS_DIR, f"seed_{seed_color}.png")
                 ]:
-                    if os.path.exists(path):
+                    if cached_path_exists(path):
                         return path
         except Exception:
             pass
@@ -216,7 +235,7 @@ def stage_icon_path_for_plant(plant) -> str:
                         os.path.join(ICONS_DIR, f"{filename_base}_64x64.png"),
                         os.path.join(ICONS_DIR, f"{filename_base}.png"),
                     ]:
-                        if os.path.exists(path):
+                        if cached_path_exists(path):
                             return path
         else:
             # No pods → stay flowering
@@ -228,7 +247,7 @@ def stage_icon_path_for_plant(plant) -> str:
     # Default stage icon
     path = stage_icon_path(stage)
     path_hires = path.replace(".png", "_64x64.png")
-    return path_hires if os.path.exists(path_hires) else path
+    return path_hires if cached_path_exists(path_hires) else path
 
 
 # ============================================================================
@@ -262,7 +281,7 @@ def trait_icon_path(trait: str, value: str) -> str:
             value_normalized = "tall"
     
     path = os.path.join(ICONS_DIR, f"{trait_normalized}_{value_normalized}.png")
-    return path if os.path.exists(path) else ""
+    return path if cached_path_exists(path) else ""
 
 
 def pod_icon_path(shape: str) -> str:
@@ -292,7 +311,7 @@ def pod_icon_path(shape: str) -> str:
     
     for path in candidates:
         try:
-            if os.path.exists(path):
+            if cached_path_exists(path):
                 return path
         except Exception:
             pass
@@ -337,7 +356,7 @@ def flower_icon_path(position: str, color: str) -> str:
     for basename in basenames:
         for ext in extensions:
             path = os.path.join(ICONS_DIR, basename + ext)
-            if os.path.exists(path):
+            if cached_path_exists(path):
                 return path
     
     return ""
@@ -357,7 +376,7 @@ def flower_icon_path_hi(position: str, color: str) -> str:
     pos = (position or "").strip().lower().replace(" ", "_")
     col = (color or "").strip().lower().replace(" ", "_")
     path = os.path.join(ICONS_DIR, f"flower_{pos}_{col}_64x64.png")
-    return path if os.path.exists(path) else ""
+    return path if cached_path_exists(path) else ""
 
 
 def budding_icon_path_hi(position: str, color: str) -> str:
@@ -374,7 +393,7 @@ def budding_icon_path_hi(position: str, color: str) -> str:
     pos = (position or "").strip().lower().replace(" ", "_")
     col = (color or "").strip().lower().replace(" ", "_")
     path = os.path.join(ICONS_DIR, f"budding_{pos}_{col}_64x64.png")
-    return path if os.path.exists(path) else ""
+    return path if cached_path_exists(path) else ""
 
 
 def pod_shape_icon_path(shape: str, color: str) -> str:
@@ -400,7 +419,7 @@ def pod_shape_icon_path(shape: str, color: str) -> str:
     
     for path in candidates:
         try:
-            if os.path.exists(path):
+            if cached_path_exists(path):
                 return path
         except Exception:
             pass
@@ -443,7 +462,7 @@ def safe_image(file_path: str):
         return _image_cache[cache_key]
     
     try:
-        if file_path and os.path.exists(file_path):
+        if file_path and cached_path_exists(file_path):
             img = PhotoImage(file=file_path)
         else:
             img = placeholder_image()
@@ -483,7 +502,7 @@ def safe_image_scaled(file_path: str, sx=2, sy=2):
     
     try:
         # Load base image
-        if file_path and os.path.exists(file_path):
+        if file_path and cached_path_exists(file_path):
             base = PhotoImage(file=file_path)
         else:
             base = placeholder_image()

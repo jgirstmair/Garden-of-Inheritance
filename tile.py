@@ -471,6 +471,79 @@ class TileCanvas(tk.Canvas):
                  lambda e: self.app._on_tile_right_click(self, e))
         self.bind("<Double-Button-1>", 
                  lambda e: self.app._on_tile_double_click(e, self.idx))
+
+        # Allele reveal-on-hover — only shows once _genotype_revealed has
+        # been set (via the Genotype Viewer's own Reveal button on any
+        # plant; see GardenApp._format_plant_alleles_for_hover), and only
+        # for tiles that currently have a plant. Looks the plant up fresh
+        # at hover time via self.app.tiles[self.idx] rather than caching
+        # self.plant from __init__, since this tile's plant can change
+        # (harvested, replanted) without this long-lived canvas object
+        # itself being recreated. Small self-contained tooltip here
+        # (not Garden-of-Inheritance.py's own _Tooltip/_attach_tooltip)
+        # since that file imports TileCanvas FROM this one — importing
+        # the other way would be circular.
+        self._hover_tip = None
+        self._hover_after_id = None
+
+        def _hover_allele_text():
+            try:
+                tiles = self.app.tiles
+                plant = tiles[self.idx].plant if 0 <= self.idx < len(tiles) else None
+            except Exception:
+                plant = None
+            try:
+                return self.app._format_plant_alleles_for_hover(plant)
+            except Exception:
+                return ""
+
+        def _show_hover_tip_now():
+            self._hover_after_id = None
+            if self._hover_tip is not None:
+                return
+            text = _hover_allele_text()
+            if not text:
+                return
+            try:
+                x = self.winfo_rootx() + 12
+                y = self.winfo_rooty() + self.winfo_height() + 4
+                tip = tk.Toplevel(self)
+                tip.wm_overrideredirect(True)
+                tip.wm_geometry(f"+{x}+{y}")
+                tk.Label(tip, text=text, justify="left", relief="solid",
+                         borderwidth=1, font=("Segoe UI", 12),
+                         bg="#ffffe0").pack(ipadx=4, ipady=2)
+                self._hover_tip = tip
+            except Exception:
+                self._hover_tip = None
+
+        def _show_hover_tip(event=None):
+            # 500ms delay before the tooltip actually appears — without
+            # this it was popping up the instant the cursor crossed into
+            # any planted tile, which is noisy when just moving the
+            # mouse across the grid.
+            if self._hover_after_id is not None:
+                return
+            self._hover_after_id = self.after(500, _show_hover_tip_now)
+
+        def _hide_hover_tip(event=None):
+            if self._hover_after_id is not None:
+                try:
+                    self.after_cancel(self._hover_after_id)
+                except Exception:
+                    pass
+                self._hover_after_id = None
+            tip = self._hover_tip
+            self._hover_tip = None
+            if tip is not None:
+                try:
+                    tip.destroy()
+                except Exception:
+                    pass
+
+        self.bind("<Enter>", _show_hover_tip, add="+")
+        self.bind("<Leave>", _hide_hover_tip, add="+")
+        self.bind("<ButtonPress>", _hide_hover_tip, add="+")
     
     # ========================================================================
     # Rendering
@@ -544,8 +617,23 @@ class TileCanvas(tk.Canvas):
             lines = (self.sel_line_top, self.sel_line_bottom,
                      self.sel_line_left, self.sel_line_right)
             if not show_any:
-                for line in lines:
-                    self.itemconfig(line, fill="")
+                # Skip the itemconfig() calls entirely once the lines are
+                # already known to be hidden — this branch runs for
+                # EVERY unselected tile on EVERY render_all() call (this
+                # function isn't gated behind the dirty-flag check, see
+                # docstring), and on a full grid the vast majority of
+                # tiles are unselected essentially all the time. Without
+                # this, that's 4 redundant itemconfig() calls per
+                # unselected tile, every single render, for lines that
+                # were already blank from the previous call — on a
+                # 7×16×2-plot grid (224 tiles), ~220 of them doing
+                # nothing useful 4 times each adds up to real Tk work
+                # forced through on every render_all(), even when
+                # nothing about selection changed at all.
+                if not getattr(self, '_sel_border_hidden', False):
+                    for line in lines:
+                        self.itemconfig(line, fill="")
+                    self._sel_border_hidden = True
                 return
 
             cols = int(self.configs.get('TILES_PER_ROW', 1)) or 1
@@ -625,6 +713,12 @@ class TileCanvas(tk.Canvas):
             self.itemconfig(self.sel_line_bottom, fill=("" if bottom_owned_by_neighbor else "white"))
             self.itemconfig(self.sel_line_right,  fill=("" if right_owned_by_neighbor else "white"))
             self.tag_raise("sel_border")
+            # Lines are now visible (or some may be "") — either way,
+            # they're no longer in the known-fully-hidden state the
+            # early-return branch above relies on, so the NEXT time this
+            # tile becomes unselected, that branch needs to actually run
+            # the hide again rather than assuming it's already done.
+            self._sel_border_hidden = False
         except Exception:
             pass
 
