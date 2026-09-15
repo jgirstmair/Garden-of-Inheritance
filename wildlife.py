@@ -605,9 +605,9 @@ class WildlifeManager:
             plant = getattr(tile, "plant", None)
             if plant is None:
                 return None
-            from icon_loader import stage_icon_path_for_plant
+            from icon_loader import stage_icon_path_for_plant, cached_path_exists
             path = stage_icon_path_for_plant(plant)
-            if path and os.path.exists(path):
+            if path and cached_path_exists(path):
                 return Image.open(path).convert("RGBA")
         except Exception as exc:
             log.debug("Wildlife _pil_for_tile: %s", exc)

@@ -1305,7 +1305,7 @@ class GardenApp:
         ).pack(side="left", fill="x", expand=True)
         return row
 
-    def _greyscale_icon_from_path(self, path, sx=1, sy=1):
+    def _greyscale_icon_from_path(self, path, sx=1, sy=1, fade_to_bg=None, opacity=1.0):
         """
         Load an icon from file path, convert to greyscale, return
         PhotoImage or None. Same approach traitinheritanceexplorer.py's
@@ -1315,6 +1315,18 @@ class GardenApp:
         row once split out from Pod color (see the pod section further
         down): shape alone shouldn't visually imply a specific color the
         way the combined pod_shape_icon_path(shape, color) icon did.
+
+        fade_to_bg/opacity (both optional, defaulting to no fade at all —
+        existing callers are unaffected) additionally reduce the icon's
+        own alpha by `opacity` (e.g. 0.4 for a 60%-transparent look) and
+        pre-composite the result onto a solid fill of fade_to_bg (a hex
+        color, matching whatever background this icon will actually sit
+        on). Composited rather than left as a genuinely partial-alpha
+        PhotoImage because Tk's own alpha-blended image rendering is
+        inconsistent across platforms/versions — baking the fade into
+        fully opaque pixels ahead of time renders identically everywhere,
+        at the cost of only looking correct against that specific
+        background color.
         """
         if not path:
             return None
@@ -1327,6 +1339,13 @@ class GardenApp:
             r, g, b, a = pil_img.split()
             grey_rgb = pil_img.convert("L")
             grey_rgba = Image.merge("RGBA", (grey_rgb, grey_rgb, grey_rgb, a))
+            if fade_to_bg and opacity < 1.0:
+                factor = max(0.0, min(1.0, opacity))
+                faded_a = a.point(lambda v: int(v * factor))
+                faded = Image.merge("RGBA", (grey_rgb, grey_rgb, grey_rgb, faded_a))
+                bg_rgb = self._hex_to_rgb(fade_to_bg)
+                bg_layer = Image.new("RGBA", faded.size, bg_rgb + (255,))
+                grey_rgba = Image.alpha_composite(bg_layer, faded)
             return ImageTk.PhotoImage(grey_rgba)
         except Exception:
             return None
@@ -1432,23 +1451,54 @@ class GardenApp:
         except Exception:
             pass
 
-    def _pod_harvested_smooth_update(self, plant):
+    def _pod_harvested_smooth_update(self, plant, clicked_cell=None):
         """
         Update the inspector in place after harvesting ONE pod, for the
         common case where at least one pod still remains afterward —
-        destroys just the one pod cell and updates the two tally labels'
-        text directly, without touching anything else in the window.
-        Mirrors how the emasculation dialog removes an anther: reconfigure
-        the specific existing widgets involved, nothing gets torn down and
-        rebuilt. No geometry()/resize call either, so the window doesn't
-        even shrink to fit — it just quietly has a bit more empty space
-        where that pod was, which avoids any resize-jump too.
+        clears just the one pod cell's contents and updates the two
+        tally labels' text directly, without touching anything else in
+        the window. Mirrors how the emasculation dialog removes an
+        anther: reconfigure the specific existing widgets involved,
+        nothing gets torn down and rebuilt.
+
+        clicked_cell identifies exactly which pod cell to clear —
+        without it (or if it's somehow no longer in the tracked list),
+        falls back to the last one, same as the old, less precise
+        behavior.
+
+        The cell's own outer frame is intentionally left in place
+        (blanked, not destroyed) rather than removed from the row
+        entirely — destroying it would let pack()'s left-to-right flow
+        compact every pod after it one slot to the left, so the row
+        simply got shorter from the right edge NO MATTER which pod was
+        actually harvested. With every pod using the identical icon,
+        that compaction was indistinguishable from "the rightmost pod
+        disappeared" regardless of which one was actually clicked.
+        Leaving an empty slot exactly where the clicked pod was makes it
+        unambiguous which one is now gone, since none of the others move.
         """
         try:
             cells = getattr(self, "_inspector_pod_cells", None)
             if cells:
-                cell = cells.pop()
-                cell.destroy()
+                if clicked_cell is not None and clicked_cell in cells:
+                    cells.remove(clicked_cell)
+                    cell = clicked_cell
+                else:
+                    cell = cells.pop()
+                # Lock the frame's own size to its current footprint
+                # BEFORE destroying the icon inside it — otherwise, once
+                # emptied, a plain tk.Frame shrinks to fit its (now
+                # nonexistent) contents, collapsing the slot to near
+                # nothing and silently recreating the exact compaction
+                # this whole change exists to avoid. pack_propagate(False)
+                # stops it from ever re-shrinking to fit content again.
+                w = cell.winfo_width()
+                h = cell.winfo_height()
+                for child in list(cell.winfo_children()):
+                    child.destroy()
+                if w > 1 and h > 1:
+                    cell.configure(width=w, height=h)
+                    cell.pack_propagate(False)
         except Exception:
             pass
 
@@ -1921,7 +1971,7 @@ class GardenApp:
 
             can_harvest_pod = (plant_stage >= 7)
 
-            def _on_pod_click(event=None):
+            def _on_pod_click(event=None, clicked_cell=None):
                 # Actually harvest this one pod — same mechanic as the
                 # "Harvest All" button, just one pod at a time. Each seed
                 # inside is independently Mendelian-segregated, so this can
@@ -1949,7 +1999,12 @@ class GardenApp:
                     # cell and tally counts in place, matching the smooth,
                     # flicker-free removal the emasculation dialog already
                     # does for anthers, rather than rebuilding the window.
-                    self._pod_harvested_smooth_update(plant)
+                    # clicked_cell tells it exactly which pod to remove —
+                    # without this, it had no way to know which of the
+                    # (potentially several) cells was the one actually
+                    # clicked, and always removed whichever happened to
+                    # be last regardless of where the player clicked.
+                    self._pod_harvested_smooth_update(plant, clicked_cell)
                 else:
                     # Either harvesting failed, or this was the last pod —
                     # the window's actual structure needs to change (the
@@ -1961,10 +2016,27 @@ class GardenApp:
                     # random trait reveal and rebuilds unconditionally.
                     self._refresh_inspector_if_open()
 
+            # Pod shape/color used to require BOTH to already be in
+            # `revealed` — the general "discover traits as the plant
+            # grows" mechanic — but pod_shape only reveals at stage 7
+            # while pod_color reveals at stage 6 (see plant.py's own
+            # TRAITS thresholds), and pods start showing here from stage
+            # 6 already. That gap meant every pod fell back to the plain
+            # 🌱 placeholder for the whole of stage 6, only switching to
+            # the real pod icon once stage 7 hit — reading as "immature
+            # pods look different from mature ones" even though nothing
+            # about the pod itself actually changed. The player is
+            # already looking directly at this plant's own pods in this
+            # exact section, so using the plant's actual traits here
+            # (not the gated reveal subset, which governs the general
+            # traits list elsewhere in this inspector) isn't showing
+            # anything that wasn't already being shown — it just fixes
+            # which icon represents it.
             pod_icon_path = None
-            if "pod_shape" in revealed and "pod_color" in revealed:
+            plant_traits = getattr(plant, "traits", {}) or {}
+            if plant_traits.get("pod_shape") and plant_traits.get("pod_color"):
                 try:
-                    pod_icon_path = pod_shape_icon_path(revealed["pod_shape"], revealed["pod_color"])
+                    pod_icon_path = pod_shape_icon_path(plant_traits["pod_shape"], plant_traits["pod_color"])
                 except Exception:
                     pod_icon_path = None
 
@@ -1978,18 +2050,54 @@ class GardenApp:
                 pcell = tk.Frame(pods_row, bg=BG)
                 pcell.pack(side="left", padx=4)
                 cursor = "hand2" if can_harvest_pod else "arrow"
+                # Immature pods show a greyed-out (desaturated) version of
+                # the same real pod icon, not a distinct look of their
+                # own — matches the icon fix above (immature pods look
+                # like mature ones, not a placeholder), while still
+                # making it visually obvious at a glance that THIS pod
+                # specifically can't be clicked yet, before a player ever
+                # tries and wonders why nothing happened. The "Seeds
+                # aren't mature yet." label below already explains this
+                # in words, but greying out the pods themselves means
+                # players don't need to have read it first.
                 if pod_icon_path:
                     try:
-                        img = safe_image(pod_icon_path)
+                        if can_harvest_pod:
+                            img = safe_image(pod_icon_path)
+                        else:
+                            # 60% transparent (opacity=0.4), composited
+                            # onto this window's own BG so it renders
+                            # correctly regardless of platform.
+                            img = self._greyscale_icon_from_path(
+                                pod_icon_path, fade_to_bg=BG, opacity=0.4)
+                        if img is None:
+                            # _greyscale_icon_from_path can fail and
+                            # return None without raising (unlike
+                            # safe_image, whose own failure IS caught
+                            # below) — falling through silently here
+                            # would leave a blank cell instead of the
+                            # text fallback.
+                            raise ValueError("icon load returned None")
                         lbl = tk.Label(pcell, image=img, bg=BG, cursor=cursor)
                         lbl.image = img
                     except Exception:
-                        lbl = tk.Label(pcell, text="🌱", font=("Segoe UI", 14), bg=BG, cursor=cursor)
+                        lbl = tk.Label(pcell, text="Pod", font=("Segoe UI", 14),
+                                       bg=BG, fg=("#555" if can_harvest_pod else "#999"),
+                                       cursor=cursor)
                 else:
-                    lbl = tk.Label(pcell, text="🌱", font=("Segoe UI", 14), bg=BG, cursor=cursor)
+                    lbl = tk.Label(pcell, text="Pod", font=("Segoe UI", 14),
+                                   bg=BG, fg=("#555" if can_harvest_pod else "#999"),
+                                   cursor=cursor)
                 lbl.pack()
                 if can_harvest_pod:
-                    lbl.bind("<Button-1>", _on_pod_click)
+                    # Binds THIS pod's own cell in specifically, rather
+                    # than the shared _on_pod_click alone — it used to
+                    # have no way to know which of the (potentially
+                    # several) pods was actually the one clicked, so the
+                    # smooth-update path always just removed whichever
+                    # cell happened to be last in the list regardless
+                    # (see _pod_harvested_smooth_update's own fix).
+                    lbl.bind("<Button-1>", lambda event, _cell=pcell: _on_pod_click(event, _cell))
                 # Saved so a pod click can just destroy one of these cells
                 # in place (see _pod_harvested_smooth_update) instead of
                 # rebuilding the whole window.
@@ -3803,40 +3911,55 @@ class GardenApp:
         
         current_day = self._get_current_day_number()
         
-        for i, tile in enumerate(self.tiles):
-            plant = tile.plant
-            
-            # Skip empty tiles
-            if plant is None:
-                continue
-            
-            # Skip living plants
-            if plant.alive:
-                continue
-            
-            # Track death day if not already tracked
-            if not hasattr(plant, 'death_day') or plant.death_day is None:
-                plant.death_day = current_day
-                continue
-            
-            # Calculate days since death
-            days_dead = current_day - plant.death_day
-            
-            # Remove after 2-3 days
-            if days_dead >= 2:
-                # 50% chance on day 2, 100% chance on day 3+
-                should_remove = (days_dead >= 3) or (random.random() < 0.5)
+        # Was `for i, tile in enumerate(self.tiles):` — self.tiles is a
+        # property returning only the CURRENTLY VIEWED plot's tiles (see
+        # its own docstring). Simulation itself already ticks every
+        # plant regardless of which plot is visible, but this cleanup
+        # loop was only ever reaching the tiles of whichever plot
+        # happened to be on screen — a plant dying on a plot the player
+        # wasn't currently looking at would never get its death_day
+        # tracked, never start its removal countdown, and never
+        # actually get cleared from that tile, until (if ever) the
+        # player happened to switch to view that plot again. Iterating
+        # every plot's tile list directly fixes this regardless of
+        # which one is currently on screen. `i` (the enumerate index)
+        # was never actually used in the body below, so no index is
+        # needed here either.
+        for plot_tiles in self._plot_tiles:
+            for tile in plot_tiles:
+                plant = tile.plant
                 
-                if should_remove:
-                    # Clear the tile and start soil-linger countdown
-                    tile.plant = None
-                    self._set_soil_linger(tile)
-                    # Unregister from garden
-                    try:
-                        if plant in self.garden.plants:
-                            self.garden.plants.remove(plant)
-                    except Exception:
-                        pass
+                # Skip empty tiles
+                if plant is None:
+                    continue
+                
+                # Skip living plants
+                if plant.alive:
+                    continue
+                
+                # Track death day if not already tracked
+                if not hasattr(plant, 'death_day') or plant.death_day is None:
+                    plant.death_day = current_day
+                    continue
+                
+                # Calculate days since death
+                days_dead = current_day - plant.death_day
+                
+                # Remove after 2-3 days
+                if days_dead >= 2:
+                    # 50% chance on day 2, 100% chance on day 3+
+                    should_remove = (days_dead >= 3) or (random.random() < 0.5)
+                    
+                    if should_remove:
+                        # Clear the tile and start soil-linger countdown
+                        tile.plant = None
+                        self._set_soil_linger(tile)
+                        # Unregister from garden
+                        try:
+                            if plant in self.garden.plants:
+                                self.garden.plants.remove(plant)
+                        except Exception:
+                            pass
         
         # No render_all() call here — every caller (_on_next_phase,
         # _auto_advance_phase, the fast-forward loop) already renders on
@@ -7368,6 +7491,64 @@ class GardenApp:
         self._drag_start_x = None
         self._drag_start_y = None
         self._dragging_select = False
+        self._hide_drag_rect_overlay()
+
+    def _show_drag_rect_overlay(self, x1, y1, x2, y2):
+        """
+        Shows a marquee/rubber-band outline over the drag-selection's
+        current extent, in screen coordinates — the actual visual
+        feedback that was missing entirely before: the selected tiles'
+        own borders lit up as they joined the selection, but nothing
+        showed the drag rectangle itself, so there was no way to see
+        exactly what area was being dragged over while it was still
+        being expanded.
+
+        Built as 4 thin frames (one per edge) rather than one solid
+        frame spanning the whole rectangle — a plain tk.Frame is fully
+        opaque with no alpha blending available, so a solid fill would
+        hide every tile underneath it while dragging, which is worse
+        than showing nothing at all. Reused across calls (created once,
+        just repositioned via .place() on every subsequent call) rather
+        than destroyed and rebuilt on each mouse-move event during the
+        drag.
+        """
+        try:
+            gx = self.grid_frame.winfo_rootx()
+            gy = self.grid_frame.winfo_rooty()
+        except Exception:
+            return
+        # Convert from screen-absolute to grid_frame-relative, since
+        # .place() coordinates are relative to the parent widget.
+        rx1, ry1, rx2, ry2 = x1 - gx, y1 - gy, x2 - gx, y2 - gy
+        w = max(1, rx2 - rx1)
+        h = max(1, ry2 - ry1)
+        thick = 2
+        color = "#4FC3F7"
+
+        if getattr(self, "_drag_rect_edges", None) is None:
+            self._drag_rect_edges = {
+                "top":    tk.Frame(self.grid_frame, bg=color),
+                "bottom": tk.Frame(self.grid_frame, bg=color),
+                "left":   tk.Frame(self.grid_frame, bg=color),
+                "right":  tk.Frame(self.grid_frame, bg=color),
+            }
+        edges = self._drag_rect_edges
+        try:
+            edges["top"].place(x=rx1, y=ry1, width=w, height=thick)
+            edges["bottom"].place(x=rx1, y=ry2 - thick, width=w, height=thick)
+            edges["left"].place(x=rx1, y=ry1, width=thick, height=h)
+            edges["right"].place(x=rx2 - thick, y=ry1, width=thick, height=h)
+            for e in edges.values():
+                e.lift()
+        except Exception:
+            pass
+
+    def _hide_drag_rect_overlay(self):
+        for e in (getattr(self, "_drag_rect_edges", None) or {}).values():
+            try:
+                e.place_forget()
+            except Exception:
+                pass
 
 
 # ============================================================================
@@ -8171,6 +8352,8 @@ class GardenApp:
         y1 = min(self._drag_start_y, event.y_root)
         y2 = max(self._drag_start_y, event.y_root)
 
+        self._show_drag_rect_overlay(x1, y1, x2, y2)
+
         sel = set()
         for i, cell in enumerate(self.tiles):
             if getattr(cell, '_covered_by_measuring_station', False):
@@ -8192,10 +8375,16 @@ class GardenApp:
             if cw <= 0 or ch <= 0:
                 continue
 
-            # Use the cell centre point for hit-testing
-            mx = cx + cw / 2.0
-            my = cy + ch / 2.0
-            if x1 <= mx <= x2 and y1 <= my <= y2:
+            # Standard AABB (axis-aligned bounding box) overlap test —
+            # a tile is included the moment the drag rectangle touches
+            # ANY part of it, not only once the drag reaches this tile's
+            # exact centre point. The centre-point test used to require
+            # dragging deep into a tile (past its middle) before it
+            # would join the selection at all, which read as imprecise
+            # and inconsistent with what was visibly being dragged over
+            # — a tile whose pixels were clearly under the drag
+            # rectangle just wouldn't be selected yet.
+            if cx < x2 and (cx + cw) > x1 and cy < y2 and (cy + ch) > y1:
                 sel.add(i)
 
         # Clear old selection (tile-object selection)

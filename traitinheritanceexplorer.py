@@ -5349,14 +5349,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
     def _render_ratio_tab(self, pid):
         """Populate the Trait Ratio tab: direct siblings → contributing families (with totals) → pooled ratio."""
         frame = self.ratio_tab_frame
-        for w in frame.winfo_children():
-            w.destroy()
         if not pid:
+            for w in frame.winfo_children():
+                w.destroy()
+            frame._ratio_wrapper = None
             tk.Label(frame, text="Select a plant to see its ratio.",
                      bg=self.PANEL, fg=self.MUTED, font=("Segoe UI", 11)).pack(pady=40)
             return
         snap = self._get_snap(pid)
         if not snap:
+            for w in frame.winfo_children():
+                w.destroy()
+            frame._ratio_wrapper = None
             tk.Label(frame, text="No data.", bg=self.PANEL, fg=self.MUTED,
                      font=("Segoe UI", 11)).pack(pady=40)
             return
@@ -5377,42 +5381,63 @@ class TraitInheritanceExplorer(tk.Toplevel):
         plants = self.app.archive.get("plants", {}) if hasattr(self, "app") else {}
 
         # ── Scrollable wrapper ────────────────────────────────────────────
-        scroll_canvas = tk.Canvas(frame, bg=self.PANEL, highlightthickness=0)
-        vscroll = tk.Scrollbar(frame, orient="vertical", command=scroll_canvas.yview)
-        vscroll.pack(side="right", fill="y")
-        scroll_canvas.pack(side="left", fill="both", expand=True)
-        scroll_canvas.configure(yscrollcommand=vscroll.set)
-        inner = tk.Frame(scroll_canvas, bg=self.PANEL)
-        inner_win = scroll_canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>",
-                   lambda e: scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all")))
-        scroll_canvas.bind("<Configure>",
-                           lambda e: scroll_canvas.itemconfig(inner_win, width=e.width))
-        def _mwheel(e):
-            scroll_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        def _mwheel_lin_up(e):
-            scroll_canvas.yview_scroll(-1, "units")
-        def _mwheel_lin_dn(e):
-            scroll_canvas.yview_scroll(1, "units")
+        # Reused across renders for the SAME plant (only the sections
+        # further down get rebuilt) — unlike the pods/tree cases, this
+        # tab's actual CONTENT genuinely changes with trait_mode (which
+        # families qualify, every count and ratio shown), so there's no
+        # equivalent to those two "just swap the icon" fast paths here.
+        # But the outer Canvas/Scrollbar/mousewheel-binding boilerplate
+        # itself doesn't depend on trait_mode or which plant at all —
+        # rebuilding THAT on every single switch was pure waste, so only
+        # the wrapper is kept alive; the sections inside still rebuild
+        # every time, same as before.
+        _wrapper = getattr(frame, "_ratio_wrapper", None)
+        if _wrapper is not None:
+            scroll_canvas = _wrapper["scroll_canvas"]
+            inner = _wrapper["inner"]
+            for w in inner.winfo_children():
+                w.destroy()
+        else:
+            for w in frame.winfo_children():
+                w.destroy()
+            scroll_canvas = tk.Canvas(frame, bg=self.PANEL, highlightthickness=0)
+            vscroll = tk.Scrollbar(frame, orient="vertical", command=scroll_canvas.yview)
+            vscroll.pack(side="right", fill="y")
+            scroll_canvas.pack(side="left", fill="both", expand=True)
+            scroll_canvas.configure(yscrollcommand=vscroll.set)
+            inner = tk.Frame(scroll_canvas, bg=self.PANEL)
+            inner_win = scroll_canvas.create_window((0, 0), window=inner, anchor="nw")
+            inner.bind("<Configure>",
+                       lambda e: scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all")))
+            scroll_canvas.bind("<Configure>",
+                               lambda e: scroll_canvas.itemconfig(inner_win, width=e.width))
+            def _mwheel(e):
+                scroll_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            def _mwheel_lin_up(e):
+                scroll_canvas.yview_scroll(-1, "units")
+            def _mwheel_lin_dn(e):
+                scroll_canvas.yview_scroll(1, "units")
 
-        def _bind_scroll(widget):
-            """Recursively bind mousewheel on widget and all descendants."""
-            widget.bind("<MouseWheel>", _mwheel, add="+")
-            widget.bind("<Button-4>",   _mwheel_lin_up, add="+")
-            widget.bind("<Button-5>",   _mwheel_lin_dn, add="+")
+            def _bind_scroll(widget):
+                """Recursively bind mousewheel on widget and all descendants."""
+                widget.bind("<MouseWheel>", _mwheel, add="+")
+                widget.bind("<Button-4>",   _mwheel_lin_up, add="+")
+                widget.bind("<Button-5>",   _mwheel_lin_dn, add="+")
 
-        for _w in (scroll_canvas, inner):
-            _bind_scroll(_w)
-        # Re-bind after inner content is populated
-        inner.bind("<Configure>",
-                   lambda e: [scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all")),
-                               _bind_all_children(inner, _bind_scroll)],
-                   add="+")
+            for _w in (scroll_canvas, inner):
+                _bind_scroll(_w)
+            # Re-bind after inner content is populated
+            inner.bind("<Configure>",
+                       lambda e: [scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all")),
+                                   _bind_all_children(inner, _bind_scroll)],
+                       add="+")
 
-        def _bind_all_children(w, fn):
-            fn(w)
-            for child in w.winfo_children():
-                _bind_all_children(child, fn)
+            def _bind_all_children(w, fn):
+                fn(w)
+                for child in w.winfo_children():
+                    _bind_all_children(child, fn)
+
+            frame._ratio_wrapper = {"scroll_canvas": scroll_canvas, "inner": inner}
 
         _rfs = 1.4 if getattr(self, "_ratio_font_large", False) else 1.0
         def _fs(base): return int(round(base * _rfs))

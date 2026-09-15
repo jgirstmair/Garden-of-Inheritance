@@ -58,7 +58,6 @@ class MendelianLawWizard(tk.Toplevel):
         {
             "num": 1,
             "name": "Law of Dominance",
-            "icon": "⚪",
             "pairs_needed": 1,
             "pair_label": ["Trait pair"],
             "desc": (
@@ -70,7 +69,6 @@ class MendelianLawWizard(tk.Toplevel):
         {
             "num": 2,
             "name": "Law of Segregation",
-            "icon": "⚫",
             "pairs_needed": 1,
             "pair_label": ["Trait pair"],
             "desc": (
@@ -82,7 +80,6 @@ class MendelianLawWizard(tk.Toplevel):
         {
             "num": 3,
             "name": "Law of Independent Assortment",
-            "icon": "🔲",
             "pairs_needed": 2,
             "pair_label": ["First trait pair", "Second trait pair"],
             "desc": (
@@ -171,6 +168,28 @@ class MendelianLawWizard(tk.Toplevel):
         self._mode     = "dominant"  # which slot the next click fills
         self._pair_idx = 0           # which pair (Law 3 only)
 
+        # ── revealed-genotype notice ─────────────────────────────────────────
+        # Packed BEFORE the two page frames below (and outside the
+        # page-swap machinery in _show_page, so it's never pack_forget()'d)
+        # — stays visible across both Page 1 and Page 2 rather than only
+        # surfacing as a result message after the player has already
+        # picked a law, picked traits, and hit submit. _check_selection's
+        # own genotype-revealed guard still runs at submit time too (see
+        # its own comment) — that's the actual gate; this is just making
+        # the same fact visible from the moment the wizard opens, instead
+        # of a surprise at the very end of a flow the player had no way
+        # to know was already pointless.
+        if getattr(self.app, "_genotype_revealed", False):
+            notice = tk.Frame(self, bg="#D04040", pady=8)
+            notice.pack(fill="x", side="top")
+            tk.Label(
+                notice,
+                text=("Genotype already revealed this session — Mendelian "
+                      "laws can no longer be unlocked."),
+                font=self.FONT_BOLD, bg="#D04040", fg="white",
+                wraplength=760, justify="center",
+            ).pack()
+
         # ── pages (Frames, only one shown at a time) ─────────────────────────
         self._page1 = tk.Frame(self, bg=self.BG)
         self._page2 = tk.Frame(self, bg=self.BG)
@@ -181,6 +200,12 @@ class MendelianLawWizard(tk.Toplevel):
         # ── centre on parent ─────────────────────────────────────────────────
         self.update_idletasks()
         W, H = 820, 740
+        if getattr(self.app, "_genotype_revealed", False):
+            # Extra room for the notice banner above — otherwise it just
+            # eats into the same fixed height the page content already
+            # needed, cramping page 2's trait-selection area in
+            # particular.
+            H += 60
         px = parent.winfo_rootx() + max(0, (parent.winfo_width()  - W) // 2)
         py = parent.winfo_rooty() + max(0, (parent.winfo_height() - H) // 2)
         self.geometry(f"{W}x{H}+{px}+{py}")
@@ -347,7 +372,7 @@ class MendelianLawWizard(tk.Toplevel):
             self._p2_back_btn.pack(side="left")
             ttk.Button(nav, text="Cancel", style="Wiz.TButton",
                        command=self.destroy).pack(side="right", padx=(8, 0))
-            self._p2_unlock_btn = ttk.Button(nav, text="\U0001f513  Unlock",
+            self._p2_unlock_btn = ttk.Button(nav, text="Unlock",
                                              style="Wiz.Primary.TButton",
                                              command=self._on_unlock)
             self._p2_unlock_btn.pack(side="right")
@@ -368,7 +393,7 @@ class MendelianLawWizard(tk.Toplevel):
                       relief="flat", bd=0, padx=14, pady=6,
                       command=self.destroy).pack(side="right", padx=(8, 0))
             self._p2_unlock_btn = tk.Button(
-                nav, text="\U0001f513  Unlock",
+                nav, text="Unlock",
                 font=self.FONT_BOLD,
                 bg=self.BTN_PRIMARY, fg=self.BTN_PRIMARY_FG,
                 activebackground="#5C2810", activeforeground=self.BTN_PRIMARY_FG,
@@ -432,7 +457,7 @@ class MendelianLawWizard(tk.Toplevel):
             self._p2_back_btn.pack(side="left")
             if self._is_mac:
                 self._p2_unlock_btn.configure(
-                    text="\U0001f513  Unlock",
+                    text="Unlock",
                     command=self._on_unlock,
                     style="Wiz.Primary.TButton")
                 try:
@@ -441,7 +466,7 @@ class MendelianLawWizard(tk.Toplevel):
                     pass
             else:
                 self._p2_unlock_btn.configure(
-                    text="\U0001f513  Unlock",
+                    text="Unlock",
                     command=self._on_unlock,
                     bg=self.BTN_PRIMARY, fg=self.BTN_PRIMARY_FG,
                     state="disabled")
@@ -463,7 +488,7 @@ class MendelianLawWizard(tk.Toplevel):
         law_num  = self._law_var.get()
         law_info = self.LAWS[law_num - 1]
 
-        self._p2_title.configure(text=f"🌿  {law_info['name']}")
+        self._p2_title.configure(text=law_info['name'])
 
         body = self._p2_body
         pairs_needed = law_info["pairs_needed"]
@@ -765,7 +790,7 @@ class MendelianLawWizard(tk.Toplevel):
         else:
             # Law 3: just 2 steps – clicking any icon of a trait fills both slots
             if self._mode == "done":
-                txt = "Both traits selected! Click 🔓 Unlock to test."
+                txt = "Both traits selected! Click Unlock to test."
             elif self._pair_idx == 0:
                 txt = ("Step 1: Choose the first trait. ")
             else:
@@ -1050,6 +1075,32 @@ class MendelianLawWizard(tk.Toplevel):
             self._show_result(False, "Selected plant has no ID. Try selecting a different plant.")
             return
 
+        # ── genotype reveal blocks law detection outright ─────────────────────
+        # test_mendelian_laws() itself gates its detection logic (not just
+        # crediting) behind "if not revealed:" in several places once
+        # self.app._genotype_revealed is True — so once genotype's been
+        # peeked at, ANY law test run afterward would always come back with
+        # discovered=False for every law, and this wizard would fall through
+        # to the generic "not enough evidence yet" message below, which
+        # reads exactly like a normal, legitimate failure. It isn't one —
+        # the player did nothing wrong, the rule is simply that seeing the
+        # true genotype in advance would trivialize inferring it from
+        # ratios, so law discovery is disabled for the rest of the session
+        # once that's happened. Checked here, before the test even runs,
+        # so the wizard still opens and lets the player pick a law/traits
+        # normally, but explains the real reason plainly instead of
+        # presenting it as "you don't have enough evidence yet."
+        if getattr(app, "_genotype_revealed", False):
+            self._show_result(False,
+                "Genotype has already been revealed this session.\n\n"
+                "Once you've peeked at a plant's true genotype, Mendelian "
+                "laws can no longer be unlocked — seeing the actual alleles "
+                "in advance would make inferring them from breeding ratios "
+                "trivial. This isn't about your selection or the evidence "
+                "gathered; law discovery is simply disabled for the rest of "
+                "this session.")
+            return
+
         # ── run the law test ──────────────────────────────────────────────────
         try:
             from traitinheritanceexplorer import test_mendelian_laws
@@ -1313,7 +1364,7 @@ class MendelianLawWizard(tk.Toplevel):
             setattr(app, f"law{law_num}_first_plant", pid)
 
         try:
-            app._toast(f"✔ {law_name} unlocked!", level="info")
+            app._toast(f"{law_name} unlocked!", level="info")
         except Exception:
             pass
         try:
@@ -1392,7 +1443,6 @@ class MendelianLawWizard(tk.Toplevel):
 
         color  = "#1E4D2A" if success else "#4A1818"   # deep forest green / soft dark red
         border = "#3AB050" if success else "#D04040"   # vivid green / vivid red
-        icon   = "✔" if success else "✖"
         fg     = "#FFFFFF"   # white text on both banners
 
         panel = tk.Frame(self._page2, bg=color,
@@ -1404,7 +1454,7 @@ class MendelianLawWizard(tk.Toplevel):
         panel.pack(fill="x", padx=0, pady=0,
                    before=self._p2_canvas_frame)
 
-        tk.Label(panel, text=f"{icon}  {message}",
+        tk.Label(panel, text=message,
                  font=self.FONT_BOLD, bg=color, fg=fg,
                  wraplength=520, justify="left").pack(anchor="w", padx=4)
 
