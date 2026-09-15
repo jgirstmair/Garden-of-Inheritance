@@ -82,6 +82,18 @@ from tkinter import (
     ttk,
 )
 
+# pygame is optional — only needed for sound effects (harvest.ogg etc.).
+# Missing pygame shouldn't break the game itself, just silently disable
+# sound; _play_sound() below checks self._mixer_ready before doing
+# anything, so every other call site can call it unconditionally without
+# its own guard.
+try:
+    import pygame
+    _PYGAME_AVAILABLE = True
+except Exception:
+    pygame = None
+    _PYGAME_AVAILABLE = False
+
 # --- Local Modules / Single-File Embeds ---
 from crashhandler import CrashHandler
 from tile import TileCanvas
@@ -512,6 +524,8 @@ EXPORT_DIR = os.path.join(ROOT_DIR, "export")
 os.makedirs(EXPORT_DIR, exist_ok=True)
 SEEDS_CSV = os.path.join(ICONS_DIR, "seeds.csv")  # keep next to icons for convenience
 TRAITS_CSV = os.path.join(ROOT_DIR, "traits_export.csv")  # export of selected plant traits
+SOUNDS_DIR = os.path.join(ROOT_DIR, "sounds")  # e.g. sounds/harvest.ogg — sits next to icons/
+os.makedirs(SOUNDS_DIR, exist_ok=True)
 
 
 class _FlatIconButton(tk.Label):
@@ -1304,6 +1318,50 @@ class GardenApp:
             justify="left", anchor="w", wraplength=460,
         ).pack(side="left", fill="x", expand=True)
         return row
+
+    def _init_sound_system(self):
+        """
+        One-time pygame.mixer init, called from __init__. Wrapped in
+        try/except since audio device initialization can fail on some
+        systems (no audio hardware, headless environments, unusual
+        drivers, etc.) — sound is a nice-to-have, never something that
+        should be able to prevent the game itself from starting.
+        """
+        self._sound_cache = {}
+        self._mixer_ready = False
+        if not _PYGAME_AVAILABLE:
+            return
+        try:
+            pygame.mixer.init()
+            self._mixer_ready = True
+        except Exception:
+            self._mixer_ready = False
+
+    def _play_sound(self, filename):
+        """
+        Plays a sound effect from SOUNDS_DIR (e.g. "harvest.ogg"). Safe
+        to call unconditionally from anywhere — silently does nothing
+        if pygame isn't installed, the mixer failed to initialize, or
+        the specific file isn't present yet (e.g. the player hasn't
+        dropped it into sounds/ yet), rather than raising or nagging the
+        player for what's a purely optional feature. Loaded Sound
+        objects are cached by filename so repeated harvests don't re-hit
+        the filesystem or re-decode the file every single time.
+        """
+        if not getattr(self, "_mixer_ready", False):
+            return
+        try:
+            cache = self._sound_cache
+            snd = cache.get(filename)
+            if snd is None:
+                path = os.path.join(SOUNDS_DIR, filename)
+                if not cached_path_exists(path):
+                    return
+                snd = pygame.mixer.Sound(path)
+                cache[filename] = snd
+            snd.play()
+        except Exception:
+            pass
 
     def _greyscale_icon_from_path(self, path, sx=1, sy=1, fade_to_bg=None, opacity=1.0):
         """
@@ -3206,6 +3264,7 @@ class GardenApp:
         self.garden = GardenEnvironment(size=GRID_SIZE)
         self.garden._app = self  # Give garden access to app for difficulty settings
         self.inventory = Inventory()
+        self._init_sound_system()
         self._eager_seed_and_backfill()
         self._img_cache = {}  # cache for composited tile images
         self.next_plant_id = 1
@@ -9423,6 +9482,18 @@ class GardenApp:
             except Exception:
                 pass
 
+            # One pod was actually, successfully harvested at this
+            # point (every early return above this is a failure case —
+            # not ready, no pods left, emasculated with nothing to
+            # harvest, etc.). Suppressed during "Harvest All" (see its
+            # own _suppress_harvest_sound flag) — that path calls this
+            # once per pod in a loop, which used to mean harvest.ogg
+            # firing (and overlapping/stacking) once per pod instead of
+            # the single, separate harvest_all.ogg it plays once for the
+            # whole batch instead.
+            if not getattr(self, "_suppress_harvest_sound", False):
+                self._play_sound("harvest.ogg")
+
             # Returned so callers (e.g. the plant inspector's pod-click
             # handler) can see exactly which seeds THIS pod produced —
             # each seed is independently Mendelian-segregated, so a single
@@ -9471,7 +9542,16 @@ class GardenApp:
         # then) still triggers exactly one refresh, reflecting the final
         # state — same suppression pattern already used for the smooth
         # single-pod-click update.
+        #
+        # _suppress_harvest_sound is the same idea applied to sound:
+        # _on_harvest_selected() plays harvest.ogg once per pod when
+        # called on its own, which is correct there, but calling it once
+        # per pod IN THIS LOOP meant harvest.ogg firing (and overlapping/
+        # stacking) once per pod for a single "Harvest All" click.
+        # Suppressed here, with harvest_all.ogg played once for the whole
+        # batch afterward instead.
         self._suppress_inspector_refresh = True
+        self._suppress_harvest_sound = True
         try:
             # Bound the loop by the initial number of pods
             for _ in range(remaining):
@@ -9497,6 +9577,10 @@ class GardenApp:
                 harvested_pods += 1
         finally:
             self._suppress_inspector_refresh = False
+            self._suppress_harvest_sound = False
+
+        if harvested_pods > 0:
+            self._play_sound("harvest_all.ogg")
 
         # Optional: one summarizing toast (the per-pod toasts still happen inside _on_harvest_selected)
         if harvested_pods > 1:
