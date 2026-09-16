@@ -9332,14 +9332,6 @@ class GardenApp:
                 command=lambda p=plantable_tiles: self.choose_seed_for_tiles(p),
             )
 
-            # Starter seeds
-            starters_left = int(getattr(self, "available_seeds", 0) or 0)
-            menu.add_command(
-                label=f"Plant Starter (F0)",
-                state=("normal" if starters_left else "disabled"),
-                command=lambda i=tile.idx: self._plant_one_from_group(i, 'S', lambda s: False),
-            )
-
             # ▼ define and fill the submenu *before* using it
             area_menu = tk.Menu(menu, tearoff=False)
             for kind, src, donor, count, label, match_fn in (self._get_seed_groups() or []):
