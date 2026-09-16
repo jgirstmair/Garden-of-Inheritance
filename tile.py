@@ -422,15 +422,27 @@ class TileCanvas(tk.Canvas):
                 # (see _create_background), sized to the tile's original
                 # square dimensions — resizing the canvas taller here
                 # doesn't automatically resize items already drawn on
-                # it. Texture tiling for a non-standard height isn't
-                # worth the complexity for a tile that never shows a
-                # plant, so: stretch the solid-colour fallback to the
-                # full new height and hide the texture image entirely,
-                # and extend the selection-border lines that run along
-                # the height axis (left, right, and bottom's position)
-                # to match.
+                # it. Stretch the solid-colour fallback to the full new
+                # height immediately, and extend the selection-border
+                # lines that run along the height axis (left, right,
+                # and bottom's position) to match. bg_img_item's old
+                # (wrong-sized) texture is cleared here too, just so it
+                # doesn't sit stretched/wrong for the instant before the
+                # next render — _try_set_bg_image()'s own
+                # _bg_img_item2 handling is what actually re-textures
+                # the full doubled height properly (tiling a second
+                # copy below the first), not "textures off for this
+                # tile" the way this comment used to say. That re-bake
+                # only happens on an actual cache-key change though, so
+                # _bg_cache_key has to be invalidated here too — without
+                # it, this itemconfig(image='') is the last thing that
+                # ever touches bg_img_item, since _try_set_bg_image()'s
+                # early-return guard (key == self._bg_cache_key) sees
+                # nothing else changed and skips re-applying anything,
+                # leaving the tile permanently blank.
                 self.coords(self.bg_rect, 0, 0, self.w, self.h)
                 self.itemconfig(self.bg_img_item, image='')
+                self._bg_cache_key = None
                 inset = 1
                 self.coords(self.sel_line_left, inset, 0, inset, self.h)
                 self.coords(self.sel_line_right, self.w - inset, 0, self.w - inset, self.h)

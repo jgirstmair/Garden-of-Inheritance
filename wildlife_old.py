@@ -409,19 +409,6 @@ class WildlifeManager:
                     self._occupied.clear()
                 return
 
-            # Wildlife shelters during rain — same dismiss-and-don't-
-            # spawn treatment as nighttime/fast-forward above, rather
-            # than butterflies and bees carrying on as if it were a
-            # clear day.
-            if getattr(self.app, "garden", None) is not None and \
-                    getattr(self.app.garden, "weather", None) in ("🌧", "⛈"):
-                if self._active:
-                    for c in list(self._active):
-                        c.destroy()
-                    self._active.clear()
-                    self._occupied.clear()
-                return
-
             if not self._is_season():
                 return
 

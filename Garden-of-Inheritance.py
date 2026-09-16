@@ -56,6 +56,7 @@ Author: Based on Gregor Mendel's pea experiments (1856-1863)
 
 # --- Standard Library (Built-ins) ---
 import csv
+import glob
 import json
 import logging
 import os
@@ -84,9 +85,9 @@ from tkinter import (
 
 # pygame is optional — only needed for sound effects (harvest.ogg etc.).
 # Missing pygame shouldn't break the game itself, just silently disable
-# sound; _play_sound() below checks self._mixer_ready before doing
-# anything, so every other call site can call it unconditionally without
-# its own guard.
+# sound; _play_sound() below checks _mixer_ready before doing anything,
+# so every other call site can call it unconditionally without its own
+# guard.
 try:
     import pygame
     _PYGAME_AVAILABLE = True
@@ -94,7 +95,659 @@ except Exception:
     pygame = None
     _PYGAME_AVAILABLE = False
 
-# --- Local Modules / Single-File Embeds ---
+# numpy — used to rotate/decimate the raw sample arrays behind the FF
+# music speed-up (_get_fast_sound) and the position-preserving resume
+# when FF ends (_make_rotated_sound). pygame.sndarray itself already
+# requires numpy internally to function at all, so if sndarray-based
+# fast-forward speed-up works, numpy is already present — this is just
+# making it available directly for the array math those functions do.
+try:
+    import numpy as np
+except Exception:
+    np = None
+
+# Module-level (not GardenApp methods) rather than instance state, so
+# module-level helpers that aren't GardenApp methods — _FlatIconButton
+# and _make_flat_button_raw below, which need to play click.ogg from
+# their own shared click-handling code — can call _play_sound() directly
+# without needing a reference to the app instance at all. Safe to do
+# since there's only ever one GardenApp/one audio device for the whole
+# process anyway; nothing here is meaningfully "per app instance" state.
+_sound_cache = {}
+_mixer_ready = False
+
+# Sound-effects and music are toggled/volumed independently — "music"
+# covers both the looping background tracks AND the rain ambience below
+# (both are continuous atmosphere rather than a one-shot response to an
+# action), while "sound" covers the one-shot effects (click/harvest/
+# plant/watering). Persisted via the same small JSON settings file
+# _load_display_settings()/_save_display_settings() already use for
+# other app-level preferences (stone size, texture blur, etc.) — see
+# _load_audio_settings()/_save_audio_setting() further down, defined
+# once those two helpers exist.
+_sfx_enabled = True
+_music_enabled = True
+_sfx_volume = 0.75
+_music_volume = 0.75
+
+
+def _init_sound_system():
+    """
+    One-time pygame.mixer init, called from GardenApp.__init__. Wrapped
+    in try/except since audio device initialization can fail on some
+    systems (no audio hardware, headless environments, unusual drivers,
+    etc.) — sound is a nice-to-have, never something that should be able
+    to prevent the game itself from starting. Also loads the persisted
+    enabled/volume settings, so a player's mute/volume choice survives
+    between sessions.
+    """
+    global _mixer_ready, _sfx_enabled, _music_enabled, _sfx_volume, _music_volume
+    if not _PYGAME_AVAILABLE:
+        return
+    try:
+        pygame.mixer.init()
+        _mixer_ready = True
+    except Exception:
+        _mixer_ready = False
+        return
+    try:
+        s = _load_audio_settings()
+        _sfx_enabled = bool(s.get("sfx_enabled", True))
+        _music_enabled = bool(s.get("music_enabled", True))
+        _sfx_volume = max(0.0, min(1.0, float(s.get("sfx_volume", 0.75))))
+        _music_volume = max(0.0, min(1.0, float(s.get("music_volume", 0.75))))
+    except Exception:
+        pass
+
+
+def _play_on_channel(snd, volume, fade_ms):
+    """
+    Starts `snd` looping indefinitely on a freshly claimed channel, with
+    `volume` (0.0-1.0) applied to the channel BEFORE playback starts —
+    unlike calling .play(fade_ms=...) directly on the Sound object,
+    this means fade_ms fades in toward the actual target volume rather
+    than toward full volume (fade_ms fades from 0 up to whatever the
+    channel's current volume is set to, so that has to be set first).
+    Used for the looping tracks (bgm, rain) where getting the target
+    volume right matters; the one-shot _play_sound() below sets volume
+    directly on the Sound instead, which is simpler and fine for
+    something that isn't fading.
+    Returns the Channel, or None if none was available or on failure.
+    """
+    try:
+        channel = pygame.mixer.find_channel(True)
+        if channel is None:
+            return None
+        channel.set_volume(max(0.0, min(1.0, volume)))
+        channel.play(snd, loops=-1, fade_ms=fade_ms)
+        return channel
+    except Exception:
+        return None
+
+
+def _play_sound(filename):
+    """
+    Plays a sound effect from SOUNDS_DIR (e.g. "harvest.ogg",
+    "click.ogg"). Safe to call unconditionally from anywhere — silently
+    does nothing if pygame isn't installed, the mixer failed to
+    initialize, sound effects are muted, or the specific file isn't
+    present yet (e.g. the player hasn't dropped it into sounds/ yet),
+    rather than raising or nagging the player for what's a purely
+    optional feature. Loaded Sound objects are cached by filename so
+    repeated plays don't re-hit the filesystem or re-decode the file
+    every single time.
+    """
+    if not _mixer_ready or not _sfx_enabled:
+        return
+    try:
+        snd = _sound_cache.get(filename)
+        if snd is None:
+            path = os.path.join(SOUNDS_DIR, filename)
+            if not cached_path_exists(path):
+                return
+            snd = pygame.mixer.Sound(path)
+            _sound_cache[filename] = snd
+        snd.set_volume(_sfx_volume)
+        snd.play()
+    except Exception:
+        pass
+
+
+def _play_sound_variant(pattern):
+    """
+    Same as _play_sound(), but picks randomly among every file in
+    SOUNDS_DIR matching `pattern` (a glob pattern, e.g. "water*.ogg")
+    each time it's called, rather than a single fixed filename — for
+    sounds that have several interchangeable variants for a bit of
+    variety (watering: water_0.ogg / water_1.ogg / water_2.ogg, or just
+    a single watering.ogg — either matches "water*.ogg" fine). Silently
+    does nothing if no file matches, same as a missing single file would.
+    """
+    if not _mixer_ready or not _sfx_enabled:
+        return
+    try:
+        candidates = glob.glob(os.path.join(SOUNDS_DIR, pattern))
+        if not candidates:
+            return
+        path = random.choice(candidates)
+        key = os.path.basename(path)
+        snd = _sound_cache.get(key)
+        if snd is None:
+            snd = pygame.mixer.Sound(path)
+            _sound_cache[key] = snd
+        snd.set_volume(_sfx_volume)
+        snd.play()
+    except Exception:
+        pass
+
+
+# Looping rain ambience is a distinct thing from the one-shot effects
+# above (harvest/plant/watering/click): it needs to keep playing for
+# the WHOLE DURATION rain is falling, not fire once and stop, and it
+# needs to fade in/out rather than snap on/off. Tracked separately here
+# rather than through _sound_cache/_play_sound, which are built around
+# "play once, right now".
+_rain_channel = None
+_rain_active = False
+
+
+def _update_rain_sound(is_raining):
+    """
+    Starts/stops the looping rain ambience as rain begins or ends,
+    fading in/out over ~1.5s rather than snapping on/off abruptly.
+    Plays at HALF of the current music volume — a quieter ambience bed
+    sitting underneath everything else, not competing with maintheme/
+    winter for attention the way a full-volume rain loop would.
+
+    Meant to be called every render_all() with the CURRENT weather
+    state — it tracks _rain_active itself and only actually starts or
+    stops anything on an actual transition (dry→rain or rain→dry), so
+    it's cheap and safe to call unconditionally on every tick
+    regardless of whether the weather actually just changed. This is
+    also why hooking this into render_all() (which already runs on
+    every tick regardless of which of the several different places in
+    the codebase actually changed self.garden.weather) is more robust
+    than trying to catch every individual weather-assignment site
+    directly — there's no single choke point for "weather changed",
+    but there IS one for "a render just happened". The same polling
+    also means toggling music off mid-rain (see _set_music_enabled)
+    and back on again is picked up correctly here without any special
+    resync code of its own — the very next call just sees the real
+    current state and self-corrects.
+
+    Picks randomly among every "rain*.ogg" file present in SOUNDS_DIR
+    each time a NEW rain period starts (not re-picked while the same
+    rain period continues) — several distinct-sounding variants can sit
+    side by side (rain_loop_0.ogg, rain_loop_1.ogg, ...) rather than
+    needing everything crammed into one file named exactly "rain.ogg".
+    Falls back gracefully to whichever variant(s) actually exist; does
+    nothing if none are present yet.
+    """
+    global _rain_channel, _rain_active
+    if not _mixer_ready:
+        return
+    if not _music_enabled:
+        if _rain_channel is not None:
+            try:
+                _rain_channel.stop()
+            except Exception:
+                pass
+            _rain_channel = None
+        _rain_active = False
+        return
+    try:
+        if is_raining and not _rain_active:
+            candidates = glob.glob(os.path.join(SOUNDS_DIR, "rain*.ogg"))
+            if not candidates:
+                return
+            path = random.choice(candidates)
+            key = os.path.basename(path)
+            snd = _sound_cache.get(key)
+            if snd is None:
+                snd = pygame.mixer.Sound(path)
+                _sound_cache[key] = snd
+            _rain_channel = _play_on_channel(snd, _music_volume * 0.5, 1500)
+            _rain_active = True
+        elif not is_raining and _rain_active:
+            if _rain_channel is not None:
+                _rain_channel.fadeout(1500)
+            _rain_channel = None
+            _rain_active = False
+    except Exception:
+        pass
+
+
+# Background music: maintheme.ogg loops from the moment the sim starts,
+# gently crossfading to winter.ogg for the duration of winter and back
+# again afterward. Distinct from the rain ambience above in one useful
+# way — there's always exactly one target track ("main" or "winter"),
+# never "neither", so this only needs to track which one is currently
+# active rather than an active/inactive flag.
+_bgm_channel = None
+_bgm_current = None            # "main" or "winter" — which category is active
+_bgm_current_filename = None   # exact file playing, e.g. "maintheme_2.ogg" —
+                                # tracked separately since _bgm_current alone
+                                # doesn't say WHICH maintheme*.ogg variant was
+                                # actually picked, which _set_bgm_fast_forward
+                                # needs to know to speed up/restore the right one.
+
+# Tracks WHERE within the current track playback actually is, in
+# normal-speed seconds — used so ending Fast Forward can resume music
+# from that position instead of restarting the track from 0 (see
+# _bgm_elapsed_normal_seconds/_make_rotated_sound below). Reset to a
+# fresh 0 whenever a genuinely NEW track starts (initial startup, or a
+# season crossing into/out of winter) — starting a different piece of
+# music from its own beginning is correct there, this is specifically
+# about not losing your place in the SAME track across an FF speed
+# change.
+_bgm_seg_start_wall = None      # time.time() when the current segment began
+_bgm_seg_start_progress = 0.0   # normal-speed seconds already elapsed at that point
+
+
+def _bgm_elapsed_normal_seconds():
+    """How many normal-speed seconds into the current track we are
+    right now — accounts for whether the current segment has been
+    playing at fast or normal speed since it began."""
+    if _bgm_seg_start_wall is None:
+        return 0.0
+    elapsed_wall = time.time() - _bgm_seg_start_wall
+    speed = _FF_MUSIC_SPEED if _bgm_is_fast else 1.0
+    return _bgm_seg_start_progress + elapsed_wall * speed
+
+
+def _pick_random_sound_variant(pattern):
+    """
+    Returns (path, cache_key) for a randomly chosen file in SOUNDS_DIR
+    matching `pattern` (e.g. "maintheme*.ogg"), or (None, None) if
+    nothing matches. Shared by _start_bgm/_update_bgm for the main
+    theme's variants — same idea as the rain/watering variant picking
+    above, just factored out since background music needed it in two
+    places (initial start, and switching back from winter).
+    """
+    try:
+        candidates = glob.glob(os.path.join(SOUNDS_DIR, pattern))
+        if not candidates:
+            return None, None
+        path = random.choice(candidates)
+        return path, os.path.basename(path)
+    except Exception:
+        return None, None
+
+
+def _start_bgm():
+    """
+    Starts a main theme track looping, called once from
+    GardenApp.__init__ right after _init_sound_system() succeeds. Short
+    fade-in (1s) so it doesn't blast in at full volume the instant the
+    window opens. Does nothing if music is muted (persisted setting) —
+    _bgm_current stays None, so _update_bgm's own transition check
+    naturally starts it the moment music gets re-enabled, no
+    special-casing needed here.
+
+    Picks randomly among every "maintheme*.ogg" file present in
+    SOUNDS_DIR — several variants (maintheme_0.ogg, maintheme_1.ogg,
+    ...) can sit side by side rather than needing everything crammed
+    into one file named exactly "maintheme.ogg" (a single plain
+    maintheme.ogg still matches the pattern fine on its own, too).
+    """
+    global _bgm_channel, _bgm_current, _bgm_current_filename, _bgm_seg_start_wall, _bgm_seg_start_progress
+    if not _mixer_ready or not _music_enabled:
+        return
+    try:
+        path, key = _pick_random_sound_variant("maintheme*.ogg")
+        if path is None:
+            return
+        snd = _sound_cache.get(key)
+        if snd is None:
+            snd = pygame.mixer.Sound(path)
+            _sound_cache[key] = snd
+        _bgm_channel = _play_on_channel(snd, _music_volume, 1000)
+        _bgm_current = "main"
+        _bgm_current_filename = key
+        _bgm_seg_start_wall = time.time()
+        _bgm_seg_start_progress = 0.0
+    except Exception:
+        pass
+
+
+def _update_bgm(is_winter):
+    """
+    Gently crossfades between maintheme.ogg and winter.ogg as the
+    season moves in and out of winter — 3s fade, long enough to read as
+    a deliberate, gentle transition rather than a jump cut, short enough
+    not to leave both tracks audibly overlapping for long.
+
+    Same polling approach as _update_rain_sound and for the same
+    reason: season is derived from self.garden.month wherever it's
+    needed (see the existing 'winter' if month not in (3..11) pattern
+    used elsewhere in this file) rather than stored as a single value
+    with one obvious place to hook a transition, so checking on every
+    render_all() and only acting on an actual month-crossing-into/out-
+    of-winter transition is simpler and more robust than trying to
+    catch every place month could change. Also self-corrects after
+    music gets muted/unmuted (see _set_music_enabled) the same way
+    _update_rain_sound does.
+
+    Silently stays on the current track if the target file isn't
+    present yet, rather than cutting music entirely — e.g. if only
+    maintheme.ogg has been added so far, winter just never kicks in
+    until winter.ogg exists too.
+    """
+    global _bgm_channel, _bgm_current, _bgm_current_filename, _bgm_seg_start_wall, _bgm_seg_start_progress
+    if not _mixer_ready:
+        return
+    if not _music_enabled:
+        if _bgm_channel is not None:
+            try:
+                _bgm_channel.stop()
+            except Exception:
+                pass
+            _bgm_channel = None
+        _bgm_current = None
+        _bgm_current_filename = None
+        _bgm_seg_start_wall = None
+        _bgm_seg_start_progress = 0.0
+        return
+    target = "winter" if is_winter else "main"
+    if target == _bgm_current:
+        return
+    try:
+        if target == "winter":
+            filename = "winter.ogg"
+            path = os.path.join(SOUNDS_DIR, filename)
+            if not cached_path_exists(path):
+                return
+        else:
+            # Random pick among every "maintheme*.ogg" variant, same as
+            # _start_bgm — re-rolled each time we switch BACK to main
+            # (e.g. winter ending), not just at initial startup, so a
+            # full year cycle can actually surface different variants.
+            path, filename = _pick_random_sound_variant("maintheme*.ogg")
+            if path is None:
+                return
+        # If FF is already active when a season transition happens
+        # mid-fast-forward, the newly-started track should also start
+        # in its sped-up form — otherwise it'd suddenly (and
+        # incorrectly) snap back to normal speed the moment winter/
+        # spring begins, even though FF is still running.
+        snd = _get_fast_sound(filename) if _bgm_is_fast else None
+        if snd is None:
+            snd = _sound_cache.get(filename)
+            if snd is None:
+                snd = pygame.mixer.Sound(path)
+                _sound_cache[filename] = snd
+        old_channel = _bgm_channel
+        _bgm_channel = _play_on_channel(snd, _music_volume, 3000)
+        _bgm_current = target
+        _bgm_current_filename = filename
+        _bgm_seg_start_wall = time.time()
+        _bgm_seg_start_progress = 0.0
+        if old_channel is not None:
+            old_channel.fadeout(3000)
+    except Exception:
+        pass
+
+
+# --- Audio settings persistence + live setters (used by the Audio
+# Settings dialog under the Game Settings menu) ---
+
+def _load_audio_settings():
+    """Reuses the same small JSON file the other app-level display
+    preferences (stone size, texture blur, ...) already persist to —
+    audio settings just live under their own keys within it. Delegates
+    to _load_display_settings(), defined later in this file — resolved
+    at call time, so the forward reference is fine."""
+    return _load_display_settings()
+
+
+def _save_audio_setting(key, value):
+    settings = _load_display_settings()
+    settings[key] = value
+    _save_display_settings(settings)
+
+
+def _set_sfx_enabled(enabled):
+    global _sfx_enabled
+    _sfx_enabled = bool(enabled)
+    _save_audio_setting("sfx_enabled", _sfx_enabled)
+
+
+def _set_music_enabled(enabled):
+    """
+    Stops currently-playing music/rain immediately (rather than waiting
+    for the next render_all() poll, which might not come soon if the
+    sim is paused) when muted. Re-enabling deliberately does nothing
+    further here — _bgm_current/_rain_active were just reset to
+    "nothing playing" by the stop-branch above, so the transition
+    checks in _update_bgm/_update_rain_sound see a mismatch against
+    whatever's actually true right now and restart correctly on their
+    own the next time they're called. The Audio Settings dialog below
+    calls self.render_all() right after toggling this, so that "next
+    time" is immediate rather than waiting on the sim loop.
+    """
+    global _music_enabled
+    _music_enabled = bool(enabled)
+    _save_audio_setting("music_enabled", _music_enabled)
+    if not _mixer_ready:
+        return
+    if not _music_enabled:
+        _update_bgm(False)  # is_winter arg irrelevant here — this call
+        _update_rain_sound(False)  # is_raining arg irrelevant here too;
+        # both just need _music_enabled=False to take their stop branch.
+
+
+def _set_sfx_volume(v):
+    global _sfx_volume
+    _sfx_volume = max(0.0, min(1.0, float(v)))
+    _save_audio_setting("sfx_volume", _sfx_volume)
+
+
+def _set_music_volume(v):
+    """Applies live to whatever's currently playing, not just future
+    tracks — dragging the slider should be heard immediately."""
+    global _music_volume
+    _music_volume = max(0.0, min(1.0, float(v)))
+    _save_audio_setting("music_volume", _music_volume)
+    if _bgm_channel is not None:
+        try:
+            _bgm_channel.set_volume(_music_volume)
+        except Exception:
+            pass
+    if _rain_channel is not None:
+        try:
+            _rain_channel.set_volume(_music_volume * 0.5)
+        except Exception:
+            pass
+
+
+# --- Sped-up background music during Fast Forward ---
+# A separate, one-time-generated "fast" Sound per track, cached
+# alongside (but separately from) _sound_cache's normal-speed versions
+# — pygame has no notion of "playback rate" for a Channel/Sound, so
+# the only way to genuinely speed music up (not just simulate it) is to
+# resample the actual samples via pygame.sndarray and build a new Sound
+# from the result. Decimating samples this way also raises the pitch as
+# a natural side effect (the classic "chipmunk" fast-forward sound) —
+# the same tradeoff most games with an audible FF speed-up make, rather
+# than the much heavier lift of true time-stretching that preserves pitch.
+_FF_MUSIC_SPEED = 1.5
+_fast_sound_cache = {}
+_bgm_is_fast = False
+
+
+def _get_fast_sound(filename):
+    """Returns a cached, sped-up Sound for `filename` (from SOUNDS_DIR),
+    generating it once via sample decimation if not already cached.
+    Returns None on any failure (missing sndarray support, missing
+    file, etc.) — callers fall back to normal speed in that case rather
+    than erroring."""
+    snd = _fast_sound_cache.get(filename)
+    if snd is not None:
+        return snd
+    try:
+        arr = _get_normal_array(filename)
+        if arr is None:
+            return None
+        # Take every Nth sample (N = _FF_MUSIC_SPEED) — shortens the
+        # buffer, so played back at the same sample rate it finishes in
+        # 1/_FF_MUSIC_SPEED the time: genuinely faster, not simulated.
+        step = max(1, int(round(_FF_MUSIC_SPEED)))
+        fast_arr = arr[::step].copy()
+        snd = pygame.sndarray.make_sound(fast_arr)
+        _fast_sound_cache[filename] = snd
+        return snd
+    except Exception:
+        return None
+
+
+# Raw sample arrays, cached separately from _sound_cache's Sound
+# objects — needed by both _get_fast_sound (speed-up) and
+# _make_rotated_sound (position-preserving resume) below, so pulled
+# out once here rather than each re-extracting its own copy via
+# pygame.sndarray.array() independently.
+_normal_array_cache = {}
+
+
+def _get_normal_array(filename):
+    """Cached raw numpy sample array (normal speed/full quality) for
+    `filename`. Returns None on any failure — missing file, sndarray
+    unavailable, numpy unavailable, etc."""
+    arr = _normal_array_cache.get(filename)
+    if arr is not None:
+        return arr
+    if np is None:
+        return None
+    try:
+        path = os.path.join(SOUNDS_DIR, filename)
+        if not cached_path_exists(path):
+            return None
+        base = _sound_cache.get(filename)
+        if base is None:
+            base = pygame.mixer.Sound(path)
+            _sound_cache[filename] = base
+        arr = pygame.sndarray.array(base)
+        _normal_array_cache[filename] = arr
+        return arr
+    except Exception:
+        return None
+
+
+def _make_rotated_sound(filename, is_fast_target, position_normal_samples):
+    """
+    Builds a Sound for `filename` at the target speed (is_fast_target),
+    ROTATED so playback begins exactly at position_normal_samples
+    (measured against the file's normal/full-quality sample array)
+    instead of at the very start.
+
+    This is what lets ending Fast Forward resume music from where it
+    actually was instead of restarting the track from 0: looping this
+    Sound (loops=-1, as _play_on_channel already does) plays seamlessly
+    forever, because rotating the array means what WOULD have been the
+    "wrap back to 0" moment is instead the array's own natural end —
+    reaching it plays the part of the track that got skipped past
+    (start-of-track up to the resume point), then loops back to this
+    Sound's own start (== the exact position we resumed from). No
+    scheduling, no queued fragments, no timing races — just one array
+    rotated once, up front.
+
+    Returns None on any failure (missing numpy/sndarray, empty array,
+    etc.) — caller falls back to a plain restart-from-0 in that case.
+    """
+    try:
+        arr = _get_normal_array(filename)
+        if arr is None or np is None:
+            return None
+        n = len(arr)
+        if n < 2:
+            return None
+        pos = int(position_normal_samples) % n
+        if is_fast_target:
+            step = max(1, int(round(_FF_MUSIC_SPEED)))
+            rotated = np.concatenate([arr[pos::step], arr[:pos:step]], axis=0)
+        else:
+            rotated = np.concatenate([arr[pos:], arr[:pos]], axis=0)
+        if len(rotated) < 2:
+            return None
+        return pygame.sndarray.make_sound(rotated.copy())
+    except Exception:
+        return None
+
+
+def _set_bgm_fast_forward(is_fast):
+    """
+    Swaps the currently-playing background track (main or winter,
+    whichever _bgm_current says is active) to its sped-up version when
+    Fast Forward starts, and back to normal speed when it ends —
+    RESUMING from wherever playback actually was (see
+    _make_rotated_sound) rather than restarting the track from its
+    beginning. Instant swap, no fade — FF itself is already an abrupt
+    mode switch, not a gradual one, so the music snapping to match
+    reads as consistent rather than jarring; it's the restart-from-0
+    that read as a bug, not the abruptness of the switch itself.
+
+    Deliberately scoped to background music only, not the rain
+    ambience — rain loops are short and looping already, so speeding
+    them up doesn't read the same way a musical track does, and the
+    request was specifically about background music.
+
+    Silently does nothing (stays as-is) if the sped-up version
+    couldn't be generated for any reason, or if music is muted/no
+    track is currently active. Falls back to a plain (position-losing)
+    restart if the rotated version specifically can't be built (e.g.
+    numpy unavailable) but the plain sped-up/normal Sound still can —
+    same behavior this had before position-preserving resume existed,
+    rather than losing the FF speed-up feature entirely over it.
+    """
+    global _bgm_channel, _bgm_is_fast, _bgm_seg_start_wall, _bgm_seg_start_progress
+    if not _mixer_ready or not _music_enabled or _bgm_current is None:
+        return
+    if is_fast == _bgm_is_fast:
+        return
+    try:
+        # The exact currently-playing file, not just its category —
+        # _bgm_current only says "main" or "winter", but main now has
+        # several possible maintheme*.ogg variants, and this needs to
+        # speed up/restore the SAME ONE actually already playing, not
+        # re-pick a random one.
+        filename = _bgm_current_filename or (
+            "winter.ogg" if _bgm_current == "winter" else "maintheme.ogg")
+
+        progress_secs = _bgm_elapsed_normal_seconds()
+        sr = 44100
+        try:
+            init = pygame.mixer.get_init()
+            if init:
+                sr = init[0]
+        except Exception:
+            pass
+        position_samples = progress_secs * sr
+
+        snd = _make_rotated_sound(filename, is_fast, position_samples)
+        if snd is None:
+            # Fallback: same as before position-preserving resume
+            # existed — still speeds up/restores correctly, just
+            # restarts the track from 0 rather than resuming.
+            if is_fast:
+                snd = _get_fast_sound(filename)
+            else:
+                snd = _sound_cache.get(filename)
+                if snd is None:
+                    path = os.path.join(SOUNDS_DIR, filename)
+                    if cached_path_exists(path):
+                        snd = pygame.mixer.Sound(path)
+                        _sound_cache[filename] = snd
+        if snd is None:
+            return  # couldn't produce the target version — stay as-is
+        if _bgm_channel is not None:
+            _bgm_channel.stop()
+        _bgm_channel = _play_on_channel(snd, _music_volume, 0)
+        _bgm_is_fast = is_fast
+        _bgm_seg_start_wall = time.time()
+        _bgm_seg_start_progress = progress_secs
+    except Exception:
+        pass
+
+
 from crashhandler import CrashHandler
 from tile import TileCanvas
 from plant import Plant, STAGE_NAMES
@@ -585,6 +1238,7 @@ class _FlatIconButton(tk.Label):
 
     def _on_click(self, event=None):
         if self._enabled and self._command:
+            _play_sound("click.ogg")
             self._command()
 
     def configure(self, cnf=None, **kwargs):
@@ -672,7 +1326,7 @@ def _make_flat_button_raw(parent, text, command, bg="#7A9A3C", fg="white",
     if not disabled:
         lbl.bind("<Enter>", lambda e: lbl.configure(bg=hover_bg))
         lbl.bind("<Leave>", lambda e: lbl.configure(bg=bg))
-        lbl.bind("<Button-1>", lambda e: command())
+        lbl.bind("<Button-1>", lambda e: (_play_sound("click.ogg"), command()))
     return lbl
 
 
@@ -1318,50 +1972,6 @@ class GardenApp:
             justify="left", anchor="w", wraplength=460,
         ).pack(side="left", fill="x", expand=True)
         return row
-
-    def _init_sound_system(self):
-        """
-        One-time pygame.mixer init, called from __init__. Wrapped in
-        try/except since audio device initialization can fail on some
-        systems (no audio hardware, headless environments, unusual
-        drivers, etc.) — sound is a nice-to-have, never something that
-        should be able to prevent the game itself from starting.
-        """
-        self._sound_cache = {}
-        self._mixer_ready = False
-        if not _PYGAME_AVAILABLE:
-            return
-        try:
-            pygame.mixer.init()
-            self._mixer_ready = True
-        except Exception:
-            self._mixer_ready = False
-
-    def _play_sound(self, filename):
-        """
-        Plays a sound effect from SOUNDS_DIR (e.g. "harvest.ogg"). Safe
-        to call unconditionally from anywhere — silently does nothing
-        if pygame isn't installed, the mixer failed to initialize, or
-        the specific file isn't present yet (e.g. the player hasn't
-        dropped it into sounds/ yet), rather than raising or nagging the
-        player for what's a purely optional feature. Loaded Sound
-        objects are cached by filename so repeated harvests don't re-hit
-        the filesystem or re-decode the file every single time.
-        """
-        if not getattr(self, "_mixer_ready", False):
-            return
-        try:
-            cache = self._sound_cache
-            snd = cache.get(filename)
-            if snd is None:
-                path = os.path.join(SOUNDS_DIR, filename)
-                if not cached_path_exists(path):
-                    return
-                snd = pygame.mixer.Sound(path)
-                cache[filename] = snd
-            snd.play()
-        except Exception:
-            pass
 
     def _greyscale_icon_from_path(self, path, sx=1, sy=1, fade_to_bg=None, opacity=1.0):
         """
@@ -3094,6 +3704,19 @@ class GardenApp:
             _t = (L - _lo) / (_hi - _lo)
             L_display = _t * _t * (3.0 - 2.0 * _t)  # smoothstep
 
+        # Rain caps how bright it can get — clouds block light, they
+        # don't add any, so this only ever pulls L_display DOWN toward
+        # a midpoint between full day and full night, never brightens
+        # an already-dark night. A clear noon (L_display=1.0) during
+        # rain becomes exactly the midpoint (0.5) — "between day and
+        # night" — while rain arriving at night (already near 0) is
+        # left alone, since it's already at or below that midpoint.
+        try:
+            if self.garden.weather in ("🌧", "⛈"):
+                L_display = min(L_display, 0.5)
+        except Exception:
+            pass
+
         # Quantise to 100 steps — plenty for a smooth visual, cheaper cache
         bucket = int(round(L_display * 100))
 
@@ -3106,7 +3729,9 @@ class GardenApp:
         self._daynight_transitioning  = True  # keep loop at 40 ms
 
         # ── Mapping knobs (driven by display curve, not raw L) ──
-        night_dark      = 0.35 * (1.0 - L_display)
+        # night_dark's 0.35 base was raised ~20% (→ 0.42) for a visibly
+        # darker night overall; day_bright is untouched.
+        night_dark      = 0.42 * (1.0 - L_display)
         day_bright      = 0.08 * L_display
         day_tint_target = "#bfe3b0"  # subtle sun wash
 
@@ -3264,7 +3889,27 @@ class GardenApp:
         self.garden = GardenEnvironment(size=GRID_SIZE)
         self.garden._app = self  # Give garden access to app for difficulty settings
         self.inventory = Inventory()
-        self._init_sound_system()
+        _init_sound_system()
+        _start_bgm()
+        # click.ogg for every standard tk.Button/ttk.Button in the app —
+        # bind_class applies to the WIDGET CLASS itself (every button
+        # that exists now or gets created later), not just one instance,
+        # so this single pair of calls covers every such button
+        # scattered across the whole file without needing to touch each
+        # one's own construction site individually. add="+" appends
+        # rather than replacing whatever binding already exists on that
+        # class (the button's own command-triggering behavior included).
+        # _FlatIconButton and _make_flat_button_raw's own custom click
+        # handling (not real tk.Button/ttk.Button underneath) play this
+        # directly in their own code instead, since they're not covered
+        # by these particular class names.
+        try:
+            self.root.bind_class("Button", "<ButtonRelease-1>",
+                                  lambda e: _play_sound("click.ogg"), add="+")
+            self.root.bind_class("TButton", "<ButtonRelease-1>",
+                                  lambda e: _play_sound("click.ogg"), add="+")
+        except Exception:
+            pass
         self._eager_seed_and_backfill()
         self._img_cache = {}  # cache for composited tile images
         self.next_plant_id = 1
@@ -3504,15 +4149,19 @@ class GardenApp:
         # )
         self.root.bind("<F9>", self._season_cycle_mode)
         
-        # User-friendly initial message
-        mode_names = {
-            "off": "Casual",
-            "overlay": "Moderate", 
-            "enforce": "Realistic"
-        }
-        friendly_name = mode_names.get(self._season_mode, self._season_mode)
-        self._toast(f"Season model loaded (Difficulty: {friendly_name}). Press F9 to cycle or use Game Settings menu.")
-        
+        # Mendel's own welcome, in place of the earlier technical
+        # "Season model loaded (Difficulty: ...)" toast — matches the
+        # voice already used for his hover-tip messages elsewhere
+        # (_on_mendel_hover's "Good day, young novice!"), a few
+        # variants picked randomly for a bit of variety across
+        # separate launches rather than the exact same line every time.
+        greetings = (
+            "Welcome, young novice! The garden awaits your careful observation.",
+            "Good day, young novice! Let us uncover the secrets of heredity together.",
+            "Ah, a new novice arrives! My peas have much yet to teach you.",
+        )
+        self._toast(random.choice(greetings))
+
         # Periodic season polling to apply lethal/stress without day change
         def _season_poll_loop():
             self._season_poll()
@@ -3708,6 +4357,63 @@ class GardenApp:
                     win.attributes('-zoomed', False)
         except Exception:
             pass
+
+    def _open_audio_settings_dialog(self):
+        """Popup for muting/volume-controlling sound effects and background
+        music (which also covers the rain ambience) independently."""
+        win = Toplevel(self.root)
+        win.title("Audio Settings")
+        frm = tk.Frame(win, padx=14, pady=14)
+        frm.pack(fill="both", expand=True)
+
+        sfx_on_var = tk.BooleanVar(value=_sfx_enabled)
+        music_on_var = tk.BooleanVar(value=_music_enabled)
+
+        def _on_sfx_toggle():
+            _set_sfx_enabled(sfx_on_var.get())
+
+        def _on_music_toggle():
+            _set_music_enabled(music_on_var.get())
+            # Immediate resync rather than waiting for the sim's own
+            # next tick (which might be a while if paused) — see
+            # _set_music_enabled's own docstring for why this is safe.
+            self.render_all()
+
+        tk.Checkbutton(
+            frm, text="Sound Effects", variable=sfx_on_var,
+            command=_on_sfx_toggle, font=("Segoe UI", 11),
+        ).pack(anchor="w", pady=(0, 4))
+
+        tk.Label(frm, text="Sound Effects Volume", font=("Segoe UI", 9)).pack(anchor="w")
+        # Built without `command` first, positioned via .set(), THEN
+        # given a command — .set() fires the command callback the same
+        # as a user drag would, even called programmatically like this.
+        # Attaching command in the constructor meant just OPENING this
+        # dialog silently wrote back whatever value was already loaded
+        # (e.g. the old 100% default) as an explicit saved setting,
+        # permanently overriding any later change to the built-in
+        # default for anyone who'd ever opened this dialog once.
+        sfx_scale = tk.Scale(
+            frm, from_=0, to=100, orient="horizontal", length=260,
+        )
+        sfx_scale.set(int(round(_sfx_volume * 100)))
+        sfx_scale.configure(command=lambda v: _set_sfx_volume(float(v) / 100.0))
+        sfx_scale.pack(anchor="w", fill="x", pady=(0, 12))
+
+        tk.Checkbutton(
+            frm, text="Background Music (incl. rain)", variable=music_on_var,
+            command=_on_music_toggle, font=("Segoe UI", 11),
+        ).pack(anchor="w", pady=(0, 4))
+
+        tk.Label(frm, text="Music Volume", font=("Segoe UI", 9)).pack(anchor="w")
+        music_scale = tk.Scale(
+            frm, from_=0, to=100, orient="horizontal", length=260,
+        )
+        music_scale.set(int(round(_music_volume * 100)))
+        music_scale.configure(command=lambda v: _set_music_volume(float(v) / 100.0))
+        music_scale.pack(anchor="w", fill="x", pady=(0, 10))
+
+        tk.Button(frm, text="Close", command=win.destroy).pack(anchor="e")
 
     def _open_speed_dialog(self):
         """Popup to adjust simulation speed: seconds of real time per simulated HOUR."""
@@ -4487,6 +5193,7 @@ class GardenApp:
             self._force_tile_soil(index)
             self._toast(f"Starter seed planted. ({self.available_seeds} left)")
             self.render_all()
+            _play_sound("plant.ogg")
 
             return True
             
@@ -4541,6 +5248,7 @@ class GardenApp:
         else:
             self._toast(f"Planted → {p.generation}")
         self.render_all()
+        _play_sound("plant.ogg")
 
         return True
 
@@ -4809,6 +5517,10 @@ class GardenApp:
         game_menu.add_command(
             label="Fast Forward Rendering…",
             command=self._open_ff_render_settings_dialog
+        )
+        game_menu.add_command(
+            label="Audio Settings…",
+            command=self._open_audio_settings_dialog
         )
 
         # ═══ Automation — things the game does for you ═══
@@ -5766,6 +6478,20 @@ class GardenApp:
 
         try:
             self._update_header()
+        except Exception:
+            pass
+
+        try:
+            _update_rain_sound(self.garden.weather in ("🌧", "⛈"))
+        except Exception:
+            pass
+
+        try:
+            # Same month-based winter check already used elsewhere in
+            # this file (e.g. the season/texture-cache logic above) —
+            # month not in spring/summer/autumn's ranges means winter.
+            _month = int(getattr(self.garden, 'month', 4))
+            _update_bgm(_month not in (3, 4, 5, 6, 7, 8, 9, 10, 11))
         except Exception:
             pass
 
@@ -8623,7 +9349,7 @@ class GardenApp:
                     command=lambda k=kind, mf=match_fn: self._on_plant_area_from_group(k, mf),
                 )
 
-            menu.add_cascade(label="Plant Group ▸", menu=area_menu)
+            menu.add_cascade(label="Plant All ▸", menu=area_menu)
             menu.add_separator()
             menu.add_command(label="Remove ALL Plants…", command=self._confirm_remove_all)
             menu.add_command(label="Remove Plant…", state="disabled")
@@ -8961,6 +9687,7 @@ class GardenApp:
             return
         msg = self.garden.water_all()
         self.render_all()
+        _play_sound_variant("water*.ogg")
         # Start automated phase progression (slight delay for safety)
         try:
             self._ensure_auto_loop(delay_ms=50)
@@ -9167,6 +9894,9 @@ class GardenApp:
                 continue
 
         self.render_all()
+
+        if watered > 0:
+            _play_sound_variant("water*.ogg")
 
 
         try:
@@ -9492,7 +10222,7 @@ class GardenApp:
             # the single, separate harvest_all.ogg it plays once for the
             # whole batch instead.
             if not getattr(self, "_suppress_harvest_sound", False):
-                self._play_sound("harvest.ogg")
+                _play_sound("harvest.ogg")
 
             # Returned so callers (e.g. the plant inspector's pod-click
             # handler) can see exactly which seeds THIS pod produced —
@@ -9580,7 +10310,7 @@ class GardenApp:
             self._suppress_harvest_sound = False
 
         if harvested_pods > 0:
-            self._play_sound("harvest_all.ogg")
+            _play_sound("harvest_all.ogg")
 
         # Optional: one summarizing toast (the per-pod toasts still happen inside _on_harvest_selected)
         if harvested_pods > 1:
@@ -10392,6 +11122,10 @@ class GardenApp:
         was_running = self.running
         self.running = False
         self.fast_forward = True
+        try:
+            _set_bgm_fast_forward(True)
+        except Exception:
+            pass
 
         # Dismiss any visible wildlife immediately when FF starts
         try:
@@ -10554,6 +11288,10 @@ class GardenApp:
         # Restore fast_forward flag FIRST so the final render applies the
         # correct day/night shading for the sim hour we landed on.
         self.fast_forward = False
+        try:
+            _set_bgm_fast_forward(False)
+        except Exception:
+            pass
         self._daynight_last_advance = time.time()  # start interpolation from landed hour
 
         # After the loop, always do a final render so the clock & header are correct
