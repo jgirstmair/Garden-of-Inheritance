@@ -200,6 +200,16 @@ class MendelianLawWizard(tk.Toplevel):
         # ── centre on parent ─────────────────────────────────────────────────
         self.update_idletasks()
         W, H = 820, 740
+        # Page 1's law cards got noticeably taller once their fonts were
+        # scaled up 1.5x — rather than guess a fixed pixel bump (which
+        # would need re-guessing again if the content ever changes),
+        # measure both pages' actual required height directly and grow
+        # the fixed window to fit whichever is taller, so nothing clips.
+        try:
+            content_h = max(self._page1.winfo_reqheight(), self._page2.winfo_reqheight())
+            H = max(H, content_h + 40)
+        except Exception:
+            pass
         if getattr(self.app, "_genotype_revealed", False):
             # Extra room for the notice banner above — otherwise it just
             # eats into the same fixed height the page content already
@@ -230,14 +240,24 @@ class MendelianLawWizard(tk.Toplevel):
     def _build_page1(self):
         p = self._page1
 
+        # Page 1 specifically uses its own 1.5x-scaled font sizes rather
+        # than the shared FONT_*/self.FONT constants directly — those
+        # are also used on Page 2, which wasn't asked for here, so
+        # scaling them at the class level would've enlarged text there
+        # too. _make_law_card (below) is only ever called from this one
+        # page, so its fonts are scaled the same way, right there.
+        font_title_p1   = (self.FONT_TITLE[0], int(round(self.FONT_TITLE[1] * 1.5)), self.FONT_TITLE[2])
+        font_heading_p1 = (self.FONT_HEADING[0], int(round(self.FONT_HEADING[1] * 1.5)), self.FONT_HEADING[2])
+        font_bold_p1    = (self.FONT_BOLD[0], int(round(self.FONT_BOLD[1] * 1.5)), self.FONT_BOLD[2])
+
         # title bar
         hdr = tk.Frame(p, bg=self.ACCENT, pady=10)
         hdr.pack(fill="x")
         tk.Label(hdr, text="Mendelian Law Discovery",
-                 font=self.FONT_TITLE, bg=self.ACCENT, fg="white").pack()
+                 font=font_title_p1, bg=self.ACCENT, fg="white").pack()
 
         tk.Label(p, text="Which Mendelian law would you like to test?",
-                 font=self.FONT_HEADING, bg=self.BG, fg=self.TEXT_DARK
+                 font=font_heading_p1, bg=self.BG, fg=self.TEXT_DARK
                  ).pack(pady=(14, 6), padx=20, anchor="w")
 
         # cards for each law
@@ -263,12 +283,12 @@ class MendelianLawWizard(tk.Toplevel):
                        command=lambda: self._show_page(2)).pack(side="right")
         else:
             tk.Button(nav, text="Cancel",
-                      font=self.FONT_BOLD, bg=self.BTN_BG,
+                      font=font_bold_p1, bg=self.BTN_BG,
                       activebackground=self.BTN_ACTIVE,
                       relief="flat", bd=0, padx=14, pady=6,
                       command=self.destroy).pack(side="right", padx=(8, 0))
             tk.Button(nav, text="Next  \u2192",
-                      font=self.FONT_BOLD,
+                      font=font_bold_p1,
                       bg=self.BTN_PRIMARY, fg=self.BTN_PRIMARY_FG,
                       activebackground="#5C2810",
                       activeforeground="white",
@@ -277,6 +297,11 @@ class MendelianLawWizard(tk.Toplevel):
 
     def _make_law_card(self, parent, law):
         """Create a clickable card for one law. Returns the outer frame."""
+        # 1.5x-scaled versions of FONT_HEADING/FONT, same reasoning as
+        # _build_page1 above (this is only ever called from there).
+        font_heading_p1 = (self.FONT_HEADING[0], int(round(self.FONT_HEADING[1] * 1.5)), self.FONT_HEADING[2])
+        font_body_p1    = (self.FONT[0], int(round(self.FONT[1] * 1.5)))
+
         outer = tk.Frame(parent, bg=self.BG, pady=4)
         outer.pack(fill="x")
 
@@ -293,12 +318,12 @@ class MendelianLawWizard(tk.Toplevel):
         rb.pack(side="left")
 
         name_lbl = tk.Label(row, text=law["name"],
-                            font=self.FONT_HEADING, bg=self.BG_CARD,
+                            font=font_heading_p1, bg=self.BG_CARD,
                             fg=self.TEXT_DARK, cursor="hand2")
         name_lbl.pack(side="left")
 
         desc_lbl = tk.Label(card, text=law["desc"],
-                            font=self.FONT, bg=self.BG_CARD,
+                            font=font_body_p1, bg=self.BG_CARD,
                             fg=self.TEXT_MUTED, wraplength=480,
                             justify="left", anchor="w")
         desc_lbl.pack(fill="x", pady=(4, 0))
@@ -1170,6 +1195,41 @@ class MendelianLawWizard(tk.Toplevel):
                     sel_traits_now = {self._sels[0]["dominant"][0], self._sels[1]["dominant"][0]}
             except Exception:
                 sel_traits_now = set()
+
+            # Epistasis ratio ACTUALLY observed (9:7 pod shape, 13:3 flower
+            # position) — checked BEFORE the pod_shape_note explanation
+            # below, since that note only ever explains why the trait can't
+            # demonstrate Law 2 itself; when the true dihybrid ratio genuinely
+            # fits, that's a real, separate discovery and deserves crediting
+            # as one, not a "here's why this didn't work" message. Only
+            # applies when testing Law 2 with exactly one of these two traits
+            # selected — Law 1 (true-breeding parents) and Law 3 (a trait
+            # PAIR) don't correspond to what this test actually checks.
+            if law_num == 2 and len(sel_traits_now) == 1:
+                epi_trait = next(iter(sel_traits_now))
+                epi = (res.get("epistasis") or {}).get(epi_trait)
+                if epi and epi.get("discovered"):
+                    flag = f"epistasis_{epi_trait}_ever_discovered"
+                    if not getattr(app, flag, False):
+                        setattr(app, flag, True)
+                        setattr(app, f"epistasis_{epi_trait}_first_plant", pid)
+                    try:
+                        app._toast(f"{epi['law_name']} unlocked! ({epi['ratio_str']})", level="info")
+                    except Exception:
+                        pass
+                    trait_label = dict((k, lbl) for k, lbl, *_ in self.TRAITS).get(epi_trait, epi_trait)
+                    self._show_result(True,
+                        f"{epi['law_name']} discovered!\n\n"
+                        f"{trait_label.replace(chr(10), ' ')} is controlled by two separate "
+                        f"genes here, not one — this cross shows both still segregating, "
+                        f"producing the {epi['ratio_str']} ratio characteristic of this kind "
+                        f"of gene interaction, first described by Bateson and Punnett (not one "
+                        f"of Mendel's own three laws, which this test's other traits still "
+                        f"demonstrate).\n\n"
+                        f"Source: Feng et al., \"Genomic and genetic insights into Mendel's "
+                        f"pea genes,\" Nature (2025).")
+                    return
+
             pod_note = res.get("pod_shape_note")
             if pod_note and "pod_shape" in sel_traits_now:
                 self._show_result(False, pod_note)

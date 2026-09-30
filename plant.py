@@ -138,6 +138,11 @@ class Plant:
     # damage is amplified — plant will die before January.
     late_season_stress: bool = False
 
+    # Purely cosmetic: decided once at planting so the garden grid looks less
+    # uniform. When True, this plant's icon is mirrored horizontally at every
+    # growth stage for its entire life.
+    flipped_horizontally: bool = False
+
     # Class-level icon cache (lazy-loaded)
     _ICONS = None
 
@@ -163,6 +168,12 @@ class Plant:
             min_age, max_age = settings["max_age_range"]
             self.max_age_days = random.randint(min_age, max_age)
         
+        # Roll a one-time cosmetic horizontal flip so the garden grid doesn't
+        # look like a repeated, uniform pattern. Decided once here and never
+        # re-rolled, so it stays consistent across every growth stage.
+        if not getattr(self, "flipped_horizontally", False):
+            self.flipped_horizontally = (random.random() < 0.5)
+
         # Roll weak-plant status based on difficulty (only if not already set)
         # Probabilities follow Mendel's own observation that a noticeable minority
         # of plants were too weak to give reliable results.

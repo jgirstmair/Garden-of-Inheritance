@@ -475,6 +475,44 @@ def safe_image(file_path: str):
         return img
 
 
+def safe_image_maybe_flipped(file_path: str, flip: bool = False):
+    """
+    Load an image safely with caching, optionally mirrored horizontally.
+
+    Used to give individual plants a persistent left/right-flipped look
+    (decided once per plant) so the garden grid reads as less uniform.
+
+    Args:
+        file_path: Path to image file
+        flip: If True, returns the image mirrored left-to-right
+
+    Returns:
+        PhotoImage instance (or placeholder if loading fails)
+    """
+    if not flip:
+        return safe_image(file_path)
+
+    cache_key = ("file_flipped", file_path)
+
+    if cache_key in _image_cache:
+        return _image_cache[cache_key]
+
+    try:
+        if file_path and cached_path_exists(file_path):
+            pil = Image.open(file_path).convert("RGBA")
+            pil = pil.transpose(Image.FLIP_LEFT_RIGHT)
+            img = ImageTk.PhotoImage(pil)
+        else:
+            img = placeholder_image()
+
+        _image_cache[cache_key] = img
+        return img
+    except Exception:
+        img = placeholder_image()
+        _image_cache[cache_key] = img
+        return img
+
+
 def safe_image_scaled(file_path: str, sx=2, sy=2):
     """
     Load and scale an image with caching.

@@ -160,18 +160,26 @@ def _init_sound_system():
         pass
 
 
-def _play_on_channel(snd, volume, fade_ms):
+def _play_on_channel(snd, volume, fade_ms, loops=-1):
     """
-    Starts `snd` looping indefinitely on a freshly claimed channel, with
-    `volume` (0.0-1.0) applied to the channel BEFORE playback starts —
-    unlike calling .play(fade_ms=...) directly on the Sound object,
-    this means fade_ms fades in toward the actual target volume rather
-    than toward full volume (fade_ms fades from 0 up to whatever the
-    channel's current volume is set to, so that has to be set first).
+    Starts `snd` on a freshly claimed channel, with `volume` (0.0-1.0)
+    applied to the channel BEFORE playback starts — unlike calling
+    .play(fade_ms=...) directly on the Sound object, this means fade_ms
+    fades in toward the actual target volume rather than toward full
+    volume (fade_ms fades from 0 up to whatever the channel's current
+    volume is set to, so that has to be set first).
     Used for the looping tracks (bgm, rain) where getting the target
     volume right matters; the one-shot _play_sound() below sets volume
     directly on the Sound instead, which is simpler and fine for
     something that isn't fading.
+
+    loops=-1 (default) repeats the same Sound forever — used for rain
+    and winter.ogg, which have no reason to ever change mid-play.
+    loops=0 (used for the main theme specifically) plays through once;
+    _check_bgm_track_complete() below detects when it naturally ends
+    and picks a fresh random maintheme*.ogg variant to follow it,
+    rather than looping the same file forever.
+
     Returns the Channel, or None if none was available or on failure.
     """
     try:
@@ -179,7 +187,7 @@ def _play_on_channel(snd, volume, fade_ms):
         if channel is None:
             return None
         channel.set_volume(max(0.0, min(1.0, volume)))
-        channel.play(snd, loops=-1, fade_ms=fade_ms)
+        channel.play(snd, loops=loops, fade_ms=fade_ms)
         return channel
     except Exception:
         return None
@@ -376,19 +384,27 @@ def _pick_random_sound_variant(pattern):
 
 def _start_bgm():
     """
-    Starts a main theme track looping, called once from
-    GardenApp.__init__ right after _init_sound_system() succeeds. Short
-    fade-in (1s) so it doesn't blast in at full volume the instant the
-    window opens. Does nothing if music is muted (persisted setting) —
-    _bgm_current stays None, so _update_bgm's own transition check
-    naturally starts it the moment music gets re-enabled, no
-    special-casing needed here.
+    Starts a main theme track — called from _resume_bgm() the first
+    time the simulation becomes active (not unconditionally at app
+    launch anymore; see _toggle_run()). Short fade-in (1s) so it
+    doesn't blast in at full volume the instant it begins. Does nothing
+    if music is muted (persisted setting) — _bgm_current stays None, so
+    _update_bgm's own transition check naturally starts it the moment
+    music gets re-enabled, no special-casing needed here.
 
     Picks randomly among every "maintheme*.ogg" file present in
     SOUNDS_DIR — several variants (maintheme_0.ogg, maintheme_1.ogg,
     ...) can sit side by side rather than needing everything crammed
     into one file named exactly "maintheme.ogg" (a single plain
     maintheme.ogg still matches the pattern fine on its own, too).
+
+    Plays with loops=0 (once through), not loops=-1 — with several
+    variants available, looping the SAME chosen file forever meant a
+    session that never hit a winter transition would hear one single
+    track on repeat the entire time, no matter how many variants
+    existed. _check_bgm_track_complete() (hooked into render_all's
+    polling, same as the rain/season checks) detects when this track
+    naturally finishes and picks a fresh random one to follow it.
     """
     global _bgm_channel, _bgm_current, _bgm_current_filename, _bgm_seg_start_wall, _bgm_seg_start_progress
     if not _mixer_ready or not _music_enabled:
@@ -401,8 +417,94 @@ def _start_bgm():
         if snd is None:
             snd = pygame.mixer.Sound(path)
             _sound_cache[key] = snd
-        _bgm_channel = _play_on_channel(snd, _music_volume, 1000)
+        _bgm_channel = _play_on_channel(snd, _music_volume, 1000, loops=0)
         _bgm_current = "main"
+        _bgm_current_filename = key
+        _bgm_seg_start_wall = time.time()
+        _bgm_seg_start_progress = 0.0
+    except Exception:
+        pass
+
+
+_bgm_paused = False
+
+
+def _resume_bgm():
+    """
+    Called from _toggle_run() whenever the simulation becomes active
+    (initial start, or an explicit unpause) — starts background music
+    for the first time if nothing has played yet this session
+    (_bgm_current is None), or un-pauses the existing channel exactly
+    where it left off if the sim was paused earlier. pygame's own
+    Channel.pause()/.unpause() preserve playback position natively, so
+    this is simpler than the array-rotation trick Fast Forward's speed
+    swap needed — there the SPEED itself changes, requiring a different
+    Sound entirely; here it's the same Sound, just suspended and
+    resumed, which pygame already handles correctly on its own.
+    """
+    global _bgm_paused
+    if not _mixer_ready or not _music_enabled:
+        return
+    try:
+        if _bgm_current is None:
+            _start_bgm()
+        elif _bgm_paused and _bgm_channel is not None:
+            _bgm_channel.unpause()
+        _bgm_paused = False
+    except Exception:
+        pass
+
+
+def _pause_bgm():
+    """Called from _toggle_run() whenever the simulation is paused —
+    suspends background music (not rain; scoped to background music
+    specifically, matching what was actually asked for) in place so
+    _resume_bgm() can continue it from the exact same position."""
+    global _bgm_paused
+    if not _mixer_ready or _bgm_channel is None:
+        return
+    try:
+        _bgm_channel.pause()
+        _bgm_paused = True
+    except Exception:
+        pass
+
+
+def _check_bgm_track_complete():
+    """
+    Called every render_all() (same polling pattern as
+    _update_rain_sound/_update_bgm — there's no single "track finished"
+    event to hook, so checking regularly and acting only when it
+    genuinely has is simpler and more robust). Only relevant for the
+    main theme category: it plays with loops=0 specifically so this
+    function gets a chance to pick a NEW random maintheme*.ogg variant
+    each time the current one naturally finishes, rather than the same
+    chosen file looping forever for the whole session (winter.ogg has
+    no variants to rotate through, so it's left on its own loops=-1 and
+    never reaches this path).
+
+    get_busy() returns True for a paused channel too, not just a
+    playing one — so this can't mistake "paused" for "finished", no
+    separate check against _bgm_paused needed.
+    """
+    global _bgm_channel, _bgm_current_filename, _bgm_seg_start_wall, _bgm_seg_start_progress
+    if not _mixer_ready or not _music_enabled or _bgm_current != "main":
+        return
+    if _bgm_channel is None:
+        return
+    try:
+        if _bgm_channel.get_busy():
+            return  # still playing (or paused) — nothing to do yet
+        path, key = _pick_random_sound_variant("maintheme*.ogg")
+        if path is None:
+            return
+        snd = _get_fast_sound(key) if _bgm_is_fast else None
+        if snd is None:
+            snd = _sound_cache.get(key)
+            if snd is None:
+                snd = pygame.mixer.Sound(path)
+                _sound_cache[key] = snd
+        _bgm_channel = _play_on_channel(snd, _music_volume, 500, loops=0)
         _bgm_current_filename = key
         _bgm_seg_start_wall = time.time()
         _bgm_seg_start_progress = 0.0
@@ -477,7 +579,12 @@ def _update_bgm(is_winter):
                 snd = pygame.mixer.Sound(path)
                 _sound_cache[filename] = snd
         old_channel = _bgm_channel
-        _bgm_channel = _play_on_channel(snd, _music_volume, 3000)
+        # loops=0 for main (see _start_bgm's docstring — lets
+        # _check_bgm_track_complete pick a fresh variant each time it
+        # finishes); winter.ogg has no variants to rotate through, so
+        # it just loops the one file indefinitely as before.
+        _bgm_channel = _play_on_channel(snd, _music_volume, 3000,
+                                        loops=(0 if target == "main" else -1))
         _bgm_current = target
         _bgm_current_filename = filename
         _bgm_seg_start_wall = time.time()
@@ -525,7 +632,7 @@ def _set_music_enabled(enabled):
     calls self.render_all() right after toggling this, so that "next
     time" is immediate rather than waiting on the sim loop.
     """
-    global _music_enabled
+    global _music_enabled, _bgm_paused
     _music_enabled = bool(enabled)
     _save_audio_setting("music_enabled", _music_enabled)
     if not _mixer_ready:
@@ -534,6 +641,7 @@ def _set_music_enabled(enabled):
         _update_bgm(False)  # is_winter arg irrelevant here — this call
         _update_rain_sound(False)  # is_raining arg irrelevant here too;
         # both just need _music_enabled=False to take their stop branch.
+        _bgm_paused = False
 
 
 def _set_sfx_volume(v):
@@ -740,7 +848,31 @@ def _set_bgm_fast_forward(is_fast):
             return  # couldn't produce the target version — stay as-is
         if _bgm_channel is not None:
             _bgm_channel.stop()
-        _bgm_channel = _play_on_channel(snd, _music_volume, 0)
+        # Same loops=0-for-main / loops=-1-for-winter split as
+        # _start_bgm/_update_bgm — the rotated (or fallback) Sound here
+        # is still "one full pass" of the track, just reordered to
+        # resume where playback was; when this pass ends,
+        # _check_bgm_track_complete picks a fresh variant to follow it,
+        # same as it would for a normal, non-FF main-theme track finishing.
+        _bgm_channel = _play_on_channel(snd, _music_volume, 0,
+                                        loops=(0 if _bgm_current == "main" else -1))
+        # If music was paused before this swap (e.g. the sim was already
+        # paused when FF started, or FF started while paused and is now
+        # ending back into that same paused state), the freshly-started
+        # channel above is playing by default — pause it immediately so
+        # the swap doesn't silently un-pause music the player never
+        # asked to resume. Without this, starting FF while paused (or
+        # ending FF back into a still-paused sim) would leave music
+        # audibly playing despite the game staying visibly paused
+        # throughout, since _toggle_run()'s own _pause_bgm() only fires
+        # on an actual pause/unpause action — not on FF's start/end,
+        # which don't change self.running at all when it was already
+        # False the whole time.
+        if _bgm_paused and _bgm_channel is not None:
+            try:
+                _bgm_channel.pause()
+            except Exception:
+                pass
         _bgm_is_fast = is_fast
         _bgm_seg_start_wall = time.time()
         _bgm_seg_start_progress = progress_secs
@@ -1179,6 +1311,7 @@ SEEDS_CSV = os.path.join(ICONS_DIR, "seeds.csv")  # keep next to icons for conve
 TRAITS_CSV = os.path.join(ROOT_DIR, "traits_export.csv")  # export of selected plant traits
 SOUNDS_DIR = os.path.join(ROOT_DIR, "sounds")  # e.g. sounds/harvest.ogg — sits next to icons/
 os.makedirs(SOUNDS_DIR, exist_ok=True)
+os.makedirs(os.path.join(ICONS_DIR, "weather"), exist_ok=True)  # e.g. icons/weather/sunny.png
 
 
 class _FlatIconButton(tk.Label):
@@ -1972,6 +2105,67 @@ class GardenApp:
             justify="left", anchor="w", wraplength=460,
         ).pack(side="left", fill="x", expand=True)
         return row
+
+    # Emoji → icon filename, looked for under icons/weather/. Any symbol
+    # missing a file here (or with no file present yet at all) falls
+    # back to showing the plain emoji character instead — see
+    # _get_weather_icon's docstring.
+    _WEATHER_ICON_FILES = {
+        "☀️": "sunny.png",
+        "⛅": "partly_cloudy.png",
+        "☁️": "cloudy.png",
+        "🌧": "rain.png",
+        "⛈": "thunderstorm.png",
+        "❄️": "snow.png",
+        # Nighttime: garden.py's _night_icon_adjust collapses BOTH ☀️
+        # (clear) and ⛅ (partly cloudy) down to this single 🌙 symbol
+        # after dark — there's no separate "clear night" vs "cloudy
+        # night" distinction in the underlying weather value itself,
+        # just the one moon icon covering both daytime conditions.
+        # ☁️/🌧/⛈/❄️ are left as-is at night (not adjusted at all), so
+        # those four rows above already cover their night appearance
+        # too — this is the only additional entry night actually needs.
+        "🌙": "moon.png",
+    }
+
+    def _get_weather_icon(self, wx):
+        """
+        Returns a cached PhotoImage for the current weather symbol `wx`,
+        loaded from icons/weather/<name>.png and displayed at their own
+        native 64x64 size — this game's existing convention for hi-res
+        icons elsewhere (many source files are literally suffixed
+        "_64x64") — rather than shrunk to match the left-sidebar action
+        buttons' smaller icon size, which read as too small for how
+        prominent the weather symbol is in the header. Returns None if
+        no matching file exists yet (caller falls back to the plain
+        emoji character in that case, so a missing icon file is never a
+        hard requirement, just a nicer option once supplied).
+        """
+        cache = getattr(self, '_weather_icon_cache', None)
+        if cache is None:
+            cache = {}
+            self._weather_icon_cache = cache
+        if wx in cache:
+            return cache[wx]
+
+        filename = self._WEATHER_ICON_FILES.get(wx)
+        if not filename:
+            cache[wx] = None
+            return None
+        path = os.path.join(ICONS_DIR, "weather", filename)
+        if not cached_path_exists(path):
+            cache[wx] = None
+            return None
+
+        try:
+            pil_img = Image.open(path).convert("RGBA")
+            pil_img = pil_img.resize((64, 64), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(pil_img)
+            cache[wx] = photo
+            return photo
+        except Exception:
+            cache[wx] = None
+            return None
 
     def _greyscale_icon_from_path(self, path, sx=1, sy=1, fade_to_bg=None, opacity=1.0):
         """
@@ -3653,6 +3847,24 @@ class GardenApp:
 
         target_L = self._compute_light_factor(d, smooth_hour)
 
+        # FF-specific override: force full daylight brightness instead of
+        # the real, time-varying value — recomputing this on every FF
+        # render call is itself some cost, but more to the point, watching
+        # lighting flicker rapidly through many simulated hours/days at
+        # once (each FF render call can land on a different time of day)
+        # reads as visual noise rather than anything meaningful. Season
+        # detection, texture cache-busting, and tile texture application
+        # below are UNCHANGED by this — only the light LEVEL itself is
+        # pinned, so snow/season textures etc. still update correctly
+        # during FF regardless of this setting. Weather-based darkening
+        # (rain capping brightness, further down) still applies on top of
+        # this — that's a weather effect, not part of the day/night cycle
+        # this setting is specifically about.
+        if (getattr(self, "fast_forward", False)
+                and bool(getattr(self, "ff_disable_daynight", None) is not None
+                         and self.ff_disable_daynight.get())):
+            target_L = 1.0
+
         # ── Velocity safety net ────────────────────────────────────────────────
         # The fractional hour already gives a smooth target, but we keep a
         # lightweight velocity clamp so that big jumps (load-game, time skip,
@@ -3812,10 +4024,12 @@ class GardenApp:
             is_late = getattr(plant, "late_season_stress", False)
             # Tint late-season plants only once health drops below 80
             needs_tint = is_weak or (is_late and getattr(plant, "health", 100) < 80)
+            # Decided once per plant at creation; consistent across all growth stages
+            is_flipped = bool(getattr(plant, "flipped_horizontally", False))
 
             # Bucket health so cache refreshes as tint deepens, without every frame
             key = (icon_path, int(getattr(plant, "stage", -1)),
-                   is_weak, is_late, getattr(plant, "health", 100) // 20)
+                   is_weak, is_late, getattr(plant, "health", 100) // 20, is_flipped)
 
             # Cache hit — checked BEFORE the filesystem fallback
             # validation below (an os.path.exists() call), which used to
@@ -3843,13 +4057,15 @@ class GardenApp:
                     # cached under the wrong key and never actually hit
                     # next time.
                     key = (icon_path, int(getattr(plant, "stage", -1)),
-                           is_weak, is_late, getattr(plant, "health", 100) // 20)
+                           is_weak, is_late, getattr(plant, "health", 100) // 20, is_flipped)
                 else:
                     return
 
             if needs_tint:
                 try:
                     pil = Image.open(icon_path).convert("RGBA")
+                    if is_flipped:
+                        pil = pil.transpose(Image.FLIP_LEFT_RIGHT)
                     r, g, b, a = pil.split()
                     if is_late and not is_weak:
                         # Progressive tint: subtle at health 79, full amber at 0
@@ -3870,7 +4086,7 @@ class GardenApp:
                 except Exception:
                     pass  # fall through to normal loading
 
-            img = safe_image(icon_path)
+            img = safe_image_maybe_flipped(icon_path, is_flipped)
             if img is None:
                 return
 
@@ -3890,7 +4106,15 @@ class GardenApp:
         self.garden._app = self  # Give garden access to app for difficulty settings
         self.inventory = Inventory()
         _init_sound_system()
-        _start_bgm()
+        # Music no longer starts unconditionally right here at app
+        # launch — see _toggle_run(), which now starts/pauses/resumes
+        # background music in step with the simulation's own running
+        # state instead. self.running below still defaults to True (the
+        # sim starts active, not paused), so music still begins close to
+        # launch in practice — but it's now driven by the SAME running-
+        # state logic pause uses, so pausing correctly silences it and
+        # unpausing resumes it (not a restart — pygame's pause/unpause
+        # preserves the exact playback position, unlike stop()+replay).
         # click.ogg for every standard tk.Button/ttk.Button in the app —
         # bind_class applies to the WIDGET CLASS itself (every button
         # that exists now or gets created later), not just one instance,
@@ -3974,13 +4198,29 @@ class GardenApp:
         # visible lighting flips from "looks frozen at one point in the
         # day" (daily) to "visibly cycles through times of day" (hourly
         # interval) despite nothing else about FF changing.
-        self.ff_render_daily = tk.BooleanVar(value=True)
+        self.ff_render_daily = tk.BooleanVar(value=False)
         # Interval only actually applies once "daily render" is turned
-        # off (see ff_render_daily above) — defaults to 1, the most
-        # frequent/slowest setting, since someone unchecking daily
-        # presumably wants the finer-grained option, not the coarsest
-        # one just short of daily itself.
-        self.ff_render_interval = tk.IntVar(value=1)
+        # off (see ff_render_daily above) — defaults to 2, matching the
+        # combination found to work well in practice (a bit more
+        # frequent than pure daily, still much faster than hourly).
+        self.ff_render_interval = tk.IntVar(value=2)
+        # Day/night lighting is expensive to keep recomputing on every
+        # FF render call (see _apply_daynight_to_tiles' own FF-specific
+        # cache-busting) and mostly just distracting to watch flicker
+        # through many simulated days at once — off by default during
+        # FF specifically (normal, non-FF play is unaffected either
+        # way; this only gates the FF case). Checkbox in the Fast
+        # Forward Rendering dialog lets a player opt back into seeing
+        # it update during FF if they want to.
+        self.ff_disable_daynight = tk.BooleanVar(value=True)
+        # Auto-adjust: when on, overrides the manual daily/interval
+        # choice above based on how many days THIS SPECIFIC FF run was
+        # actually asked to cover — >7 days uses daily-once rendering
+        # (fastest, since a long run rendering every couple hours would
+        # be needlessly slow), 7 or fewer uses the manual interval
+        # setting instead (fine-grained enough to actually be worth
+        # watching for a short run). On by default.
+        self.ff_render_auto = tk.BooleanVar(value=True)
 
         # --- multi-selection state for drag selection ---
         self.multi_selected_indices = set()
@@ -4034,6 +4274,18 @@ class GardenApp:
         self.day_length_s = 1.0  # default: 1 real second = 1 simulated hour
         self._recalc_timers()
         self.subphase_counter = 0
+        # Simulation starts active (self.running defaults to True, not
+        # paused) — background music starting here, right alongside
+        # that default, keeps it driven by the exact same "is the sim
+        # running" logic _toggle_run() uses for every later pause/
+        # unpause, rather than an unconditional call at a different,
+        # earlier point in __init__ with no relationship to running
+        # state at all (which is what this replaced).
+        try:
+            if self.running:
+                _resume_bgm()
+        except Exception:
+            pass
 
         self.grid_bg = "#eeeeee"
         self.grid_bg = getattr(self, "grid_bg", "#eeeeee")
@@ -4550,6 +4802,31 @@ class GardenApp:
         frm = tk.Frame(win, padx=20, pady=20)
         frm.pack(fill="both", expand=True)
 
+        auto_var = tk.BooleanVar(value=bool(self.ff_render_auto.get()))
+
+        def on_control_change(*_a):
+            # Auto mode overrides the manual choice below entirely, so
+            # both the daily checkbox and the interval spinner grey out
+            # together while it's on — same "greyed out, not just a
+            # text note" treatment the daily/interval pair already gets
+            # relative to each other.
+            if auto_var.get():
+                cb.configure(state="disabled")
+                interval_spin.configure(state="disabled")
+            else:
+                cb.configure(state="normal")
+                interval_spin.configure(state=("disabled" if daily_var.get() else "normal"))
+
+        tk.Checkbutton(
+            frm,
+            text="Auto-adjust: daily rendering for FF runs over 7\ndays, the manual setting below for 7 or fewer",
+            variable=auto_var,
+            command=on_control_change,
+            font=("Segoe UI", 12),
+            anchor="w",
+            justify="left",
+        ).pack(anchor="w", pady=(0, 14))
+
         daily_var = tk.BooleanVar(value=bool(self.ff_render_daily.get()))
 
         def on_daily_toggle(*_a):
@@ -4587,18 +4864,31 @@ class GardenApp:
         # settings that combine" relationship is visible at a glance
         # rather than something you'd only learn from reading the small
         # italic line below.
-        on_daily_toggle()
+        on_control_change()
 
         tk.Label(
             frm,
-            text="(The hour interval above is ignored while the\nonce-per-day option is checked.)",
+            text="(The hour interval above is ignored while the\nonce-per-day option is checked, or while\nauto-adjust is on.)",
             font=("Segoe UI", 10, "italic"),
             anchor="w",
             justify="left",
             fg="#888",
         ).pack(anchor="w", pady=(0, 16))
 
+        daynight_off_var = tk.BooleanVar(value=bool(self.ff_disable_daynight.get()))
+        tk.Checkbutton(
+            frm,
+            text="Disable day/night lighting during Fast Forward",
+            variable=daynight_off_var,
+            font=("Segoe UI", 12),
+            anchor="w"
+        ).pack(anchor="w", pady=(0, 16))
+
         def on_apply():
+            try:
+                self.ff_render_auto.set(bool(auto_var.get()))
+            except Exception:
+                self.ff_render_auto = tk.BooleanVar(value=bool(auto_var.get()))
             try:
                 self.ff_render_daily.set(bool(daily_var.get()))
             except Exception:
@@ -4615,6 +4905,10 @@ class GardenApp:
                 self.ff_render_interval.set(interval)
             except Exception:
                 self.ff_render_interval = tk.IntVar(value=interval)
+            try:
+                self.ff_disable_daynight.set(bool(daynight_off_var.get()))
+            except Exception:
+                self.ff_disable_daynight = tk.BooleanVar(value=bool(daynight_off_var.get()))
             try:
                 win.destroy()
             except Exception:
@@ -5836,25 +6130,45 @@ class GardenApp:
             # style's padx/pady were deliberately increased (16/10).
             padx = self.button_style.get("padx", 16)
             pady = self.button_style.get("pady", 10)
-            try:
-                img = tk.PhotoImage(file=os.path.join(ICONS_DIR, icon_name))
-                btn = _FlatIconButton(
-                    parent,
-                    text=text,
-                    image=img,
-                    compound="left",
-                    command=command,
-                    bg=self.grid_bg,
-                    fg="black",
-                    hover_bg="#DDDDDD",
-                    disabled_bg=self.grid_bg,
-                    font=font,
-                    padx=padx,
-                    pady=pady,
-                )
-                btn.image = img
-            except Exception as e:
-                print(f"⚠ Could not load icon {icon_name}: {e}")
+            icon_path = os.path.join(ICONS_DIR, icon_name)
+            # A simply-missing icon (an optional asset that hasn't been
+            # added yet, e.g. monastery.png) isn't worth a console warning
+            # every startup — the button falls back to text-only either
+            # way. Only genuinely unexpected load failures (file present
+            # but corrupt/unreadable) get logged.
+            if cached_path_exists(icon_path):
+                try:
+                    img = tk.PhotoImage(file=icon_path)
+                    btn = _FlatIconButton(
+                        parent,
+                        text=text,
+                        image=img,
+                        compound="left",
+                        command=command,
+                        bg=self.grid_bg,
+                        fg="black",
+                        hover_bg="#DDDDDD",
+                        disabled_bg=self.grid_bg,
+                        font=font,
+                        padx=padx,
+                        pady=pady,
+                    )
+                    btn.image = img
+                except Exception as e:
+                    print(f"⚠ Could not load icon {icon_name}: {e}")
+                    btn = _FlatIconButton(
+                        parent,
+                        text=text,
+                        command=command,
+                        bg=self.grid_bg,
+                        fg="black",
+                        hover_bg="#DDDDDD",
+                        disabled_bg=self.grid_bg,
+                        font=font,
+                        padx=padx,
+                        pady=pady,
+                    )
+            else:
                 btn = _FlatIconButton(
                     parent,
                     text=text,
@@ -5871,6 +6185,14 @@ class GardenApp:
             btn.pack(anchor="nw", pady=2, fill="x")
             return btn
 
+        self.monastery_btn = make_icon_button(self.left_actions, "Monastery (Map)", "monastery.png", self._open_monastery_popup)
+        # Centered rather than left-aligned like the plant-action buttons
+        # above it — it's a navigation button, not an action on the
+        # currently selected plant, so it reads better set apart.
+        try:
+            self.monastery_btn.configure(anchor="center")
+        except Exception:
+            pass
         self.water_btn     = make_icon_button(self.left_actions, "Water",         "can.png",       self._on_water_selected)
         self.inspect_btn = make_icon_button(
             self.left_actions,
@@ -5911,9 +6233,35 @@ class GardenApp:
         right_panel = tk.Frame(self.content, bg=self.grid_bg)
         right_panel.pack(side="left", fill="both", expand=True, padx=(8, 0))
 
-        # Date/Time/Weather/Temp at the TOP of right panel (its own line)
-        self.phase_label = tk.Label(right_panel, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
-        self.phase_label.pack(fill="x", pady=(4, 8))
+        # Date/Time/Weather/Temp at the TOP of right panel (its own line).
+        # Three widgets instead of one label — phase_label_pre (date/
+        # clock text), weather_icon_label (an actual icon image instead
+        # of the emoji, see _get_weather_icon), phase_label_post (temp
+        # text) — a single Label can only show text OR an image, never
+        # both inline, so the emoji-in-the-middle-of-a-string approach
+        # this used to be couldn't become an icon without this split.
+        # phase_row is what actually gets packed/centered; the three
+        # children just pack left-to-right inside it, sized to fit,
+        # then the whole row is centered as one unit — same centered
+        # look the original single label had.
+        phase_row = tk.Frame(right_panel, bg=self.grid_bg)
+        phase_row.pack(fill="x", pady=(4, 8))
+        self.phase_label_pre = tk.Label(phase_row, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
+        self.phase_label_pre.pack(side="left", anchor="center")
+        self.weather_icon_label = tk.Label(phase_row, image=None, bg=self.grid_bg)
+        self.weather_icon_label.pack(side="left", anchor="center", padx=(8, 8))
+        self.phase_label_post = tk.Label(phase_row, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
+        self.phase_label_post.pack(side="left", anchor="center")
+        # phase_row itself needs centering within right_panel, same as
+        # the single label's default centered text used to read.
+        phase_row.pack_configure(anchor="center")
+        # Kept as an alias so any other code that still refers to
+        # self.phase_label directly (there was only the one call site
+        # building its text, now split across _pre/_post, but this
+        # covers anything else that might read .cget("text") etc.)
+        # doesn't break outright — points at the same Frame, not a
+        # functioning single label.
+        self.phase_label = phase_row
 
         # Push the Mendel portrait (left panel) down to align with the
         # status message bar below, rather than the date/time bar above it
@@ -6495,7 +6843,17 @@ class GardenApp:
         except Exception:
             pass
 
-        # 🌗 Apply day/night only if enabled
+        try:
+            _check_bgm_track_complete()
+        except Exception:
+            pass
+
+        # 🌗 Apply day/night — always runs (texture/season cache logic
+        # inside _apply_daynight_to_tiles must keep working regardless
+        # of FF); the FF-specific "disable" preference instead forces a
+        # constant, neutral light level from inside that function (see
+        # its own _skip_daynight_for_ff check) rather than skipping the
+        # whole call, so season/texture updates during FF are unaffected.
         if getattr(self, "enable_daynight", True):
             try:
                 self._apply_daynight_to_tiles()
@@ -6542,7 +6900,25 @@ class GardenApp:
             wx  = getattr(self.garden, 'weather', '')
             tmp = f"{getattr(self.garden, 'temp', 0.0):.1f}°C" if hasattr(self.garden, 'temp') else ''
             clock = f"{int(hh):02d}:{int(mm):02d}"
-            self.phase_label.configure(text=f"{dom} {mon} {yr} — {clock} — {wx} {tmp}")
+            self.phase_label_pre.configure(text=f"{dom} {mon} {yr} — {clock} —")
+            self.phase_label_post.configure(text=tmp)
+            # Only touch the icon widget when weather actually changed —
+            # this runs on every render_all(), and re-loading/re-
+            # configuring an image every single call would be pure waste
+            # when it's still the same weather as last time.
+            if wx != getattr(self, '_last_weather_icon_wx', None):
+                self._last_weather_icon_wx = wx
+                icon = self._get_weather_icon(wx)
+                if icon is not None:
+                    self.weather_icon_label.configure(image=icon, text="")
+                    self.weather_icon_label.image = icon  # keep a reference
+                else:
+                    # No icon file for this symbol (or none supplied at
+                    # all yet) — fall back to the plain emoji character,
+                    # same as this displayed before icons existed.
+                    self.weather_icon_label.configure(
+                        image="", text=wx, font=("Segoe UI", 20, "bold"))
+                    self.weather_icon_label.image = None
             try:
                 # Season overlay info suppressed from status bar to avoid permanent message
                 # (kept available via self._season_mode for other UI components if needed)
@@ -9322,7 +9698,7 @@ class GardenApp:
 
         plantable_tiles = [t for t in self.selected_tiles if t.is_free_for_planting()]
 
-        menu = tk.Menu(self.root, tearoff=False)
+        menu = tk.Menu(self.root, tearoff=False, font=("Segoe UI", 12))
 
         if len(plantable_tiles) > 0:
             # Mirror empty-tile actions
@@ -9333,7 +9709,7 @@ class GardenApp:
             )
 
             # ▼ define and fill the submenu *before* using it
-            area_menu = tk.Menu(menu, tearoff=False)
+            area_menu = tk.Menu(menu, tearoff=False, font=("Segoe UI", 12))
             for kind, src, donor, count, label, match_fn in (self._get_seed_groups() or []):
                 area_menu.add_command(
                     label=label,
@@ -9530,7 +9906,7 @@ class GardenApp:
         """
         wrap = tk.Frame(parent, bg=self.grid_bg)
         wrap.pack(side="right", padx=(2, 0))
-        tk.Label(wrap, text="Abbey Garden:", font=self.font_button,
+        tk.Label(wrap, text="Mendel's Garden:", font=self.font_button,
                  bg=self.grid_bg).pack(side="left", padx=(0, 4))
         self._plot_switcher_btns_frame = tk.Frame(wrap, bg=self.grid_bg)
         self._plot_switcher_btns_frame.pack(side="left")
@@ -11078,6 +11454,16 @@ class GardenApp:
         else:
             # When pausing, keep a light heartbeat so UI can still refresh
             self._ensure_auto_loop(delay_ms=getattr(self, 'phase_ms', 600))
+        # Background music tracks the sim's own running state — starts
+        # here the first time the sim becomes active, or resumes from
+        # exactly where it paused; muted here in step with pausing.
+        try:
+            if self.running:
+                _resume_bgm()
+            else:
+                _pause_bgm()
+        except Exception:
+            pass
         # Feedback toast
         try:
             self._toast("Resumed." if self.running else "Paused.")
@@ -11234,7 +11620,16 @@ class GardenApp:
 
             # ---------------- UI refresh logic ----------------
             try:
-                if getattr(self, "ff_render_daily", None) is not None and self.ff_render_daily.get():
+                # Auto-adjust (if on) decides daily-vs-interval based on
+                # how many days THIS run was actually asked to cover,
+                # overriding the manual checkbox entirely — otherwise
+                # fall back to the manual setting exactly as before.
+                if getattr(self, "ff_render_auto", None) is not None and self.ff_render_auto.get():
+                    _use_daily_render = days > 7
+                else:
+                    _use_daily_render = (getattr(self, "ff_render_daily", None) is not None
+                                         and self.ff_render_daily.get())
+                if _use_daily_render:
                     # Daily mode: render once per simulated day
                     if (step + 1) % 24 == 0:
                         _t0 = time.perf_counter()
@@ -11954,7 +12349,224 @@ class GardenApp:
             print(f"[_load_garden_from_file] EXCEPTION: {e!r}")
             logging.error(f"Failed to load garden: {e}", exc_info=True)
             self._silent_showerror("Load Failed", f"Could not load garden:\n{str(e)}")
-    
+
+    # ========================================================================
+    # Monastery hub
+    # ========================================================================
+    # Entry point into a growing set of out-of-garden screens (save/load,
+    # missions, achievements, a tutorial). For now it only shows a seasonal
+    # illustration of St. Thomas Monastery with a clickable "Mendel's
+    # Garden" region that opens the Load Garden dialog.
+
+    def _open_monastery_popup(self):
+        """Open the Monastery hub popup.
+
+        Shows icons/monastery/monastery_<season>.png for the garden's
+        current season (spring/summer/autumn/winter, from
+        self._bg_current_season — the same value tile.py's background
+        textures already use), scaled to 50%, with the current simulator
+        year in the title. Hovering the "Mendel's Garden" polygon shows a
+        legend at the bottom; clicking it opens the Load Garden dialog.
+        """
+        try:
+            season = getattr(self, "_bg_current_season", None) or "spring"
+            if season not in ("spring", "summer", "autumn", "winter"):
+                season = "spring"
+
+            img_path = os.path.join(ICONS_DIR, f"monastery_{season}.png")
+            if not cached_path_exists(img_path):
+                self._toast("Monastery artwork not found.", level="warn")
+                return
+
+            pil_img = Image.open(img_path).convert("RGBA")
+            scale = 0.25
+            disp_w = max(1, int(pil_img.width * scale))
+            disp_h = max(1, int(pil_img.height * scale))
+            pil_scaled = pil_img.resize((disp_w, disp_h), Image.LANCZOS)
+            tk_img = ImageTk.PhotoImage(pil_scaled)
+
+            year = int(getattr(getattr(self, "garden", None), "year", 1856) or 1856)
+
+            win = tk.Toplevel(self.root)
+            win.title("Monastery")
+            win.configure(bg=self.grid_bg)
+            win.resizable(False, False)
+            try:
+                self._force_window_not_maximized(win)
+            except Exception:
+                pass
+
+            tk.Label(
+                win,
+                text=f"St. Thomas Monastery ({year})",
+                font=("Segoe UI", 18, "bold"),
+                bg=self.grid_bg,
+            ).pack(pady=(10, 6))
+
+            canvas = tk.Canvas(win, width=disp_w, height=disp_h,
+                                highlightthickness=0, bg=self.grid_bg)
+            canvas.pack(padx=10, pady=(0, 4))
+            canvas.image = tk_img  # keep reference alive
+            canvas.create_image(0, 0, anchor="nw", image=tk_img)
+
+            legend_var = tk.StringVar(value="")
+            tk.Label(
+                win, textvariable=legend_var,
+                font=("Segoe UI", 12, "italic"),
+                bg=self.grid_bg, fg="#333333",
+                height=1,
+            ).pack(pady=(0, 10))
+
+            # "Mendel's Garden" region — coordinates given in the source
+            # image's full resolution, scaled down to match the 50%
+            # display size above.
+            raw_points = [876, 1809, 1302, 1512, 1584, 1842, 1155, 2124]
+            scaled_points = [p * scale for p in raw_points]
+            poly_id = canvas.create_polygon(
+                *scaled_points, fill="", outline="", width=2,
+            )
+
+            def _on_enter(event=None):
+                legend_var.set("Mendel's Garden")
+                canvas.itemconfig(poly_id, outline="crimson", width=4)
+                canvas.config(cursor="hand2")
+
+            def _on_leave(event=None):
+                legend_var.set("")
+                canvas.itemconfig(poly_id, outline="", width=2)
+                canvas.config(cursor="")
+
+            def _on_click(event=None):
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+                self._open_load_garden_dialog()
+
+            canvas.tag_bind(poly_id, "<Enter>", _on_enter)
+            canvas.tag_bind(poly_id, "<Leave>", _on_leave)
+            canvas.tag_bind(poly_id, "<Button-1>", _on_click)
+
+        except Exception as e:
+            logging.error(f"Failed to open Monastery popup: {e}", exc_info=True)
+            self._toast("Could not open the Monastery.", level="warn")
+
+    def _open_load_garden_dialog(self):
+        """Standalone Load Garden popup.
+
+        Lists the same save files as the File > Load Garden menu
+        (_build_load_menu), but as a clickable list in its own window —
+        used by the Monastery's "Mendel's Garden" click, and reusable
+        anywhere else a load flow is needed outside the menu bar.
+        """
+        data_dir = os.path.join(_PG_BASE_DIR, "data")
+
+        named_saves = []
+        unnamed_saves = []
+        if os.path.exists(data_dir):
+            for filename in os.listdir(data_dir):
+                if filename.startswith("garden_") and filename.endswith(".json"):
+                    filepath = os.path.join(data_dir, filename)
+                    mtime = os.path.getmtime(filepath)
+                    name_part = filename.replace("garden_", "").replace(".json", "")
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            save_data = json.load(f)
+                            stored_name = save_data.get('garden_name')
+                    except Exception:
+                        stored_name = None
+                    if stored_name:
+                        timestamp_str = name_part[-15:] if len(name_part) >= 15 else ""
+                        named_saves.append((stored_name, filename, filepath, mtime, timestamp_str))
+                    else:
+                        unnamed_saves.append((filename, filepath, mtime))
+
+        named_saves.sort(key=lambda x: x[3], reverse=True)
+        unnamed_saves.sort(key=lambda x: x[2], reverse=True)
+
+        win = tk.Toplevel(self.root)
+        win.title("Load Garden")
+        win.configure(bg=self.grid_bg)
+        win.geometry("420x480")
+        try:
+            self._force_window_not_maximized(win)
+        except Exception:
+            pass
+
+        tk.Label(win, text="Load Garden", font=("Segoe UI", 16, "bold"),
+                 bg=self.grid_bg).pack(pady=(10, 6))
+
+        outer = tk.Frame(win, bg=self.grid_bg)
+        outer.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        list_canvas = tk.Canvas(outer, bg=self.grid_bg, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=list_canvas.yview)
+        list_frame = tk.Frame(list_canvas, bg=self.grid_bg)
+
+        list_frame.bind(
+            "<Configure>",
+            lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all")),
+        )
+        list_canvas.create_window((0, 0), window=list_frame, anchor="nw")
+        list_canvas.configure(yscrollcommand=scrollbar.set)
+
+        list_canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        btn_kwargs = dict(
+            bg=self.button_style.get("bg", "#F4F4F4"),
+            hover_bg=self.button_style.get("activebackground", "#E4E4E4"),
+            font=self.button_style.get("font", self.font_button),
+            padx=self.button_style.get("padx", 12),
+            pady=self.button_style.get("pady", 6),
+        )
+
+        def _row(label, filepath):
+            def _do_load():
+                win.destroy()
+                self._load_garden_from_file(filepath)
+            btn = _FlatIconButton(list_frame, text=label, command=_do_load, **btn_kwargs)
+            btn.pack(fill="x", pady=2)
+
+        if not named_saves and not unnamed_saves:
+            tk.Label(list_frame, text="(No save files found)",
+                     font=("Segoe UI", 11, "italic"), fg="#666666",
+                     bg=self.grid_bg).pack(pady=10)
+
+        if named_saves:
+            tk.Label(list_frame, text="Named Gardens", font=("Segoe UI", 12, "bold"),
+                     bg=self.grid_bg).pack(anchor="w", pady=(4, 2))
+            for garden_name, filename, filepath, mtime, timestamp_str in named_saves:
+                try:
+                    if len(timestamp_str) == 15:
+                        date_part = timestamp_str[:8]
+                        time_part = timestamp_str[9:]
+                        display_date = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
+                        display_time = f"{time_part[:2]}:{time_part[2:4]}"
+                        display_name = f"{garden_name} ({display_date} {display_time})"
+                    else:
+                        display_name = garden_name
+                except Exception:
+                    display_name = garden_name
+                _row(display_name, filepath)
+
+        if unnamed_saves:
+            tk.Label(list_frame, text="Recent Autosaves", font=("Segoe UI", 12, "bold"),
+                     bg=self.grid_bg).pack(anchor="w", pady=(10, 2))
+            for filename, filepath, mtime in unnamed_saves:
+                try:
+                    parts = filename.replace("garden_", "").replace(".json", "")
+                    date_part = parts[:8]
+                    time_part = parts[9:]
+                    display_date = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
+                    display_time = f"{time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
+                    display_name = f"{display_date} {display_time}"
+                except Exception:
+                    display_name = filename
+                _row(display_name, filepath)
+
+        _FlatIconButton(win, text="Close", command=win.destroy, **btn_kwargs).pack(pady=(0, 10))
+
     def _serialize_garden_state(self):
         """Serialize the entire garden state to a dictionary."""
         import datetime

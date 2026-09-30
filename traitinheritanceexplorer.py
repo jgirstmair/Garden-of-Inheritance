@@ -337,10 +337,151 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
             "'constricted' if it's fully recessive at EITHER one. In this cross "
             "both genes are still varying, so the expected ratio is closer to "
             "9:7, not 3:1 — that's why it won't demonstrate simple single-gene "
-            "segregation even if the numbers look close to 3:1."
+            "segregation even if the numbers look close to 3:1.\n\n"
+            "Source: Feng et al., \"Genomic and genetic insights into Mendel's "
+            "pea genes,\" Nature (2025)."
         )
 
     revealed = bool(getattr(app, "_genotype_revealed", False))
+
+    # ---- Recognizing the TRUE two-gene epistasis ratio itself ----
+    # _pod_shape_epistasis_note above only ever explains why pod shape
+    # (or flower position, the other two-gene trait — see
+    # phenotype_from_genotype in Garden-of-Inheritance.py) can't
+    # demonstrate Law 1/2/3 when both underlying genes are segregating.
+    # It never actually recognizes or credits the real phenomenon that
+    # IS happening in that case. Historically that's backwards: Mendel's
+    # three laws don't cover epistasis at all — the 9:7 (pod shape,
+    # duplicate recessive epistasis) and 13:3 (flower position, dominant
+    # epistasis) ratios were described later, by Bateson and Punnett —
+    # so this is deliberately its own separate discovery, not folded
+    # into "Law 2", even though the underlying detection mechanics
+    # (family signature from grandparents, counting F2 phenotypes) are
+    # the same shape.
+    #
+    # flower_position's dominance structure is NOT symmetric the way
+    # pod_shape's is (a dominant Fa allele alone always gives axial
+    # regardless of Mfa; but when Fa is recessive, Mfa's own state
+    # decides the outcome) — so unlike pod_shape, this deliberately does
+    # NOT attempt an "effective single locus" reduction for flower
+    # position (getting that asymmetric case right would need separate,
+    # carefully-verified logic of its own). What IS implemented here is
+    # the core, most valuable piece: recognizing the true dihybrid ratio
+    # itself when both genes are genuinely segregating.
+    EPISTASIS_TRAIT_INFO = {
+        "pod_shape": {
+            "loci": ("P", "V"), "dominant_value": "inflated",
+            "expected_frac": 9.0 / 16.0, "ratio_label": "9:7",
+            "law_name": "Complementary Gene Interaction",
+        },
+        "flower_position": {
+            "loci": ("Fa", "Mfa"), "dominant_value": "axial",
+            "expected_frac": 13.0 / 16.0, "ratio_label": "13:3",
+            "law_name": "Dominant Epistasis",
+        },
+    }
+    EPISTASIS_FRAC_TOLERANCE = 0.08   # same-shape tolerance band as LAW2_DOM_FRAC_MIN/MAX's ~±0.07-0.08 around 3:1
+    EPISTASIS_MIN_N = 65              # same as LAW2_MIN_N (defined later in this file, but as a plain int here too)
+
+    def _epistasis_family_signature(parent_snap_, gp_m_, gp_f_, loci):
+        """Like _law2_family_signature, but requires BOTH loci to
+        independently show a heterozygous parent bred from homozygous-
+        opposite grandparents — a genuine double-heterozygous (AaBb)
+        parent at both genes simultaneously, not just one."""
+        sigs = []
+        for locus in loci:
+            sig = _law2_family_signature(parent_snap_, gp_m_, gp_f_, locus)
+            if sig is None:
+                return None
+            sigs.append(sig)
+        return tuple(sigs)
+
+    def _test_epistasis_ratio(trait_key, parent_snap_, gp_m_, gp_f_):
+        """
+        Checks whether this plant's family shows the TRUE two-gene
+        epistasis ratio (9:7 for pod_shape, 13:3 for flower_position) —
+        both underlying genes actually segregating in a genuine double-
+        heterozygous family, with the observed F2 fraction genuinely
+        fitting the trait's own expected ratio (not 3:1).
+
+        Returns (discovered: bool, reason: str, ratio_str: str,
+        law_name: str) — discovered is False (with a plain-language
+        reason) when the family or sample size doesn't qualify yet,
+        never when it's simply the wrong trait for this test.
+        """
+        info = EPISTASIS_TRAIT_INFO.get(trait_key)
+        if info is None or revealed or not (parent_snap_ and gp_m_ and gp_f_):
+            return (False, "", "", "")
+
+        loci = info["loci"]
+        fam_sig = _epistasis_family_signature(parent_snap_, gp_m_, gp_f_, loci)
+        if fam_sig is None:
+            return (False, "Both underlying genes aren't in a clean double-heterozygous family here.", "", "")
+
+        dom_pheno = info["dominant_value"]
+        counts = {"dom": 0, "rec": 0}
+        total = 0
+
+        for _cid2, csnap2 in arch_plants.items():
+            if isinstance(csnap2, dict) and not csnap2.get("alive", True):
+                continue
+            smid2, sfid2 = _parents_from_snapshot(csnap2 if isinstance(csnap2, dict) else {})
+            if smid2 in (None, "", -1) or sfid2 in (None, "", -1):
+                continue
+            pm = _get_arch_snap(smid2)
+            pf = _get_arch_snap(sfid2)
+            if not pm or not pf:
+                continue
+
+            # Both parents must be heterozygous at BOTH loci
+            pgm = _geno_from_snap_law2(pm)
+            pgf = _geno_from_snap_law2(pf)
+            ok = True
+            for locus in loci:
+                pair_m = pgm.get(locus)
+                pair_f = pgf.get(locus)
+                if not (isinstance(pair_m, (list, tuple)) and len(pair_m) >= 2
+                        and isinstance(pair_f, (list, tuple)) and len(pair_f) >= 2):
+                    ok = False
+                    break
+                if len(set(pair_m[:2])) != 2 or len(set(pair_f[:2])) != 2:
+                    ok = False
+                    break
+            if not ok:
+                continue
+
+            gp_m2, gp_f2 = _get_grandparents_for_parent(pm)
+            gp_m3, gp_f3 = _get_grandparents_for_parent(pf)
+            sig_m = _epistasis_family_signature(pm, gp_m2, gp_f2, loci) if (gp_m2 and gp_f2) else None
+            sig_f = _epistasis_family_signature(pf, gp_m3, gp_f3, loci) if (gp_m3 and gp_f3) else None
+            if sig_m != fam_sig or sig_f != fam_sig:
+                continue
+
+            try:
+                ctraits2 = csnap2.get("traits", {}) if isinstance(csnap2, dict) else getattr(csnap2, "traits", {}) or {}
+            except Exception:
+                ctraits2 = {}
+            ph = str(ctraits2.get(trait_key, "")).strip().lower()
+            if not ph:
+                continue
+
+            total += 1
+            if ph == dom_pheno:
+                counts["dom"] += 1
+            else:
+                counts["rec"] += 1
+
+        if total < EPISTASIS_MIN_N:
+            return (False, f"Not enough F2 offspring yet for a reliable test (need {EPISTASIS_MIN_N}+, have {total}).", "", "")
+
+        dom_frac = counts["dom"] / float(total)
+        expected = info["expected_frac"]
+        if abs(dom_frac - expected) <= EPISTASIS_FRAC_TOLERANCE:
+            ratio_str = f"{counts['dom']}:{counts['rec']} (~{info['ratio_label']})"
+            return (True, "", ratio_str, info["law_name"])
+
+        return (False, f"Observed ratio ({counts['dom']}:{counts['rec']}) doesn't fit the expected {info['ratio_label']}.", "", "")
+
 
     law1_discovered = False
     law1_reason = ""
@@ -1015,6 +1156,48 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
     except Exception:
         pod_shape_note = None
 
+    # Epistasis ratio discoveries (9:7 pod shape, 13:3 flower position) —
+    # uses the same "representative F1 parent + grandparents" family
+    # Law 2/3 already established above, since a true dihybrid epistasis
+    # test needs exactly that same double-heterozygous-parent-from-true-
+    # breeding-grandparents shape, just checked at two loci instead of one.
+    epistasis_results = {}
+    try:
+        if not revealed and parent_snap and gp_m and gp_f:
+            for tk in ("pod_shape", "flower_position"):
+                disc, reason, ratio_str, law_name = _test_epistasis_ratio(tk, parent_snap, gp_m, gp_f)
+                epistasis_results[tk] = {
+                    "discovered": disc, "reason": reason,
+                    "ratio_str": ratio_str, "law_name": law_name,
+                }
+    except Exception:
+        epistasis_results = {}
+
+    # Credit newly-discovered epistasis ratios — same "ever discovered"
+    # persistence pattern as law2/law3 above, just under their own flag
+    # names (epistasis_pod_shape_ever_discovered /
+    # epistasis_flower_position_ever_discovered) since these are their
+    # own separate discoveries, not Law 2 or Law 3 themselves.
+    try:
+        if allow_credit:
+            for tk, res in epistasis_results.items():
+                if not res.get("discovered"):
+                    continue
+                flag = f"epistasis_{tk}_ever_discovered"
+                if not getattr(app, flag, False):
+                    setattr(app, flag, True)
+                    setattr(app, f"epistasis_{tk}_first_plant", pid)
+                    new.append(f"epistasis_{tk}")
+                    if toast and hasattr(app, "_toast"):
+                        try:
+                            app._toast(
+                                f"{res['law_name']} discovered from plant #{pid}! "
+                                f"({res['ratio_str']})", level="info")
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
     return {
         "law1": bool(law1_discovered),
         "law2": bool(law2_discovered),
@@ -1039,6 +1222,10 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
         # segregating in this cross (true 9:7 epistasis, not 3:1) — None
         # when not applicable (different trait, or pod shape did qualify).
         "pod_shape_note": pod_shape_note,
+        # trait_key -> {"discovered", "reason", "ratio_str", "law_name"} —
+        # the actual epistasis-ratio discoveries themselves (see above),
+        # for "pod_shape" and "flower_position".
+        "epistasis": epistasis_results,
         # trait_key -> explanation when raw sibling ratio looked right but
         # the true-breeding-lineage requirement is what actually blocked it
         "law2_lineage_notes": law2_lineage_notes,
