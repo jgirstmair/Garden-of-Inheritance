@@ -240,15 +240,15 @@ class MendelianLawWizard(tk.Toplevel):
     def _build_page1(self):
         p = self._page1
 
-        # Page 1 specifically uses its own 1.5x-scaled font sizes rather
+        # Page 1 specifically uses its own 1.35x-scaled font sizes rather
         # than the shared FONT_*/self.FONT constants directly — those
         # are also used on Page 2, which wasn't asked for here, so
         # scaling them at the class level would've enlarged text there
         # too. _make_law_card (below) is only ever called from this one
         # page, so its fonts are scaled the same way, right there.
-        font_title_p1   = (self.FONT_TITLE[0], int(round(self.FONT_TITLE[1] * 1.5)), self.FONT_TITLE[2])
-        font_heading_p1 = (self.FONT_HEADING[0], int(round(self.FONT_HEADING[1] * 1.5)), self.FONT_HEADING[2])
-        font_bold_p1    = (self.FONT_BOLD[0], int(round(self.FONT_BOLD[1] * 1.5)), self.FONT_BOLD[2])
+        font_title_p1   = (self.FONT_TITLE[0], int(round(self.FONT_TITLE[1] * 1.35)), self.FONT_TITLE[2])
+        font_heading_p1 = (self.FONT_HEADING[0], int(round(self.FONT_HEADING[1] * 1.35)), self.FONT_HEADING[2])
+        font_bold_p1    = (self.FONT_BOLD[0], int(round(self.FONT_BOLD[1] * 1.35)), self.FONT_BOLD[2])
 
         # title bar
         hdr = tk.Frame(p, bg=self.ACCENT, pady=10)
@@ -297,10 +297,10 @@ class MendelianLawWizard(tk.Toplevel):
 
     def _make_law_card(self, parent, law):
         """Create a clickable card for one law. Returns the outer frame."""
-        # 1.5x-scaled versions of FONT_HEADING/FONT, same reasoning as
+        # 1.35x-scaled versions of FONT_HEADING/FONT, same reasoning as
         # _build_page1 above (this is only ever called from there).
-        font_heading_p1 = (self.FONT_HEADING[0], int(round(self.FONT_HEADING[1] * 1.5)), self.FONT_HEADING[2])
-        font_body_p1    = (self.FONT[0], int(round(self.FONT[1] * 1.5)))
+        font_heading_p1 = (self.FONT_HEADING[0], int(round(self.FONT_HEADING[1] * 1.35)), self.FONT_HEADING[2])
+        font_body_p1    = (self.FONT[0], int(round(self.FONT[1] * 1.35)))
 
         outer = tk.Frame(parent, bg=self.BG, pady=4)
         outer.pack(fill="x")

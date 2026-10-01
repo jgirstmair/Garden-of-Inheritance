@@ -519,30 +519,37 @@ class Plant:
     def _update_health_from_water(self):
         """Adjust health based on current water level.
 
+        Thresholds are aligned to the same 5-band Soil Moisture legend shown
+        in the in-game Help dialog and used to color the water bar/drop
+        (Dry 0-25, Slightly moist 26-50, Evenly moist 51-75, Soggy 76-90,
+        Waterlogged 91-100), so the visible color always tells you which
+        health regime a tile is in:
+          - Dry / Waterlogged: outright penalty for everyone.
+          - Slightly moist / Soggy: safe for normal plants, but weak plants
+            still decline.
+          - Evenly moist: the only band that regenerates health.
+
         Weak plants suffer ~50% more from stress (any out-of-range water level
         deals 1.5× the normal penalty), consistent with Mendel's note that weak
         specimens produce unreliable results under adverse conditions.
         """
         _weak = getattr(self, "is_weak", False)
 
-        if self.water < 20 or self.water > 95:
+        if self.water <= 25 or self.water > 90:
+            # Dry (0-25) or Waterlogged (91-100)
             penalty = 3 if _weak else 2
             self.health = max(0, self.health - penalty)
-        elif self.water > 85:
-            penalty = 2 if _weak else 1
-            self.health = max(0, self.health - penalty)
-        elif 40 <= self.water <= 70:
+        elif 51 <= self.water <= 75:
+            # Evenly moist (51-75)
             # Senescent, weak, or late-season-stressed plants cannot recover health
             _late = getattr(self, 'late_season_stress', False)
             if not getattr(self, 'senescent', False) and not _weak and not _late:
                 self.health = min(100, self.health + 1)
-        elif 30 <= self.water < 40 or 70 < self.water <= 85:
+        else:
+            # Slightly moist (26-50) or Soggy (76-90)
             if _weak:
                 self.health = max(0, self.health - 1)  # weak plants decline even in neutral band
-        else:
-            penalty = 2 if _weak else 1
-            self.health = max(0, self.health - penalty)
-        
+
         # Death check
         if self.health <= 0:
             self.alive = False

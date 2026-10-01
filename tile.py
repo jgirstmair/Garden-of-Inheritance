@@ -5,6 +5,7 @@ Provides the TileCanvas widget for displaying individual garden plots.
 Each tile shows a plant's icon, health bar, water bar, and status badges.
 """
 
+import math
 import random
 import tkinter as tk
 from plant import Plant
@@ -86,6 +87,83 @@ GREEN = (40, 167, 69)
 
 BLUE_LIGHT = (222, 235, 247)
 BLUE_DARK = (33, 113, 181)
+
+# Soil-moisture band colors — must match the "Soil Moisture Colors" legend
+# in the in-game Help dialog (_show_help in Garden-of-Inheritance.py)
+# exactly, hex for hex. Both the water bar and the water drop icon
+# (update_water, below) use this single lookup, so the two displays and
+# the documented legend can never drift out of sync with each other again.
+WATER_MOISTURE_BANDS = (
+    (25,  "#FFD54F"),   # Dry (0–25)
+    (50,  "#81D4FA"),   # Slightly moist (26–50)
+    (75,  "#42A5F5"),   # Evenly moist (51–75)
+    (90,  "#1565C0"),   # Soggy (76–90)
+    (100, "#003F8C"),   # Waterlogged (91–100)
+)
+
+
+def water_moisture_color(percent):
+    """Hex color for a water percentage, per WATER_MOISTURE_BANDS."""
+    percent = max(0, min(100, percent))
+    for upper, color in WATER_MOISTURE_BANDS:
+        if percent <= upper:
+            return color
+    return WATER_MOISTURE_BANDS[-1][1]
+
+
+# Heart-display colors for the alternate health visualization (Game
+# Settings ▸ "Health: show as hearts"). Filled hearts count down from
+# 4 as health drops below each quarter (<25% -> 1, <50% -> 2, <75% -> 3,
+# else 4); hearts beyond that count stay dim rather than disappearing,
+# so the "out of 4" scale is always visible.
+HEALTH_HEART_FILLED_COLOR = "#e53935"
+HEALTH_HEART_EMPTY_COLOR = "#555555"
+
+
+def health_heart_count(percent):
+    """Number of filled hearts (1-4) for a health percentage."""
+    percent = max(0, min(100, percent))
+    if percent < 25:
+        return 1
+    elif percent < 50:
+        return 2
+    elif percent < 75:
+        return 3
+    else:
+        return 4
+
+
+def _teardrop_points(cx, bulb_cy, r, point_height, gap_half=35, steps=16):
+    """
+    Flat-polygon points for a classic "water drop" shape: a rounded bulb
+    (most of a circle) with a point sticking up out of a gap left at its
+    top. Used by TileCanvas's optional drop-icon water display (Game
+    Settings ▸ Water: show as drop icon) in place of the fill bar.
+
+    Args:
+        cx: horizontal center of the bulb
+        bulb_cy: vertical center of the bulb (the point extends above it)
+        r: bulb radius
+        point_height: how far the point extends above the bulb's top
+        gap_half: half-angle (degrees) of the gap left at the top of the
+            circle for the point to attach into — larger = a wider,
+            stubbier point; smaller = a narrower, sharper one
+        steps: number of segments used to approximate the bulb's arc
+
+    Returns:
+        Flat list [x0, y0, x1, y1, ...] ready for canvas.create_polygon
+    """
+    pts = []
+    start_deg = 90 + gap_half
+    total_sweep = 360 - 2 * gap_half
+    for i in range(steps + 1):
+        deg = start_deg + total_sweep * i / steps
+        rad = math.radians(deg)
+        pts.append(cx + r * math.cos(rad))
+        pts.append(bulb_cy - r * math.sin(rad))
+    pts.append(cx)
+    pts.append(bulb_cy - r - point_height)
+    return pts
 
 
 # ============================================================================
@@ -253,7 +331,41 @@ class TileCanvas(tk.Canvas):
             outline="", width=0,
             tags="water_items"
         )
-    
+
+        self._create_water_drop()
+
+    def _create_water_drop(self):
+        """
+        Create the alternate water-level display: a single teardrop icon,
+        color-coded the same way the fill bar already is (light blue →
+        dark blue, see update_water), instead of a height-based gauge.
+        Hidden by default — render()/_render_alive() picks whichever of
+        this or the bar is actually shown, based on the app's
+        Game Settings ▸ "Water: show as drop icon" toggle.
+
+        Sized at half the previous radius and anchored near the bottom
+        of the bar's own column (not vertically centered across it) —
+        same left-edge x position the bar used, but low rather than
+        mid-tile. Lifted up by a small gap so its tip doesn't touch the
+        health bar below it.
+        """
+        col_cx = self.bar_pad + self.water_thick / 2
+        drop_bottom_gap = max(2, self.bar_pad) + 2
+        wb_max_y = self.w - self.bar_pad - drop_bottom_gap
+        r = max(2, self.water_thick * 0.45)
+        point_h = r * 1.2
+        bulb_cy = wb_max_y - r
+
+        pts = _teardrop_points(col_cx, bulb_cy, r, point_h)
+        self.water_drop_item = self.create_polygon(
+            pts,
+            fill="blue",
+            outline="#0b3d63",
+            width=1,
+            state="hidden",
+            tags="water_items",
+        )
+
     def _create_health_bar(self):
         """Create the horizontal health bar at the bottom."""
         # Position with bottom shift
@@ -267,15 +379,67 @@ class TileCanvas(tk.Canvas):
             fill=self.soil, outline="", width=0,
             tags="health_items"
         )
-        
+
         # Dynamic fill bar
         self.hb_fill = self.create_rectangle(
-            self.bar_pad, self.hb_y_start, 
+            self.bar_pad, self.hb_y_start,
             self.w - self.bar_pad, self.hb_y_end,
             fill="green", outline="", width=0,
             tags="health_items"
         )
-    
+
+        self._create_health_hearts()
+
+    def _create_health_hearts(self):
+        """
+        Create the alternate health display: up to 4 heart icons, the
+        same size as the water teardrop, laid out across the same
+        horizontal strip at the bottom of the tile that the health bar
+        occupies. Filled/colored hearts (left to right) show how much
+        health remains; hearts beyond that count stay dim.
+        Hidden by default — render()/_render_alive() picks whichever of
+        this or the bar is actually shown, based on the app's Game
+        Settings ▸ "Health: show as hearts" toggle.
+        """
+        r = max(2, self.water_thick * 0.45) * 1.15 * 1.15  # same sizing basis as the water drop, enlarged twice
+        font_size = max(6, int(r * 1.6))
+        cy = (self.hb_y_start + self.hb_y_end) / 2 - 5 + 3 + 2  # 5px higher than bar center, then 3px + 2px back down
+
+        # Clamp so the glyph's own bounding box never crosses the tile's
+        # bottom (or top) edge — text this size can extend well past its
+        # anchor point, and the canvas clips anything past its own bounds
+        # rather than letting it spill onto whatever's visually below, so
+        # an un-clamped cy here was being cut off at the tile boundary.
+        text_half_h = font_size * 0.72
+        cy = min(cy, self.w - 1 - text_half_h)
+        cy = max(cy, text_half_h + 1)
+
+        # Remembered so _create_label() (runs right after this) can keep
+        # the plant-ID label clear of the hearts' top edge — the label's
+        # position is fixed once at creation, regardless of which display
+        # mode is active later, so it needs to stay clear of both.
+        self._hearts_top_y = cy - text_half_h
+
+        n_hearts = 4
+        heart_gap = 2  # x-spacing between adjacent hearts
+        heart_w = r * 2  # approx glyph width, same diameter as the water drop
+        total_w = n_hearts * heart_w + (n_hearts - 1) * heart_gap
+        usable_w = (self.w - self.bar_pad) - self.bar_pad
+        start_x = self.bar_pad + ((usable_w - total_w) / 2) + 5  # shifted 5px right
+
+        self.health_heart_items = []
+        for i in range(n_hearts):
+            cx = start_x + heart_w / 2 + i * (heart_w + heart_gap)
+            item = self.create_text(
+                cx, cy,
+                text="♥",  # ♥
+                font=("Segoe UI Symbol", font_size, "bold"),
+                fill=HEALTH_HEART_EMPTY_COLOR,
+                state="hidden",
+                tags="health_items",
+            )
+            self.health_heart_items.append(item)
+
     def _create_plant_icon(self):
         """Create the centered plant icon."""
         icon_lift = max(6, self.w // 14)
@@ -293,24 +457,45 @@ class TileCanvas(tk.Canvas):
         label_gap = max(6, self.health_thick // 2)
         label_pad = int(self.configs.get("LABEL_PAD", 0))
 
-        label_y = int(
+        # Normal position — used whenever the health bar (not the hearts)
+        # is the active display, so the label sits as low as it always
+        # has, undisturbed by the hearts' size/position.
+        label_y_normal = int(
             self.hb_y_start
             - label_gap
             - (self.label_h / 2)
             + label_pad
             + 6
+            + 2  # nudged 2px lower
+            + 3  # nudged another 3px lower
         )
-        self._label_y = label_y
+
+        # Raised position — only used while the heart icons (Game
+        # Settings ▸ Health: show as hearts) are actually the active
+        # display, so it doesn't overlap their top edge. render()/
+        # _render_alive() picks between the two every render, based on
+        # which mode is live right now — same live-toggle pattern as the
+        # water bar/drop and health bar/hearts themselves.
+        hearts_top = getattr(self, "_hearts_top_y", None)
+        if hearts_top is not None:
+            label_y_hearts = int(hearts_top - (self.label_h / 2) - 2) + 3  # nudged 3px lower
+            label_y_hearts = min(label_y_hearts, label_y_normal)
+        else:
+            label_y_hearts = label_y_normal
+
+        self._label_y_normal = label_y_normal
+        self._label_y_hearts = label_y_hearts
+        self._label_y = label_y_normal
 
         self.label_item = self.create_text(
             self.w // 2 + self.water_thick // 2,
-            label_y,
+            label_y_normal,
             text="",
             font=("Segoe UI", 9, "bold"),
             fill="#ffffff",
             tags=("tile_label",)
         )
-    
+
     def _create_badges(self):
         """Create status badges (P, E, !) in corners."""
         self.badge_size = 18
@@ -758,11 +943,14 @@ class TileCanvas(tk.Canvas):
             try:
                 self.itemconfig(self.wb_bg,  state="hidden")
                 self.itemconfig(self.wb_fill, state="hidden")
+                self.itemconfig(self.water_drop_item, state="hidden")
             except Exception:
                 pass
             try:
                 self.itemconfig(self.hb_bg,  state="hidden")
                 self.itemconfig(self.hb_fill, state="hidden")
+                for _heart in getattr(self, "health_heart_items", ()):
+                    self.itemconfig(_heart, state="hidden")
             except Exception:
                 pass
             try:
@@ -801,6 +989,15 @@ class TileCanvas(tk.Canvas):
             # branch above, regardless of which one ran or returned
             # early — a plain call after the if/elif chain would get
             # skipped by all of their early returns.
+            try:
+                # Raise the heart icons above everything created after them
+                # (plant icon, label, badges) so those can never cover/clip
+                # their bottom edge — but still below the selection border,
+                # which gets raised above these right after.
+                for _heart in getattr(self, "health_heart_items", ()):
+                    self.tag_raise(_heart)
+            except Exception:
+                pass
             try:
                 self.tag_raise("sel_border")
             except Exception:
@@ -888,12 +1085,37 @@ class TileCanvas(tk.Canvas):
         except Exception:
             pass
         
-        # Show bars and icon using explicit IDs (faster than tag lookup)
+        # Show bars and icon using explicit IDs (faster than tag lookup).
+        # Water is either the fill bar or the drop icon, never both —
+        # which one is read live from the app each render, so toggling
+        # Game Settings ▸ "Water: show as drop icon" takes effect the
+        # moment _set_water_drop_enabled forces tiles to re-render.
         try:
-            self.itemconfig(self.wb_bg,   state="normal")
-            self.itemconfig(self.wb_fill,  state="normal")
-            self.itemconfig(self.hb_bg,   state="normal")
-            self.itemconfig(self.hb_fill,  state="normal")
+            water_as_drop = bool(getattr(self.app, "_water_drop_enabled", False))
+            self.itemconfig(self.wb_bg,   state=("hidden" if water_as_drop else "normal"))
+            self.itemconfig(self.wb_fill, state=("hidden" if water_as_drop else "normal"))
+            self.itemconfig(self.water_drop_item, state=("normal" if water_as_drop else "hidden"))
+
+            # Health is either the fill bar or a row of heart icons, never
+            # both — same live-toggle pattern as the water bar/drop above,
+            # driven by Game Settings ▸ "Health: show as hearts".
+            health_as_hearts = bool(getattr(self.app, "_health_hearts_enabled", False))
+            self.itemconfig(self.hb_bg,   state=("hidden" if health_as_hearts else "normal"))
+            self.itemconfig(self.hb_fill, state=("hidden" if health_as_hearts else "normal"))
+            for _heart in getattr(self, "health_heart_items", ()):
+                self.itemconfig(_heart, state=("normal" if health_as_hearts else "hidden"))
+
+            # Plant-ID label rides along: raised only while hearts are the
+            # active display (so it clears their top edge), otherwise at
+            # its normal, lower spot.
+            try:
+                label_x = self.w // 2 + self.water_thick // 2
+                label_y = self._label_y_hearts if health_as_hearts else self._label_y_normal
+                self.coords(self.label_item, label_x, label_y)
+                self._label_y = label_y
+            except Exception:
+                pass
+
             self.itemconfig("plant_img",   state="normal")
         except Exception:
             pass
@@ -998,7 +1220,18 @@ class TileCanvas(tk.Canvas):
             color = lerp_color(YELLOW, GREEN, (t - 0.5) * 2)
         
         self.itemconfig(self.hb_fill, fill=color)
-    
+
+        # Heart display (Game Settings ▸ "Health: show as hearts") — kept
+        # in sync every call, same as the bar above, regardless of which
+        # one is actually visible right now.
+        try:
+            n_filled = health_heart_count(percent)
+            for i, item in enumerate(getattr(self, "health_heart_items", ())):
+                fill = HEALTH_HEART_FILLED_COLOR if i < n_filled else HEALTH_HEART_EMPTY_COLOR
+                self.itemconfig(item, fill=fill)
+        except Exception:
+            pass
+
     def update_water(self, percent):
         """
         Update water bar display.
@@ -1025,9 +1258,17 @@ class TileCanvas(tk.Canvas):
             wb_max_y
         )
         
-        # Color gradient: light blue → dark blue
-        color = lerp_color(BLUE_LIGHT, BLUE_DARK, percent / 100)
+        # Soil-moisture band color (see WATER_MOISTURE_BANDS above) — the
+        # same lookup the Help dialog's legend documents, so both the bar
+        # and the drop icon actually match what the game tells the player
+        # to expect, instead of a smooth gradient of its own that never
+        # matched those five named bands.
+        color = water_moisture_color(percent)
         self.itemconfig(self.wb_fill, fill=color)
+        try:
+            self.itemconfig(self.water_drop_item, fill=color)
+        except Exception:
+            pass
     
     # ========================================================================
     # Appearance

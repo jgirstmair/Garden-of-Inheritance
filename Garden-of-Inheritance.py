@@ -3615,6 +3615,63 @@ class GardenApp:
         except Exception:
             pass
 
+    def _set_water_drop_enabled(self, enabled):
+        """
+        Switch each tile's water display between the vertical fill bar
+        (default) and a single color-coded drop icon (Game Settings ▸
+        Water: show as drop icon). TileCanvas reads self.app's
+        _water_drop_enabled directly (see render()/_render_alive() in
+        tile.py) so this just updates the flag and forces every tile to
+        re-render once, the same cache-invalidation pattern used by
+        _set_bg_texture_enabled above — otherwise the dirty-flag guard in
+        render() would keep showing the old representation until some
+        other change (health/water/stage) happened to touch that tile.
+        """
+        enabled = bool(enabled)
+        self._water_drop_enabled = enabled
+        try:
+            self._water_drop_var.set(enabled)
+        except Exception:
+            pass
+        _save_water_drop_enabled(enabled)
+
+        try:
+            for tile in self._all_plot_tiles():
+                tile._render_state = None
+                tile.render()
+        except Exception:
+            pass
+
+    def _set_health_hearts_enabled(self, enabled):
+        """
+        Switch each tile's health display between the horizontal fill bar
+        (default) and a row of 4 heart icons (Game Settings ▸ Health:
+        show as hearts). TileCanvas reads self.app's
+        _health_hearts_enabled directly (see render()/_render_alive() in
+        tile.py) so this just updates the flag and forces every tile to
+        re-render once — same cache-invalidation pattern as
+        _set_water_drop_enabled above.
+        """
+        enabled = bool(enabled)
+        self._health_hearts_enabled = enabled
+        try:
+            self._health_hearts_var.set(enabled)
+        except Exception:
+            pass
+        _save_health_hearts_enabled(enabled)
+
+        try:
+            for tile in self._all_plot_tiles():
+                tile._render_state = None
+                tile.render()
+        except Exception:
+            pass
+
+        try:
+            self._toast(f"Water display: {'drop icon' if enabled else 'bar'}")
+        except Exception:
+            pass
+
     # ========================================================================
     # Stone Border Decoration
     # ========================================================================
@@ -4289,6 +4346,13 @@ class GardenApp:
 
         self.grid_bg = "#eeeeee"
         self.grid_bg = getattr(self, "grid_bg", "#eeeeee")
+        # Loaded before _build_ui() (unlike _bg_texture_enabled below,
+        # which is loaded after) specifically so the Game Settings
+        # checkbutton it initializes reflects the actually-saved value
+        # from the start, rather than always starting checked/unchecked
+        # regardless of what was saved last session.
+        self._water_drop_enabled = _load_water_drop_enabled()
+        self._health_hearts_enabled = _load_health_hearts_enabled()
         self._build_ui()
         self._update_temp_button_state()
 
@@ -5922,6 +5986,28 @@ class GardenApp:
             label="Show Background Texture",
             variable=self._bg_texture_enabled_var,
             command=lambda: self._set_bg_texture_enabled(self._bg_texture_enabled_var.get())
+        )
+
+        # ── Water Display ────────────────────────────────────────────
+        # Off (default) = the existing vertical fill bar; on = a single
+        # color-coded drop icon in the same spot, for a less cluttered
+        # grid. Purely cosmetic — same water values, same color legend.
+        self._water_drop_var = tk.BooleanVar(value=getattr(self, "_water_drop_enabled", False))
+        game_menu.add_checkbutton(
+            label="Water: show as drop icon",
+            variable=self._water_drop_var,
+            command=lambda: self._set_water_drop_enabled(self._water_drop_var.get())
+        )
+
+        # ── Health Display ───────────────────────────────────────────
+        # Off (default) = the existing horizontal fill bar; on = a row of
+        # 4 heart icons (same size as the water drop) in the same spot.
+        # Purely cosmetic — same health values and thresholds either way.
+        self._health_hearts_var = tk.BooleanVar(value=getattr(self, "_health_hearts_enabled", False))
+        game_menu.add_checkbutton(
+            label="Health: show as hearts",
+            variable=self._health_hearts_var,
+            command=lambda: self._set_health_hearts_enabled(self._health_hearts_var.get())
         )
 
         # ═══ Garden Setup — structural, rarely changed ═══
@@ -9737,6 +9823,16 @@ class GardenApp:
                 label="Trait Inheritance Explorer…",
                 command=self._open_tie_for_selected
             )
+
+            has_parents = (
+                getattr(tile.plant, "mother_id", None) is not None
+                and getattr(tile.plant, "father_id", None) is not None
+            )
+            menu.add_command(
+                label="Select All Siblings",
+                state=("normal" if has_parents else "disabled"),
+                command=lambda t=tile: self._select_all_siblings(t),
+            )
             menu.add_separator()
             menu.add_command(label="Water…",            command=self._on_water_selected)
 
@@ -9810,6 +9906,58 @@ class GardenApp:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _select_all_siblings(self, tile: TileCanvas):
+        """
+        Selects every currently-planted tile in the active plot whose
+        plant shares this one's exact parent pair (mother_id AND
+        father_id both matching — same cross, i.e. full siblings), plus
+        the clicked tile itself. Mirrors the selection style Right-click
+        already uses (see _on_tile_right_click): setting
+        multi_selected_indices/selected_index and calling render_all()
+        lets the existing _sync_tile_selected_from_indices() catch-all
+        (called every render_all()) apply the visual selection border to
+        every matching tile, rather than duplicating that logic here.
+        """
+        plant = getattr(tile, "plant", None)
+        if plant is None:
+            return
+
+        mid = getattr(plant, "mother_id", None)
+        fid = getattr(plant, "father_id", None)
+        if mid is None or fid is None:
+            try:
+                self._toast("This plant's parents aren't known — can't find siblings.")
+            except Exception:
+                pass
+            return
+
+        sibling_indices = set()
+        for t in self.tiles:
+            p = getattr(t, "plant", None)
+            if p is None:
+                continue
+            if getattr(p, "mother_id", None) == mid and getattr(p, "father_id", None) == fid:
+                sibling_indices.add(t.idx)
+
+        # Always include the clicked tile itself, even in the unlikely
+        # case its own plant somehow isn't found in the loop above.
+        sibling_indices.add(tile.idx)
+
+        self.multi_selected_indices = sibling_indices
+        self.selected_index = tile.idx
+        try:
+            self._kb_anchor_index = tile.idx
+        except Exception:
+            pass
+
+        self.render_all()
+
+        try:
+            n = len(sibling_indices)
+            self._toast(f"Selected {n} sibling{'s' if n != 1 else ''}")
+        except Exception:
+            pass
 
 
 
@@ -12447,6 +12595,31 @@ class GardenApp:
             canvas.tag_bind(poly_id, "<Leave>", _on_leave)
             canvas.tag_bind(poly_id, "<Button-1>", _on_click)
 
+            # "Friar's quarters" region — hover-only (no click action, just
+            # the legend), same coordinate/scale convention as "Mendel's
+            # Garden" above.
+            raw_points_friars = [717, 1092, 372, 723, 369, 624, 354, 606,
+                                  354, 420, 327, 390, 843, 24, 1140, 357,
+                                  1128, 420, 1116, 609, 1119, 822, 1047, 870,
+                                  1047, 795, 1020, 780, 984, 816, 993, 894]
+            scaled_points_friars = [p * scale for p in raw_points_friars]
+            friars_poly_id = canvas.create_polygon(
+                *scaled_points_friars, fill="", outline="", width=2,
+            )
+
+            def _on_enter_friars(event=None):
+                legend_var.set("Friar's quarters (Tutorial)")
+                canvas.itemconfig(friars_poly_id, outline="#954535", width=4)  # chestnut brown
+                canvas.config(cursor="hand2")
+
+            def _on_leave_friars(event=None):
+                legend_var.set("")
+                canvas.itemconfig(friars_poly_id, outline="", width=2)
+                canvas.config(cursor="")
+
+            canvas.tag_bind(friars_poly_id, "<Enter>", _on_enter_friars)
+            canvas.tag_bind(friars_poly_id, "<Leave>", _on_leave_friars)
+
         except Exception as e:
             logging.error(f"Failed to open Monastery popup: {e}", exc_info=True)
             self._toast("Could not open the Monastery.", level="warn")
@@ -14253,6 +14426,46 @@ def _load_bg_texture_enabled():
 def _save_bg_texture_enabled(enabled):
     settings = _load_display_settings()
     settings["bg_texture_enabled"] = bool(enabled)
+    _save_display_settings(settings)
+
+
+# Whether each tile's water level shows as a single color-coded drop icon
+# instead of the vertical fill bar — a purely cosmetic display preference,
+# persisted the same way as the other Game Settings toggles above.
+DEFAULT_WATER_DROP_ENABLED = True
+
+
+def _load_water_drop_enabled():
+    settings = _load_display_settings()
+    try:
+        return bool(settings.get("water_drop_enabled", DEFAULT_WATER_DROP_ENABLED))
+    except Exception:
+        return DEFAULT_WATER_DROP_ENABLED
+
+
+def _save_water_drop_enabled(enabled):
+    settings = _load_display_settings()
+    settings["water_drop_enabled"] = bool(enabled)
+    _save_display_settings(settings)
+
+
+# Whether each tile's health shows as a row of 4 heart icons instead of
+# the horizontal fill bar — a purely cosmetic display preference,
+# persisted the same way as the other Game Settings toggles above.
+DEFAULT_HEALTH_HEARTS_ENABLED = True
+
+
+def _load_health_hearts_enabled():
+    settings = _load_display_settings()
+    try:
+        return bool(settings.get("health_hearts_enabled", DEFAULT_HEALTH_HEARTS_ENABLED))
+    except Exception:
+        return DEFAULT_HEALTH_HEARTS_ENABLED
+
+
+def _save_health_hearts_enabled(enabled):
+    settings = _load_display_settings()
+    settings["health_hearts_enabled"] = bool(enabled)
     _save_display_settings(settings)
 
 
