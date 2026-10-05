@@ -64,6 +64,7 @@ import random
 import re
 import sys
 import time
+import webbrowser
 import types
 import datetime as dt
 import math
@@ -83,11 +84,92 @@ from tkinter import (
     ttk,
 )
 
+# One of Mendel's own sentences (English, then German), shown under the
+# console loading line below.
+_MENDEL_QUOTES = (
+    (
+        'Es gehört allerdings einiger Muth dazu, sich einer so weit reichenden Arbeit zu unterziehen; indessen scheint es der einzig richtige Weg zu sein, auf dem endlich die Lösung einer Frage erreicht werden kann, welche für die Entwicklungsgeschichte der organischen Formen von nicht zu unterschätzender Bedeutung ist.',
+        'It certainly takes some courage to undertake a task of such far-reaching scope; nevertheless, it seems to be the only right path by which a question of considerable importance to the developmental history of organic forms may finally be resolved.',
+    ),
+    (
+        'Der Werth und die Geltung eines jeden Experimentes wird durch die Tauglichkeit der dazu benützten Hilfsmittel, sowie durch die zweckmässige Anwendung derselben bedingt.',
+        'The value and validity of every experiment depend upon the suitability of the means employed and their proper application.',
+    ),
+    (
+        'Die Auswahl der Pflanzengruppe, welche für Versuche dieser Art dienen soll, muss mit möglichster Vorsicht geschehen, wenn man nicht im Vorhinein allen Erfolg in Frage stellen will.',
+        'The selection of the group of plants to be used for experiments of this kind must be made with the greatest possible care, if one does not wish to jeopardize all prospect of success from the outset.',
+    ),
+    (
+        'Um die Beziehungen zu erkennen, in welchen die Hybridformen zu einander selbst und zu ihren Stammarten stehen, erscheint es als nothwendig, dass die Glieder der Entwicklungsreihe in jeder einzelnen Generation vollzählig der Beobachtung unterzogen werden.',
+        'In order to recognize the relationships in which the hybrid forms stand to one another and to their parent species, it appears necessary that all members of the developmental series be fully observed in every single generation.',
+    ),
+    (
+        'In dieser Generation treten nebst den dominirenden Merkmalen auch die recessiven in ihrer vollen Eigenthümlichkeit wieder auf, und zwar in dem entschieden ausgesprochenen Durchschnittsverhältnisse 3 : 1, so dass unter je vier Pflanzen aus dieser Generation drei den dominirenden und eine den recessiven Charakter erhalten.',
+        'In this generation, alongside the dominant traits, the recessive ones reappear in their full character, in the clearly expressed average ratio of 3:1, so that among every four plants of this generation, three receive the dominant and one the recessive character.',
+    ),
+    (
+        'In der weiteren Besprechung werden jene Merkmale, welche ganz oder fast unverändert in die Hybride-Verbindung übergehen, somit selbst die Hybridenmerkmale repräsentiren, als dominirende und jene, welche in der Verbindung latent werden, als recessive bezeichnet.',
+        'In the following discussion, those traits which pass wholly or almost unchanged into the hybrid combination, and thus themselves represent the hybrid traits, are designated dominant, while those which become latent in the combination are designated recessive.',
+    ),
+    (
+        'Die Pflanzen wurden auf Gartenbeeten, ein kleiner Theil in Töpfen gezogen, und mittelst Stäben, Baumzweigen und gespannten Schnüren in der natürlichen aufrechten Stellung erhalten.',
+        'The plants were grown in garden beds, a small portion in pots, and were kept in their natural upright position by means of stakes, tree branches, and stretched cords.',
+    ),
+    (
+        'Unter mehr als 10 000 Pflanzen, welche genauer untersucht wurden, kam der Fall nur einige wenige Male vor, dass eine Einmengung nicht zu bezweifeln war.',
+        'Among more than 10,000 plants which were examined more closely, there were only a very few cases in which contamination could not be doubted.',
+    ),
+    (
+        'Damit ist zugleich erwiesen, dass das Verhalten je zweier differirender Merkmale in hybrider Verbindung unabhängig ist von den anderweitigen Unterschieden an den beiden Stammpflanzen.',
+        'It is thereby also demonstrated that the behavior of each pair of differing traits in a hybrid combination is independent of the other differences between the two parent plants.',
+    ),
+    (
+        'An einem günstigen Erfolge war nun kaum mehr zu zweifeln, die nächste Generation musste die endgültige Entscheidung bringen.',
+        'There could now scarcely be any doubt of a successful result; the next generation would have to bring the final decision.',
+    ),
+)
+
+
+def _print_loading_banner():
+    """Prints "Loading Garden of Inheritance..." followed, after a blank
+    line, by a randomly chosen sentence from Mendel's 1866 paper —
+    English first, then the German original, then the source line.
+    Plain text only (no ANSI colours) so it also looks right in a
+    legacy Windows console; falls back to the bare loading line if the
+    console can't encode the quotation marks."""
+    import random as _r
+    import textwrap as _tw
+    print("Loading Garden of Inheritance...")
+    try:
+        de, en = _r.choice(_MENDEL_QUOTES)
+        width = 72
+        ind = "    "
+        print()
+        print(_tw.fill("\u201c" + en + "\u201d", width,
+                       initial_indent=ind, subsequent_indent=ind + " "))
+        print()
+        print(_tw.fill("\u201e" + de + "\u201c", width,
+                       initial_indent=ind, subsequent_indent=ind + " "))
+        print()
+        print(ind + "\u2014 Gregor Mendel, Versuche \u00fcber Pflanzenhybriden (1866)")
+        print()
+    except Exception:
+        pass
+
+
+_print_loading_banner()
+
 # pygame is optional — only needed for sound effects (harvest.ogg etc.).
 # Missing pygame shouldn't break the game itself, just silently disable
 # sound; _play_sound() below checks _mixer_ready before doing anything,
 # so every other call site can call it unconditionally without its own
 # guard.
+#
+# PYGAME_HIDE_SUPPORT_PROMPT must be set before the import — it's what
+# pygame checks to decide whether to print its own "pygame X.X.X (SDL
+# ...)" / "Hello from the pygame community" banner, which otherwise
+# would've been the very first thing printed instead of the line above.
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 try:
     import pygame
     _PYGAME_AVAILABLE = True
@@ -1286,6 +1368,27 @@ ROWS = 7
 COLS = 16
 GRID_SIZE = ROWS * COLS
 TILES_PER_ROW = COLS
+
+# Simulation-speed presets (seconds of real time per simulated hour —
+# smaller is faster). Shared by the Simulation Speed dialog's preset
+# buttons (_open_speed_dialog) and the Ctrl+Left/Right arrow-key speed
+# step (_step_game_speed), so "the steps from Game Settings" always means
+# exactly this one list, never two lists that could drift apart.
+SPEED_PRESETS = (0.1, 0.25, 0.5, 1, 5, 15, 30, 60, 120)
+
+# "Real time": 1 real second = 1 simulated second (3,600 real seconds per
+# simulated hour) — its own clearly-labeled button in the Simulation
+# Speed dialog rather than just another number among SPEED_PRESETS.
+# Also what the tutorial sets itself to on start (see tutorial.py's
+# _TUTORIAL_DAY_LENGTH_S) so a novice plant actually takes hours to grow
+# rather than racing by.
+SPEED_REAL_TIME_SECS = 3600.0
+
+# The Ctrl+Left/Right quick-step ladder (_step_game_speed): SPEED_PRESETS
+# plus Real Time tacked on as one extra, final step at the slow end, so
+# stepping all the way down with the keyboard can actually reach it too
+# instead of leaving it reachable only from the Simulation Speed dialog.
+SPEED_STEP_LADDER = SPEED_PRESETS + (SPEED_REAL_TIME_SECS,)
 
 TILE_SIZE = 85   # change to 64 or 128 later
 INNER_ICON = int(TILE_SIZE * 0.8125)
@@ -3676,6 +3779,19 @@ class GardenApp:
     # Stone Border Decoration
     # ========================================================================
 
+    def _set_stone_size_px(self, px):
+        """Sets the border stone size (in px, one of STONE_SIZE_PRESETS —
+        0 hides them) and rebakes the border at the new size. Used by
+        both the Game Settings ▸ Stone Border Size menu and the
+        consolidated Game Settings popup (_open_game_settings_dialog)."""
+        self._stone_sw = px
+        try:
+            self._stone_size_var.set(px)
+        except Exception:
+            pass
+        _save_stone_size_px(px)
+        self._setup_border_stones()
+
     def _setup_border_stones(self):
         """
         Pre-composite all border stones for each tile into ONE RGBA image
@@ -4280,6 +4396,13 @@ class GardenApp:
         self.ff_render_auto = tk.BooleanVar(value=True)
 
         # --- multi-selection state for drag selection ---
+        # selected_index itself was never actually initialized here —
+        # every reader already guarded it with getattr(self,
+        # "selected_index", None) except _move_selection (the Arrow-key
+        # handler), which assumed it already existed and crashed with
+        # AttributeError the moment an arrow key was pressed before any
+        # tile had ever been clicked/selected this session.
+        self.selected_index = None
         self.multi_selected_indices = set()
         self._drag_start_x = None
         self._drag_start_y = None
@@ -4731,28 +4854,125 @@ class GardenApp:
 
         tk.Button(frm, text="Close", command=win.destroy).pack(anchor="e")
 
+    def _speed_indicator_text(self):
+        try:
+            secs = float(getattr(self, "day_length_s", 1.0))
+        except Exception:
+            secs = 1.0
+        if abs(secs - SPEED_REAL_TIME_SECS) < 1e-6:
+            return "Real Time"
+        return f"{secs:g} sec / simulated hour"
+
+    def _speed_indicator_tick(self):
+        """Polls (every 100ms) for a change in self.day_length_s — however
+        it was changed: Ctrl+arrows, the speed dialog, Settings, the
+        tutorial — and updates speed_indicator_label. A change shows it
+        in full dark grey immediately; 5s with no further change later
+        it fades (over 1s) into the background colour."""
+        lbl = getattr(self, "speed_indicator_label", None)
+        if lbl is None:
+            return
+        try:
+            now = time.monotonic()
+            secs = float(getattr(self, "day_length_s", 1.0))
+            if secs != getattr(self, "_speed_ind_last", None):
+                self._speed_ind_last = secs
+                self._speed_ind_changed_at = now
+                self._speed_ind_t = None
+                lbl.configure(text=self._speed_indicator_text())
+            age = now - getattr(self, "_speed_ind_changed_at", now)
+            t = 0.0 if age <= 5.0 else min(1.0, (age - 5.0) / 1.0)
+            if t != getattr(self, "_speed_ind_t", None):
+                self._speed_ind_t = t
+                fg = (0x55, 0x55, 0x55)
+                r, g, b = [c // 256 for c in self.root.winfo_rgb(self.grid_bg)]
+                mix = tuple(round(f + (bgc - f) * t) for f, bgc in zip(fg, (r, g, b)))
+                lbl.configure(fg="#%02x%02x%02x" % mix)
+        except Exception:
+            pass
+        self.root.after(100, self._speed_indicator_tick)
+
+    def _step_game_speed(self, faster: bool):
+        """
+        Moves simulation speed one step up or down through
+        SPEED_STEP_LADDER (SPEED_PRESETS plus Real Time as one extra
+        final step) — the exact same presets the Simulation Speed
+        dialog's buttons use (_open_speed_dialog), so this is just a
+        keyboard shortcut for "click the next preset over", not a
+        separate speed system. Bound to Ctrl+Right (faster) / Ctrl+Left
+        (slower) — deliberately Control rather than Shift (Shift+Arrow
+        already extends the selection) or plain arrows (already move the
+        selection), so this never moves or jumps the current selection.
+        """
+        try:
+            current = float(getattr(self, "day_length_s", 1.0))
+        except Exception:
+            current = 1.0
+
+        idx = min(range(len(SPEED_STEP_LADDER)), key=lambda i: abs(SPEED_STEP_LADDER[i] - current))
+        if faster:
+            idx = max(0, idx - 1)
+        else:
+            idx = min(len(SPEED_STEP_LADDER) - 1, idx + 1)
+        new_secs = SPEED_STEP_LADDER[idx]
+
+        if new_secs == current:
+            return
+
+        try:
+            self._set_day_length(new_secs)
+            self.day_length_s = new_secs
+        except Exception:
+            return
+
+        try:
+            if new_secs == SPEED_REAL_TIME_SECS:
+                self._toast("Game speed: Real Time (1 sec = 1 sec)")
+            else:
+                self._toast(f"Game speed: {new_secs:g}s / simulated hour")
+        except Exception:
+            pass
+
     def _open_speed_dialog(self):
-        """Popup to adjust simulation speed: seconds of real time per simulated HOUR."""
+        """Popup to adjust simulation speed: seconds of real time per
+        simulated HOUR. Same warm parchment styling as the consolidated
+        Game Settings popup (_SETTINGS_* constants) since this is opened
+        from inside it (Difficulty & Speed ▸ Time Speed…), as well as
+        from the old Game Settings menu directly."""
+        BG = _SETTINGS_BG
+        PANEL_BG = _SETTINGS_PANEL_BG
+        HEADING_FG = _SETTINGS_HEADING_FG
+
         win = Toplevel(self.root)
         win.title("Simulation Speed")
-        frm = tk.Frame(win, padx=12, pady=12)
+        win.configure(bg=BG)
+        win.resizable(False, False)
+
+        outer = tk.Frame(win, bg=BG)
+        outer.pack(fill="both", expand=True, padx=16, pady=16)
+
+        tk.Label(
+            outer, text="Simulation Speed", font=("Segoe UI", 15, "bold"),
+            bg=BG, fg=HEADING_FG, anchor="w",
+        ).pack(fill="x", pady=(0, 10))
+
+        panel = tk.Frame(outer, bg=PANEL_BG, bd=1, relief="solid",
+                          highlightbackground=_SETTINGS_BORDER, highlightthickness=1)
+        panel.pack(fill="both", expand=True)
+
+        frm = tk.Frame(panel, padx=16, pady=16, bg=PANEL_BG)
         frm.pack(fill="both", expand=True)
 
         # Current value (seconds per simulated hour)
         current_len = float(getattr(self, 'day_length_s', 0.25))
         cur = tk.StringVar(value=f"{current_len:.2f} sec per hour")
-        tk.Label(frm, textvariable=cur, font=("Segoe UI", 12, "bold")).pack(
-            anchor="w", pady=(0, 8)
-        )
+        tk.Label(frm, textvariable=cur, font=("Segoe UI", 12, "bold"),
+                 bg=PANEL_BG, fg=HEADING_FG).pack(anchor="w", pady=(0, 8))
 
         # This StringVar is used by the entry AND by Apply
         val = tk.StringVar(value=f"{current_len:.2f}")
 
         # Slider callback: update label + val so Apply sees slider changes
-
-# ============================================================================
-# Event Handlers
-# ============================================================================
         def _on_slide(v):
             try:
                 secs = max(0.1, float(v))          # allow 0.1 s/hour
@@ -4761,15 +4981,18 @@ class GardenApp:
             except Exception:
                 pass
 
-        # Slider: 0.1 .. 120 seconds per simulated hour
+        # Slider: 0.1 .. 120 seconds per simulated hour (Real Time, far
+        # below this range, is its own clearly-labeled button instead —
+        # see set_real_time below)
         scale = tk.Scale(
             frm,
             from_=0.1,
             to=120,
             orient="horizontal",
-            length=260,
+            length=280,
             command=_on_slide,
             resolution=0.05,   # fine steps for fast speeds
+            bg=PANEL_BG, highlightthickness=0, troughcolor=_SETTINGS_BUTTON_BG,
         )
         try:
             scale.set(current_len)
@@ -4777,10 +5000,19 @@ class GardenApp:
             scale.set(1)
         scale.pack(anchor="w", fill="x")
 
+        def _preset_button(parent, text, command):
+            return tk.Button(
+                parent, text=text, font=("Segoe UI", 10),
+                bg=_SETTINGS_BUTTON_BG, activebackground=_SETTINGS_BUTTON_BG_ACTIVE,
+                relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+                command=command,
+            )
+
         # Preset buttons
-        presets = tk.Frame(frm)
-        presets.pack(anchor="w", pady=(10, 0))
-        tk.Label(presets, text="Presets:").pack(side="left")
+        tk.Label(frm, text="Presets", font=("Segoe UI", 11, "bold"),
+                 bg=PANEL_BG, fg=HEADING_FG, anchor="w").pack(fill="x", pady=(14, 4))
+        presets = tk.Frame(frm, bg=PANEL_BG)
+        presets.pack(anchor="w")
 
         def set_p(n):
             # Try to move the slider (may clamp if n > slider max),
@@ -4792,36 +5024,29 @@ class GardenApp:
             _on_slide(n)
 
         # Fast + normal presets (seconds per simulated hour)
-        for n in (0.1, 0.25, 0.5, 1, 5, 15, 30, 60, 120):
-            tk.Button(presets, text=f"{n:g}s", command=lambda n=n: set_p(n)).pack(
-                side="left", padx=2
-            )
+        for n in SPEED_PRESETS:
+            _preset_button(presets, f"{n:g}s", lambda n=n: set_p(n)).pack(side="left", padx=2)
 
-        # Real-time preset (1 real second = 1 simulated second)
+        # Real Time — 1 real second = 1 simulated second (SPEED_REAL_TIME_SECS,
+        # also what the tutorial defaults to). Kept visually separate from the
+        # fast/normal presets above since it's such a different order of
+        # magnitude (3,600 s/hour vs. the slider's 120 s/hour ceiling).
         def set_real_time():
-            # 3600 seconds per simulated hour => 24*3600 per simulated day
-            set_p(3600.0)
+            set_p(SPEED_REAL_TIME_SECS)
 
-        tk.Button(presets, text="RT", command=set_real_time).pack(side="left", padx=4)
-
+        _preset_button(frm, "Real Time (1 sec = 1 sec)", set_real_time).pack(
+            anchor="w", pady=(10, 0)
+        )
 
         # Custom entry
-        row2 = tk.Frame(frm)
-        row2.pack(anchor="w", pady=(10, 0))
-        tk.Label(row2, text="Custom:").pack(side="left")
-        ent = tk.Entry(row2, width=6, textvariable=val)
+        row2 = tk.Frame(frm, bg=PANEL_BG)
+        row2.pack(anchor="w", pady=(14, 0))
+        tk.Label(row2, text="Custom:", bg=PANEL_BG, fg=HEADING_FG).pack(side="left")
+        ent = tk.Entry(row2, width=8, textvariable=val)
         ent.pack(side="left", padx=(6, 6))
-        tk.Label(row2, text="seconds / simulated hour").pack(side="left")   
+        tk.Label(row2, text="seconds / simulated hour", bg=PANEL_BG, fg=HEADING_FG).pack(side="left")
 
-        # Informational note
-        tk.Label(
-            frm,
-            text="Hint: Real time (RT) ≈ 3,600 s/hour.",
-            anchor="w",
-            fg="#555",
-        ).pack(anchor="w", pady=(8, 0))
-
-        # Apply button (no real-time mode)
+        # Apply button
         def on_apply():
             try:
                 try:
@@ -4841,7 +5066,11 @@ class GardenApp:
                 except Exception:
                     pass
 
-        tk.Button(frm, text="Apply", command=on_apply).pack(anchor="w", pady=(12, 0))
+        tk.Button(
+            frm, text="Apply", font=("Segoe UI", 10, "bold"), command=on_apply,
+            bg=_SETTINGS_ACCENT, fg="white", activebackground=_SETTINGS_SIDEBAR_BG,
+            activeforeground="white", relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
+        ).pack(anchor="w", pady=(16, 0))
 
         try:
             ent.focus_set()
@@ -5307,6 +5536,16 @@ class GardenApp:
         self.root.bind('<Shift-Up>',    lambda e: self._move_selection(-1, 0, extend=True))
         self.root.bind('<Shift-Down>',  lambda e: self._move_selection(1,  0, extend=True))
 
+        # Ctrl+Left/Right step the simulation speed up/down, through the
+        # exact same presets as the Simulation Speed dialog's buttons
+        # (see _step_game_speed). Deliberately Control rather than Shift
+        # — Shift+Arrow is already the selection-extend binding above, so
+        # using Shift here would fire both at once. Control+Arrow has no
+        # existing binding, so this one replaces nothing and, unlike the
+        # Shift bindings, never moves or extends the selection.
+        self.root.bind('<Control-Right>', lambda e: self._step_game_speed(faster=True))
+        self.root.bind('<Control-Left>',  lambda e: self._step_game_speed(faster=False))
+
         self.root.bind('<space>',  lambda e: self._toggle_run())
 
         self.root.bind('<Delete>', lambda e: self._on_remove_selected())
@@ -5419,8 +5658,14 @@ class GardenApp:
 # ============================================================================
 # Event Handlers
 # ============================================================================
-    def _on_grid_wizard(self):
-        """Allow user to reopen the garden size wizard from the menu."""
+    def _on_grid_wizard(self, parent=None):
+        """Allow user to reopen the garden size wizard from the menu (or
+        from the consolidated Game Settings popup — see
+        _open_game_settings_dialog, which passes itself as `parent` so
+        the wizard is transient to IT rather than the main window, and
+        naturally hands focus back to the settings popup once closed,
+        instead of surfacing the main garden window underneath it)."""
+        parent = parent or self.root
         try:
             cfg = _load_grid_config()
         except Exception:
@@ -5435,7 +5680,7 @@ class GardenApp:
             }
 
         try:
-            rows, cols, show_dialog_next = _ask_grid_size(self.root, cfg)
+            rows, cols, show_dialog_next = _ask_grid_size(parent, cfg)
             _apply_grid_size(rows, cols)
             _save_grid_config(rows, cols, show_dialog_next)
             # Current grid is already built, so we inform user a restart is needed
@@ -5551,7 +5796,8 @@ class GardenApp:
             self._force_tile_soil(index)
             self._toast(f"Starter seed planted. ({self.available_seeds} left)")
             self.render_all()
-            _play_sound("plant.ogg")
+            if not getattr(self, "_suppress_plant_sound", False):
+                _play_sound("plant.ogg")
 
             return True
             
@@ -5606,7 +5852,8 @@ class GardenApp:
         else:
             self._toast(f"Planted → {p.generation}")
         self.render_all()
-        _play_sound("plant.ogg")
+        if not getattr(self, "_suppress_plant_sound", False):
+            _play_sound("plant.ogg")
 
         return True
 
@@ -5712,17 +5959,27 @@ class GardenApp:
         
         planted = 0
         self._last_night_block_reason = None
-        for slot in region:
-            if planted >= avail: break
-            # Clear dead plant if present, then plant
-            slot_plant = self.tiles[slot].plant
-            if slot_plant is not None and not getattr(slot_plant, 'alive', True):
-                self.tiles[slot].plant = None
-            # Now plant if tile is empty
-            if self.tiles[slot].plant is None:
-                if self._plant_one_from_group(slot, kind, match_fn):
-                    planted += 1
-        
+        # Same overlapping-sound bug as the batch-plant cursor loop above
+        # (and the "Harvest All" fix this mirrors) — suppress plant.ogg
+        # per seed here too, playing it once for the whole area afterward.
+        self._suppress_plant_sound = True
+        try:
+            for slot in region:
+                if planted >= avail: break
+                # Clear dead plant if present, then plant
+                slot_plant = self.tiles[slot].plant
+                if slot_plant is not None and not getattr(slot_plant, 'alive', True):
+                    self.tiles[slot].plant = None
+                # Now plant if tile is empty
+                if self.tiles[slot].plant is None:
+                    if self._plant_one_from_group(slot, kind, match_fn):
+                        planted += 1
+        finally:
+            self._suppress_plant_sound = False
+
+        if planted > 0:
+            _play_sound("plant.ogg")
+
         self._toast(f"Planted {planted} seed(s) in area.", level="info")
         reason = getattr(self, "_last_night_block_reason", None)
         if reason:
@@ -5931,11 +6188,10 @@ class GardenApp:
         # ── Stone Border Size ──────────────────────────────────────────
         self._stone_size_var = tk.IntVar(value=_load_stone_size_px())
 
-        def _set_stone_size(px):
-            self._stone_sw = px
-            self._stone_size_var.set(px)
-            _save_stone_size_px(px)
-            self._setup_border_stones()
+        # A real bound method (rather than keeping this a closure local
+        # to _build_ui) so the consolidated Game Settings popup
+        # (_open_game_settings_dialog) can call it too, not just this menu.
+        _set_stone_size = self._set_stone_size_px
 
         stone_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
         stone_menu.add_radiobutton(
@@ -6138,7 +6394,15 @@ class GardenApp:
         self.mendel_label.pack(anchor="center", pady=(0, 0))  # No bottom padding
         self._mendel_hover_idx = 0
         self.mendel_label.bind("<Enter>", self._on_mendel_hover)
-        self.mendel_label.bind("<Leave>", lambda e: self.status_var.set(""))
+        # Tutorial note: both handlers below are suppressed while
+        # self._tutorial_active is set (see tutorial.py) — otherwise
+        # hovering the portrait (Franz's during the tutorial) would
+        # overwrite/clear Cyril's own dialogue in this same status_var.
+        self.mendel_label.bind(
+            "<Leave>",
+            lambda e: (None if getattr(self, "_tutorial_active", False)
+                       else self.status_var.set("")),
+        )
 
         # Container for icon with ID and generation text
         self.icon_row = tk.Frame(self.left_panel, bg=self.grid_bg)
@@ -6338,6 +6602,20 @@ class GardenApp:
         self.weather_icon_label.pack(side="left", anchor="center", padx=(8, 8))
         self.phase_label_post = tk.Label(phase_row, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
         self.phase_label_post.pack(side="left", anchor="center")
+        # Simulation-speed indicator — right-aligned on this same
+        # line, small and dark grey so it reads as separate from the
+        # date/weather text. Always shown at startup and again the
+        # instant the speed changes, then fades out 5s later (see
+        # _speed_indicator_tick).
+        self.speed_indicator_label = tk.Label(
+            phase_row, text="", font=("Segoe UI", 20, "bold"), fg="#555555",
+            bg=self.grid_bg)
+        # place()d at exactly the grid's pixel width (phase_row's left
+        # edge is the same as the status box's and the grid's), so its
+        # right end lines up with theirs.
+        self.speed_indicator_label.place(
+            x=TILE_SIZE * TILES_PER_ROW - 4, rely=0.5, anchor="e")
+        self.root.after(200, self._speed_indicator_tick)
         # phase_row itself needs centering within right_panel, same as
         # the single label's default centered text used to read.
         phase_row.pack_configure(anchor="center")
@@ -7650,6 +7928,13 @@ class GardenApp:
         def _reveal_alleles():
             """Reveal all hidden allele labels in this Genetics window."""
             def _walk(widget):
+                # "?" trait icons turn into the real icons
+                if hasattr(widget, "_icon_real"):
+                    try:
+                        widget.config(image=widget._icon_real, text="")
+                        widget.image = widget._icon_real
+                    except Exception:
+                        pass
                 # If the widget is one of our allele labels, restore its true text
                 if hasattr(widget, "_allele_real"):
                     try:
@@ -7668,6 +7953,36 @@ class GardenApp:
             # Mark in this session that we used the genotype reveal (cheat).
             # Any export after this will be annotated in the .txt file.
             self._genotype_revealed = True
+
+        def _poll_icon_unlocks():
+            """Swap "?" for the real icon as the plant discovers each trait
+            (the window is otherwise only rebuilt on selection change)."""
+            try:
+                if not win.winfo_exists():
+                    return
+            except Exception:
+                return
+
+            def _walk(widget):
+                if hasattr(widget, "_icon_real") and not widget.cget("image"):
+                    try:
+                        if _icon_unlocked(widget._plant_ref, widget._trait_key):
+                            widget.config(image=widget._icon_real, text="")
+                            widget.image = widget._icon_real
+                    except Exception:
+                        pass
+                try:
+                    for child in widget.winfo_children():
+                        _walk(child)
+                except Exception:
+                    pass
+            _walk(win)
+            try:
+                win.after(1000, _poll_icon_unlocks)
+            except Exception:
+                pass
+
+        win.after(1000, _poll_icon_unlocks)
 
         def _open_history_archiveonly():
 
@@ -7732,6 +8047,30 @@ class GardenApp:
                     parts.append(f"{loc}: {a1}/{a2}")
             return "; ".join(parts)
 
+        # Plant whose table is currently being built (set by _fill_tab) —
+        # lets _table_row decide per trait whether its icon is already
+        # discovered (see the "?" placeholder logic in _table_row).
+        _row_plant = [None]
+        _TRAIT_KEY_BY_LABEL = {
+            "Flower color": "flower_color", "Plant height": "plant_height",
+            "Pod shape": "pod_shape", "Pod color": "pod_color",
+            "Seed shape": "seed_shape", "Flower position": "flower_position",
+        }
+
+        def _icon_unlocked(plant_obj, trait_key):
+            """True if this trait's icon may be shown: genotype already
+            revealed, no discovery tracking on the object (e.g. a parent
+            snapshot), no trait key (seed color = the planted seed, always
+            known), or the plant has discovered it by its current stage."""
+            if getattr(self, "_genotype_revealed", False):
+                return True
+            if trait_key is None or plant_obj is None:
+                return True
+            rt = getattr(plant_obj, "revealed_traits", None)
+            if rt is None:
+                return True
+            return trait_key in rt
+
         def _table_row(tbl, r, trait_label, icon_path, chrom_text, allele_text, why, icon_img=None):
             cell = tk.Frame(tbl)
             cell.grid(row=r, column=0, padx=(6,6), pady=(2,0), sticky="w")
@@ -7747,8 +8086,26 @@ class GardenApp:
             # size via _greyscale_icon_from_path's sx=sy=1 default).
             # Matched here so every row's icon is the same size.
             img = icon_img if icon_img is not None else safe_image_scaled(icon_path, 1, 1)
-            icon_lbl = tk.Label(cell, image=img); icon_lbl.image = img
-            icon_lbl.pack(side="left")
+            # Fixed-size slot so swapping "?" for the real icon never
+            # shifts the table layout.
+            try:
+                _iw, _ih = max(img.width(), 24), max(img.height(), 24)
+            except Exception:
+                _iw, _ih = 32, 32
+            icon_slot = tk.Frame(cell, width=_iw, height=_ih)
+            icon_slot.pack_propagate(False)
+            icon_slot.pack(side="left")
+            icon_lbl = tk.Label(icon_slot)
+            icon_lbl.pack(expand=True)
+            icon_lbl._icon_real = img
+            _tkey = _TRAIT_KEY_BY_LABEL.get(trait_label)
+            icon_lbl._trait_key = _tkey
+            icon_lbl._plant_ref = _row_plant[0]
+            if _icon_unlocked(_row_plant[0], _tkey):
+                icon_lbl.config(image=img); icon_lbl.image = img
+            else:
+                icon_lbl.config(image="", text="?", fg="#888888",
+                                font=("Segoe UI", 18, "bold"))
 
             # Chromosome column (new)
             chrom_lbl = tk.Label(tbl, text=str(chrom_text or ""), font=("Segoe UI", 12))
@@ -7852,6 +8209,7 @@ class GardenApp:
                 ).pack(anchor="w", padx=8, pady=6)
                 return
 
+            _row_plant[0] = plant_obj
             geno = getattr(plant_obj, "genotype", None) or {}
             ph = phenotype_from_genotype(geno) if geno else dict(getattr(plant_obj, "traits", {}))
 
@@ -8769,7 +9127,7 @@ class GardenApp:
         rx1, ry1, rx2, ry2 = x1 - gx, y1 - gy, x2 - gx, y2 - gy
         w = max(1, rx2 - rx1)
         h = max(1, ry2 - ry1)
-        thick = 2
+        thick = 4  # twice as thick as before (was 2)
         color = "#4FC3F7"
 
         if getattr(self, "_drag_rect_edges", None) is None:
@@ -9100,15 +9458,28 @@ class GardenApp:
 
         planted_count = 0
         self._last_night_block_reason = None
-        for tidx in targets:
-            ok = self._plant_one_from_group(tidx, self._plant_cursor_kind, self._plant_cursor_match_fn)
-            if ok:
-                planted_count += 1
-            else:
-                # _plant_one_from_group already toasted the specific reason
-                # (season/night gate, etc.) — further attempts in this
-                # batch would just repeat the same failure.
-                break
+        # _plant_one_from_group plays plant.ogg once per call — correct
+        # for a single plant, but calling it once per seed IN THIS LOOP
+        # meant plant.ogg firing (and overlapping/stacking) once per seed
+        # for a single "Plant All"/"Plant (n)" click. Same bug class
+        # "Harvest All" had with harvest.ogg — suppressed here the same
+        # way, with plant.ogg played once for the whole batch afterward.
+        self._suppress_plant_sound = True
+        try:
+            for tidx in targets:
+                ok = self._plant_one_from_group(tidx, self._plant_cursor_kind, self._plant_cursor_match_fn)
+                if ok:
+                    planted_count += 1
+                else:
+                    # _plant_one_from_group already toasted the specific reason
+                    # (season/night gate, etc.) — further attempts in this
+                    # batch would just repeat the same failure.
+                    break
+        finally:
+            self._suppress_plant_sound = False
+
+        if planted_count > 0:
+            _play_sound("plant.ogg")
 
         self.render_all()
 
@@ -9208,7 +9579,64 @@ class GardenApp:
         elif kind == "measuring_station":
             self._open_measuring_station_popup(index)
 
-    def _open_paged_info_popup(self, title, pages, extra_buttons=None):
+    def _bee_popup_images(self, page_index, height=42, row_width=440):
+        """Bee sprites (the bee<N>_frame1.png files the wildlife system
+        uses, from icons/wildlife) scaled to `height` px tall — enough of
+        them, from a different starting variant on every page, to span
+        `row_width` px (the popup's text width). Any opaque backdrop
+        colour in a sprite's corners and any faint near-transparent
+        haze is removed so only the bee itself is drawn. Returns [] if
+        no bee sprites are found (the popup then shows no picture row)."""
+        try:
+            import wildlife as _wl
+            icon_dir = _wl._find_icon_dir()
+            if not icon_dir:
+                return []
+            names = sorted(f for f in os.listdir(icon_dir)
+                           if f.startswith("bee") and f.endswith("_frame1.png"))
+        except Exception:
+            return []
+        if not names:
+            return []
+        cache = getattr(self, "_bee_popup_cache", None)
+        if cache is None:
+            cache = self._bee_popup_cache = {}
+
+        def _load(name):
+            if name in cache:
+                return cache[name]
+            try:
+                pil = Image.open(os.path.join(icon_dir, name)).convert("RGBA")
+                # Flood the corners' backdrop colour (if opaque) to clear.
+                for pt in ((0, 0), (pil.width - 1, 0),
+                           (0, pil.height - 1), (pil.width - 1, pil.height - 1)):
+                    try:
+                        if pil.getpixel(pt)[3] > 128:
+                            ImageDraw.floodfill(pil, pt, (0, 0, 0, 0), thresh=40)
+                    except Exception:
+                        pass
+                # Drop faint, nearly transparent haze.
+                r_, g_, b_, a_ = pil.split()
+                a_ = a_.point(lambda v: 0 if v < 48 else v)
+                pil = Image.merge("RGBA", (r_, g_, b_, a_))
+                w = max(1, round(pil.width * height / max(1, pil.height)))
+                cache[name] = ImageTk.PhotoImage(pil.resize((w, height), Image.LANCZOS))
+            except Exception:
+                cache[name] = None
+            return cache[name]
+
+        first = _load(names[0])
+        step = (first.width() if first is not None else height) + 12
+        count = max(3, min(12, row_width // step))
+        out = []
+        for k in range(count):
+            img = _load(names[(page_index + k) % len(names)])
+            if img is not None:
+                out.append(img)
+        return out
+
+    def _open_paged_info_popup(self, title, pages, extra_buttons=None, page_art=None,
+                               last_page_scene=False, text_scale=1.0):
         """
         Generic paged info window — styled like the Genotype Explorer
         (_apply_inspector_theme). pages: list of (heading, body) tuples;
@@ -9234,20 +9662,46 @@ class GardenApp:
         except Exception:
             pass
 
-        content = tk.Frame(win, padx=20, pady=20)
+        # Compact spacing for the enlarged-text variant (beehive popup).
+        _compact = float(text_scale) > 1.0
+        _pad = 20
+        _padx = 30 if _compact else 20   # clear space left/right of the text
+        _pady = 16 if _compact else 20
+        content = tk.Frame(win, padx=_padx, pady=_pady)
         content.pack(fill="both", expand=True)
 
-        title_lbl = tk.Label(content, text="", font=("Segoe UI", 16, "bold"),
-                              wraplength=440, justify="left")
+        # text_scale enlarges all of the page text (the beehive popup uses
+        # 1.5 for readability); the wrap width grows with it, a little less
+        # than proportionally, so the window doesn't get too tall.
+        _ts = float(text_scale)
+        _f_title = ("Segoe UI", round(16 * _ts), "bold")
+        _f_body = ("Segoe UI", round(12 * _ts))
+        _f_cite = ("Segoe UI", round(10 * _ts), "italic")
+        _wrap = int(440 * (1 + (_ts - 1) * 0.75))
+        title_lbl = tk.Label(content, text="", font=_f_title,
+                              wraplength=_wrap, justify="left")
         title_lbl.pack(anchor="w")
-        body_lbl = tk.Label(content, text="", font=("Segoe UI", 12),
-                             wraplength=440, justify="left")
+        body_lbl = tk.Label(content, text="", font=_f_body,
+                             wraplength=_wrap, justify="left")
         body_lbl.pack(anchor="w", pady=(10, 0))
+        link_lbl = tk.Label(content, text="", fg="#1a5fb4",
+                            font=("Segoe UI", round(10 * _ts), "underline"),
+                            wraplength=_wrap, justify="left")
 
         state = {"idx": 0}
 
         nav_row = tk.Frame(content)
-        nav_row.pack(side="bottom", fill="x", pady=(20, 0))
+        nav_row.pack(side="bottom", fill="x", pady=(12 if _compact else 20, 0))
+        # Optional picture row (page_art(i) -> list of PhotoImages) that
+        # fills the otherwise empty space under the text.
+        art_row = tk.Frame(content, bg=self.INSPECTOR_BG)  # packed below, after page_lbl
+        if last_page_scene:
+            # Reserve the height of the bee-plot scene (see _render_page)
+            # on every page so the window never resizes between pages.
+            art_row.configure(height=int(TILE_SIZE * 1.3))
+            art_row.pack_propagate(False)
+            art_row.grid_propagate(False)
+            art_row.grid_rowconfigure(0, weight=1)
         # Packed AFTER nav_row (not before, as body_lbl/title_lbl above
         # are) and also side="bottom" — Tk's bottom-side packing stacks
         # inward from the window edge in the order .pack() is called, so
@@ -9259,7 +9713,11 @@ class GardenApp:
         # was trailing a variable-height element rather than anchored to
         # a fixed one.
         page_lbl = tk.Label(content, text="", font=("Segoe UI", 10, "italic"), fg="#888")
-        page_lbl.pack(side="bottom", anchor="w", pady=(14, 0))
+        page_lbl.pack(side="bottom", anchor="w", pady=(6 if _compact else 14, 0))
+        # Packed after page_lbl (bottom-side packing stacks upward), so the
+        # pictures sit directly above the page indicator.
+        if page_art is not None:
+            art_row.pack(side="bottom", fill="x", pady=(10, 0))
 
         prev_slot = tk.Frame(nav_row)
         prev_slot.pack(side="left")
@@ -9278,9 +9736,62 @@ class GardenApp:
             heading, body = pages[i]
             is_last = (i == len(pages) - 1)
             title_lbl.configure(text=heading)
+            # A URL in the text becomes its own clickable link label
+            # under the body (a Label can't underline just part of itself).
+            _m = re.search(r"https?://\S+", body)
+            if _m:
+                _url = _m.group(0)
+                body = body[:_m.start()].rstrip()
+                link_lbl.configure(text=_url, cursor="hand2")
+                link_lbl.unbind("<Button-1>")
+                link_lbl.bind("<Button-1>",
+                              lambda e, u=_url: webbrowser.open(u))
+                link_lbl.pack(anchor="w", pady=(2, 0), after=body_lbl)
+            else:
+                link_lbl.pack_forget()
             body_lbl.configure(text=body,
-                                font=("Segoe UI", 10, "italic") if is_last else ("Segoe UI", 12))
+                                font=_f_cite if is_last else _f_body)
             page_lbl.configure(text=f"{i + 1} / {len(pages)}")
+            if page_art is not None:
+                for w_ in art_row.winfo_children():
+                    w_.destroy()
+                imgs = []
+                scene_shown = False
+                if last_page_scene and i % 2 == 1:
+                    # Every second page (2nd, 4th, ...): instead of the
+                    # row of bees, a rounded plot with a random flowering
+                    # plant and three live bees.
+                    try:
+                        from wildlife import BeeScene
+                        sc = BeeScene(art_row, self, tile_size=TILE_SIZE,
+                                      scale=1.3, n_bees=3, bg=self.INSPECTOR_BG)
+                        sc.canvas.place(relx=0.5, rely=0.5, anchor="center")
+                        scene_shown = True
+                    except Exception:
+                        scene_shown = False
+                if not scene_shown:
+                    try:
+                        imgs = page_art(i) or []
+                    except Exception:
+                        imgs = []
+                # Bees scattered at random below the text (not in a line),
+                # kept away from the edges and from each other — placed by
+                # relative position so it works at any window width.
+                placed = []
+                for im in imgs[:6]:
+                    for _try in range(60):
+                        rx = random.uniform(0.08, 0.92)
+                        ry = random.uniform(0.24, 0.76)
+                        # distance in an ellipse (the row is wide, not tall)
+                        if all(((rx - px) / 0.13) ** 2 + ((ry - py) / 0.42) ** 2 >= 1
+                               for px, py in placed):
+                            break
+                    else:
+                        continue
+                    placed.append((rx, ry))
+                    lb = tk.Label(art_row, image=im, bg=self.INSPECTOR_BG)
+                    lb.image = im
+                    lb.place(relx=rx, rely=ry, anchor="center")
 
             # Rebuilt each time rather than reconfigured — _make_flat_button
             # only evaluates state="disabled" once, at creation (it bakes
@@ -9322,8 +9833,11 @@ class GardenApp:
 
         try:
             win.update_idletasks()
-            ww = max(460, max_w + 40)   # + outer window padding
-            wh = max(320, max_h + 40)
+            # The content frame's own padding is already part of max_w/max_h
+            # (and is the margin left/right of the text); the compact
+            # variant adds nothing extra, so the margins stay even.
+            ww = max(460, max_w + (0 if _compact else 40))
+            wh = max(240 if _compact else 320, max_h + (0 if _compact else 40))
             sw = win.winfo_screenwidth()
             sh = win.winfo_screenheight()
             win.geometry(f"{ww}x{wh}+{max(0, (sw - ww) // 2)}+{max(0, (sh - wh) // 2)}")
@@ -9384,7 +9898,9 @@ class GardenApp:
             "40\u201345. https://doi.org/10.1093/ae/tmad025"
         )
         pages = BEEHIVE_FACTS + [CITATION]
-        self._open_paged_info_popup("Beehive", pages)
+        self._open_paged_info_popup("Beehive", pages,
+                                    page_art=self._bee_popup_images,
+                                    last_page_scene=True, text_scale=1.5)
 
     def _open_measuring_station_popup(self, index):
         """
@@ -9500,6 +10016,16 @@ class GardenApp:
     def _on_tile_left_press(self, event, index: int):
         """Start of a left-click: may become a drag-selection or a Shift-click multi-select."""
 
+        # Locked tiles (tutorial.py's un-plantable border — see
+        # TileCanvas's locked flag in tile.py) ignore every interaction,
+        # even when the flag is set after the tile was already built and
+        # its bindings already live, which is the normal case here.
+        try:
+            if getattr(self.tiles[index], 'locked', False):
+                return
+        except Exception:
+            pass
+
         # Click-to-plant mode intercepts clicks entirely — no selection/drag.
         if self._plant_cursor_active:
             self._plant_one_via_cursor(index)
@@ -9571,14 +10097,10 @@ class GardenApp:
         self._drag_start_y = event.y_root
         self._dragging_select = False
 
-        # Start with a single-tile selection and reset keyboard anchor
-        self.selected_index = index
-        self.multi_selected_indices = {index}
-        try:
-            self._kb_anchor_index = index
-        except Exception:
-            pass
-        self.render_all()
+        # Nothing is selected yet on press: both a plain click and a
+        # drag-selection are only applied once the mouse button is
+        # released (see _on_tile_left_release), so the garden doesn't
+        # change selection while the button is still held down.
 
     def _on_drag_motion(self, event: tk.Event):
         """While the left button is held: update box-selection."""
@@ -9599,8 +10121,14 @@ class GardenApp:
         y1 = min(self._drag_start_y, event.y_root)
         y2 = max(self._drag_start_y, event.y_root)
 
+        # Only the rubber-band rectangle is drawn while dragging — the
+        # tiles inside it are selected once the button is released
+        # (see _on_tile_left_release / _apply_drag_selection).
         self._show_drag_rect_overlay(x1, y1, x2, y2)
 
+    def _drag_select_indices(self, x1, y1, x2, y2):
+        """Indices of every tile the screen rectangle (x1,y1)-(x2,y2)
+        touches."""
         sel = set()
         for i, cell in enumerate(self.tiles):
             if getattr(cell, '_covered_by_measuring_station', False):
@@ -9634,6 +10162,10 @@ class GardenApp:
             if cx < x2 and (cx + cw) > x1 and cy < y2 and (cy + ch) > y1:
                 sel.add(i)
 
+        return sel
+
+    def _apply_drag_selection(self, sel):
+        """Makes `sel` (a set of tile indices) the current selection."""
         # Clear old selection (tile-object selection)
         for t in list(getattr(self, "selected_tiles", set())):
             try:
@@ -9671,12 +10203,26 @@ class GardenApp:
 # ============================================================================
     def _on_tile_left_release(self, event, index: int):
         """Finish click / drag. If it was just a click, behave like old _on_tile_click."""
+        try:
+            if getattr(self.tiles[index], 'locked', False):
+                self._clear_drag_state()
+                return
+        except Exception:
+            pass
         dragging = bool(self._dragging_select)
+        sx, sy = self._drag_start_x, self._drag_start_y
         self._clear_drag_state()
 
-        if dragging:
-            # Box selection already applied in _on_drag_motion
-            self.render_all()
+        if dragging and sx is not None and sy is not None:
+            # Box selection is applied now, on button release, using the
+            # final rectangle (press point to release point).
+            try:
+                sel = self._drag_select_indices(
+                    min(sx, event.x_root), min(sy, event.y_root),
+                    max(sx, event.x_root), max(sy, event.y_root))
+                self._apply_drag_selection(sel)
+            except Exception:
+                self.render_all()
             return
 
         # <ButtonRelease-1> is bound independently of <Button-1> — even
@@ -9727,6 +10273,10 @@ class GardenApp:
 
     def _on_tile_right_click(self, tile: TileCanvas, event: tk.Event):
         """Context menu on right-click. Works on both empty tiles and existing plants."""
+
+        # Locked tiles (see _on_tile_left_press above) get no context menu either.
+        if getattr(tile, 'locked', False):
+            return
 
         # Right-click cancels click-to-plant mode instead of opening the menu.
         if self._plant_cursor_active:
@@ -10216,15 +10766,40 @@ class GardenApp:
         try:
             if self.temp_tracker:
                 success, message = self.temp_tracker.take_measurement()
-                if success:
-                    self._toast(message, level="info")
-                else:
-                    self._toast(message, level="warn")
+                self._measure_feedback(message, "info" if success else "warn")
             else:
-                self._toast("Temperature tracker not available", level="warn")
+                self._measure_feedback("Temperature tracker not available", "warn")
         except Exception as e:
             logging.error(f"Error taking measurement: {e}")
-            self._toast("Error taking measurement", level="error")
+            self._measure_feedback("Error taking measurement", "error")
+        try:
+            self._update_temp_button_state()
+        except Exception:
+            pass
+
+    def _measure_feedback(self, message, level="info"):
+        """Toast, plus (during the tutorial, where Cyril's text covers the
+        status bar and hides toasts) a small floating label under the
+        Measure T button so the click visibly does something."""
+        self._toast(message, level=level)
+        if not getattr(self, "_tutorial_active", False):
+            return
+        try:
+            old = getattr(self, "_measure_fb_label", None)
+            if old is not None:
+                old.destroy()
+            btn = self.measure_temp_btn
+            self.root.update_idletasks()
+            x = btn.winfo_rootx() - self.root.winfo_rootx()
+            y = btn.winfo_rooty() - self.root.winfo_rooty() + btn.winfo_height() + 4
+            lbl = tk.Label(self.root, text=str(message), bg="#FFF8DC", fg="#333333",
+                           relief="solid", bd=1, padx=8, pady=3)
+            lbl.place(x=x, y=y)
+            lbl.lift()
+            self._measure_fb_label = lbl
+            self.root.after(3000, lambda l=lbl: l.winfo_exists() and l.destroy())
+        except Exception:
+            pass
 
     def _update_temp_button_state(self):
         """Update temp button: green+clickable only when manual recording is allowed and time is right."""
@@ -11930,7 +12505,13 @@ class GardenApp:
         doesn't advance the alternating index, so the cycle picks up
         again from wherever it left off once it's day again, rather
         than skipping a beat for every hover overnight.
+
+        During the tutorial the portrait shows Franz (Cyril), not
+        Mendel, and the status bar is busy with Cyril's own dialogue —
+        so this is a no-op the whole time self._tutorial_active is set.
         """
+        if getattr(self, "_tutorial_active", False):
+            return
         if self._is_night_now():
             try:
                 self.status_var.set("Z z z z z ...")
@@ -12514,8 +13095,19 @@ class GardenApp:
         self._bg_current_season — the same value tile.py's background
         textures already use), scaled to 50%, with the current simulator
         year in the title. Hovering the "Mendel's Garden" polygon shows a
-        legend at the bottom; clicking it opens the Load Garden dialog.
+        legend at the bottom; clicking it returns to the normal
+        simulator (restoring the player's real garden if a tutorial is
+        in progress — see _exit_tutorial_to_normal_garden).
         """
+        try:
+            existing = getattr(self, "_monastery_win", None)
+            if existing is not None and existing.winfo_exists():
+                existing.lift()
+                existing.focus_force()
+                return
+        except Exception:
+            pass
+
         try:
             season = getattr(self, "_bg_current_season", None) or "spring"
             if season not in ("spring", "summer", "autumn", "winter"):
@@ -12536,6 +13128,7 @@ class GardenApp:
             year = int(getattr(getattr(self, "garden", None), "year", 1856) or 1856)
 
             win = tk.Toplevel(self.root)
+            self._monastery_win = win
             win.title("Monastery")
             win.configure(bg=self.grid_bg)
             win.resizable(False, False)
@@ -12560,7 +13153,7 @@ class GardenApp:
             legend_var = tk.StringVar(value="")
             tk.Label(
                 win, textvariable=legend_var,
-                font=("Segoe UI", 12, "italic"),
+                font=("Segoe UI", 18, "bold", "italic"),
                 bg=self.grid_bg, fg="#333333",
                 height=1,
             ).pack(pady=(0, 10))
@@ -12589,15 +13182,15 @@ class GardenApp:
                     win.destroy()
                 except Exception:
                     pass
-                self._open_load_garden_dialog()
+                self._exit_tutorial_to_normal_garden()
 
             canvas.tag_bind(poly_id, "<Enter>", _on_enter)
             canvas.tag_bind(poly_id, "<Leave>", _on_leave)
             canvas.tag_bind(poly_id, "<Button-1>", _on_click)
 
-            # "Friar's quarters" region — hover-only (no click action, just
-            # the legend), same coordinate/scale convention as "Mendel's
-            # Garden" above.
+            # "Friar's quarters" region — clicking it launches the
+            # tutorial (see _start_tutorial / tutorial.py), same
+            # coordinate/scale convention as "Mendel's Garden" above.
             raw_points_friars = [717, 1092, 372, 723, 369, 624, 354, 606,
                                   354, 420, 327, 390, 843, 24, 1140, 357,
                                   1128, 420, 1116, 609, 1119, 822, 1047, 870,
@@ -12609,7 +13202,7 @@ class GardenApp:
 
             def _on_enter_friars(event=None):
                 legend_var.set("Friar's quarters (Tutorial)")
-                canvas.itemconfig(friars_poly_id, outline="#954535", width=4)  # chestnut brown
+                canvas.itemconfig(friars_poly_id, outline="#DEB887", width=4)  # bright beige-brown (burlywood)
                 canvas.config(cursor="hand2")
 
             def _on_leave_friars(event=None):
@@ -12617,12 +13210,465 @@ class GardenApp:
                 canvas.itemconfig(friars_poly_id, outline="", width=2)
                 canvas.config(cursor="")
 
+            def _on_click_friars(event=None):
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+                self._start_tutorial()
+
             canvas.tag_bind(friars_poly_id, "<Enter>", _on_enter_friars)
             canvas.tag_bind(friars_poly_id, "<Leave>", _on_leave_friars)
+            canvas.tag_bind(friars_poly_id, "<Button-1>", _on_click_friars)
+
+            # "Garden shed" region — the little outbuilding by the back
+            # gate — opens the consolidated Game Settings popup (see
+            # _open_game_settings_dialog). Same coordinate/scale
+            # convention as the two regions above. Left open on top of
+            # the Monastery popup (rather than destroying `win` first,
+            # like the other two regions do) since opening settings
+            # isn't "going" anywhere — the player comes right back here.
+            raw_points_shed = [1785, 1686, 1743, 1665, 1686, 1605, 1650, 1551,
+                                1647, 1443, 1638, 1434, 1749, 1350, 1911, 1521,
+                                1887, 1536, 1893, 1623]
+            scaled_points_shed = [p * scale for p in raw_points_shed]
+            shed_poly_id = canvas.create_polygon(
+                *scaled_points_shed, fill="", outline="", width=2,
+            )
+
+            def _on_enter_shed(event=None):
+                legend_var.set("Garden shed (Settings)")
+                canvas.itemconfig(shed_poly_id, outline="#4a90d9", width=4)  # steel blue
+                canvas.config(cursor="hand2")
+
+            def _on_leave_shed(event=None):
+                legend_var.set("")
+                canvas.itemconfig(shed_poly_id, outline="", width=2)
+                canvas.config(cursor="")
+
+            def _on_click_shed(event=None):
+                self._open_game_settings_dialog()
+
+            canvas.tag_bind(shed_poly_id, "<Enter>", _on_enter_shed)
+            canvas.tag_bind(shed_poly_id, "<Leave>", _on_leave_shed)
+            canvas.tag_bind(shed_poly_id, "<Button-1>", _on_click_shed)
+
+            # Bottom-right Close button — the window is also resizable-
+            # less and closable via the OS titlebar already, but an
+            # explicit on-screen Close matches the other popups (Game
+            # Settings, Load Garden) and makes it obvious this is a
+            # dismissable overlay rather than something blocking.
+            footer = tk.Frame(win, bg=self.grid_bg)
+            footer.pack(fill="x", padx=10, pady=(0, 10))
+            tk.Button(
+                footer, text="Close", font=("Segoe UI", 10, "bold"),
+                bg=_SETTINGS_ACCENT, fg="white",
+                activebackground=_SETTINGS_SIDEBAR_BG, activeforeground="white",
+                relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
+                command=win.destroy,
+            ).pack(side="right")
 
         except Exception as e:
             logging.error(f"Failed to open Monastery popup: {e}", exc_info=True)
             self._toast("Could not open the Monastery.", level="warn")
+
+    # ========================================================================
+    # Consolidated Game Settings popup
+    # ========================================================================
+    # Everything below already existed somewhere in the "Game Settings" menu
+    # bar cascade — this gathers the same tk.Variables and the same command
+    # methods into one nicer-looking window with a sidebar of categories,
+    # reached by clicking the Monastery map's garden shed. The old menu is
+    # left exactly as it was (for muscle memory / anyone who prefers it) and
+    # shares the same variables, so changing something in one place is
+    # reflected in the other immediately.
+
+    def _reset_game_settings_to_defaults(self):
+        """Resets every setting the consolidated Game Settings popup (and
+        the equivalent old Game Settings menu, since it's the same
+        variables) exposes back to what a brand-new game starts with —
+        not necessarily what was in effect when THIS session launched,
+        since most of these persist to disk across sessions and may
+        already have been customized long before today."""
+        # Difficulty
+        self._difficulty_var.set(self.SEASON_MODES[0])  # "off" (Casual)
+        self._on_difficulty_change()
+
+        # Pacing
+        self._set_day_length(1.0)  # 1 real second = 1 simulated hour
+        self.ff_render_daily.set(False)
+        self.ff_render_interval.set(2)
+
+        # Garden Visuals
+        self.daynight_var.set(True)
+        self._toggle_daynight()
+        self._bg_texture_enabled_var.set(DEFAULT_BG_TEXTURE_ENABLED)
+        self._set_bg_texture_enabled(DEFAULT_BG_TEXTURE_ENABLED)
+        self._water_drop_var.set(DEFAULT_WATER_DROP_ENABLED)
+        self._set_water_drop_enabled(DEFAULT_WATER_DROP_ENABLED)
+        self._health_hearts_var.set(DEFAULT_HEALTH_HEARTS_ENABLED)
+        self._set_health_hearts_enabled(DEFAULT_HEALTH_HEARTS_ENABLED)
+        self._texture_blur_var.set(DEFAULT_TEXTURE_BLUR_PCT)
+        self._set_texture_blur(DEFAULT_TEXTURE_BLUR_PCT)
+        self._set_stone_size_px(DEFAULT_STONE_SIZE_PX)
+
+        # Wildlife
+        self._wildlife_enabled_var.set(True)
+        self._on_wildlife_enabled_change()
+        self._wildlife_freq_var.set("low")  # applied by its own trace_add
+
+        # Automation
+        self.auto_water_normal.set(False)
+        self.auto_water_ff.set(True)
+        self.auto_record_temperature.set(False)
+        self.show_breed_dialogs.set(True)
+
+        # Audio (module-level state, same setters the Audio Settings
+        # dialog itself calls — see _open_audio_settings_dialog)
+        _set_sfx_enabled(True)
+        _set_music_enabled(True)
+        _set_sfx_volume(0.75)
+        _set_music_volume(0.75)
+
+        try:
+            self.render_all()
+        except Exception:
+            pass
+        try:
+            self._toast("Game Settings reset to defaults.", level="info")
+        except Exception:
+            pass
+
+    def _open_game_settings_dialog(self):
+        """Opens the consolidated Game Settings popup, or just refocuses it
+        if it's already open."""
+        try:
+            existing = getattr(self, "_settings_dialog_win", None)
+            if existing is not None and existing.winfo_exists():
+                existing.lift()
+                existing.focus_force()
+                return
+        except Exception:
+            pass
+
+        # A warm, parchment-ish palette echoing the Monastery popup and the
+        # tutorial's own nav buttons — shared with anything opened from
+        # inside this dialog (e.g. the Garden size wizard) via the
+        # module-level _SETTINGS_* constants, so they all look of a piece.
+        BG = _SETTINGS_BG
+        PANEL_BG = _SETTINGS_PANEL_BG
+        HEADING_FG = _SETTINGS_HEADING_FG
+        SIDEBAR_BG = _SETTINGS_SIDEBAR_BG
+        SIDEBAR_FG = _SETTINGS_SIDEBAR_FG
+        SIDEBAR_SEL_BG = _SETTINGS_ACCENT
+        ACCENT = _SETTINGS_ACCENT
+
+        win = tk.Toplevel(self.root)
+        self._settings_dialog_win = win
+        win.title("Game Settings")
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        try:
+            self._force_window_not_maximized(win)
+        except Exception:
+            pass
+
+        tk.Label(
+            win, text="Game Settings", font=("Segoe UI", 18, "bold"),
+            bg=BG, fg=HEADING_FG, anchor="w",
+        ).pack(fill="x", padx=20, pady=(18, 4))
+        tk.Frame(win, bg=ACCENT, height=2).pack(fill="x", padx=20, pady=(0, 12))
+
+        body = tk.Frame(win, bg=BG)
+        body.pack(fill="both", expand=True, padx=20, pady=(0, 18))
+
+        sidebar = tk.Frame(body, bg=SIDEBAR_BG)
+        sidebar.pack(side="left", fill="y")
+
+        content_holder = tk.Frame(body, bg=PANEL_BG, bd=1, relief="solid",
+                                   highlightbackground="#d9cdb4", highlightthickness=1)
+        content_holder.pack(side="left", fill="both", expand=True, padx=(0, 0))
+
+        inner = tk.Frame(content_holder, bg=PANEL_BG)
+        inner.pack(fill="both", expand=True, padx=22, pady=20)
+
+        panels = {}
+        sidebar_buttons = {}
+
+        def _show_category(name):
+            for n, panel in panels.items():
+                if n == name:
+                    panel.pack(fill="both", expand=True)
+                else:
+                    panel.pack_forget()
+            for n, btn in sidebar_buttons.items():
+                btn.configure(bg=SIDEBAR_SEL_BG if n == name else SIDEBAR_BG)
+
+        def _add_category(name, build_fn):
+            panel = tk.Frame(inner, bg=PANEL_BG, width=420)
+            build_fn(panel)
+            panels[name] = panel
+            btn = tk.Button(
+                sidebar, text=name, font=("Segoe UI", 11, "bold"),
+                bg=SIDEBAR_BG, fg=SIDEBAR_FG,
+                activebackground=SIDEBAR_SEL_BG, activeforeground=SIDEBAR_FG,
+                relief="flat", bd=0, anchor="w", padx=18, pady=12,
+                width=20, cursor="hand2",
+                command=lambda n=name: _show_category(n),
+            )
+            btn.pack(fill="x")
+            sidebar_buttons[name] = btn
+
+        def _heading(parent, text):
+            tk.Label(
+                parent, text=text, font=("Segoe UI", 14, "bold"),
+                bg=PANEL_BG, fg=HEADING_FG, anchor="w",
+            ).pack(fill="x", pady=(0, 14))
+
+        def _subheading(parent, text):
+            tk.Label(
+                parent, text=text, font=("Segoe UI", 11, "bold"),
+                bg=PANEL_BG, fg=HEADING_FG, anchor="w",
+            ).pack(fill="x", pady=(14, 4))
+
+        def _spacer(parent, h=10):
+            tk.Frame(parent, bg=PANEL_BG, height=h).pack()
+
+        def _check(parent, text, var, command):
+            tk.Checkbutton(
+                parent, text=text, variable=var, command=command,
+                font=("Segoe UI", 10), bg=PANEL_BG, activebackground=PANEL_BG,
+                anchor="w", justify="left", wraplength=360,
+            ).pack(fill="x", pady=2)
+
+        def _radio_row(parent, options, var, command):
+            row = tk.Frame(parent, bg=PANEL_BG)
+            row.pack(fill="x", pady=(0, 2))
+            for text, value in options:
+                tk.Radiobutton(
+                    row, text=text, variable=var, value=value,
+                    command=lambda v=value: command(v),
+                    font=("Segoe UI", 10), bg=PANEL_BG, activebackground=PANEL_BG,
+                ).pack(side="left", padx=(0, 10))
+
+        def _radio_col(parent, options, var, command):
+            for text, value in options:
+                tk.Radiobutton(
+                    parent, text=text, variable=var, value=value,
+                    command=lambda v=value: command(v),
+                    font=("Segoe UI", 10), bg=PANEL_BG, activebackground=PANEL_BG,
+                    anchor="w", justify="left", wraplength=360,
+                ).pack(fill="x", padx=(6, 0))
+
+        def _dialog_button(parent, text, command):
+            tk.Button(
+                parent, text=text, font=("Segoe UI", 10),
+                bg="#efe3cc", activebackground="#e4d4b2",
+                relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
+                command=command,
+            ).pack(anchor="w", pady=4)
+
+        # ---- Difficulty & Speed -------------------------------------------
+        def _build_difficulty(panel):
+            _heading(panel, "Difficulty & Speed")
+            _subheading(panel, "Difficulty")
+            _radio_col(panel, [
+                ("Casual — No environmental stress", "off"),
+                ("Moderate — Environmental effects (advisory)", "overlay"),
+                ("Realistic — Full Mendel-era conditions", "enforce"),
+            ], self._difficulty_var, lambda v: self._on_difficulty_change())
+            _spacer(panel)
+            _subheading(panel, "Pacing")
+            _dialog_button(panel, "Time Speed…", self._open_speed_dialog)
+            _dialog_button(panel, "Fast Forward Rendering…", self._open_ff_render_settings_dialog)
+
+        _add_category("Difficulty & Speed", _build_difficulty)
+
+        # ---- Garden Visuals -------------------------------------------------
+        def _build_visuals(panel):
+            _heading(panel, "Garden Visuals")
+            _check(panel, "Day / Night cycle", self.daynight_var, self._toggle_daynight)
+            _check(panel, "Show Background Texture", self._bg_texture_enabled_var,
+                   lambda: self._set_bg_texture_enabled(self._bg_texture_enabled_var.get()))
+            _check(panel, "Water: show as drop icon", self._water_drop_var,
+                   lambda: self._set_water_drop_enabled(self._water_drop_var.get()))
+            _check(panel, "Health: show as hearts", self._health_hearts_var,
+                   lambda: self._set_health_hearts_enabled(self._health_hearts_var.get()))
+
+            _subheading(panel, "Background Texture Blur")
+            _radio_row(panel,
+                       [("Off" if p == 0 else f"{p}%", p) for p in TEXTURE_BLUR_PRESETS],
+                       self._texture_blur_var, self._set_texture_blur)
+
+            _subheading(panel, "Stone Border Size")
+            _radio_row(panel, [
+                ("Full (16px)", 16), ("Half (8px)", 8),
+                ("Quarter (4px)", 4), ("Hide", 0),
+            ], self._stone_size_var, self._set_stone_size_px)
+
+        _add_category("Garden Visuals", _build_visuals)
+
+        # ---- Wildlife ---------------------------------------------------------
+        def _build_wildlife(panel):
+            _heading(panel, "Wildlife")
+            _check(panel, "Enable wildlife", self._wildlife_enabled_var,
+                   self._on_wildlife_enabled_change)
+            _subheading(panel, "Frequency")
+            _radio_col(panel, [
+                ("Low frequency", "low"),
+                ("Medium frequency", "medium"),
+                ("High frequency", "high"),
+            ], self._wildlife_freq_var, lambda v: None)  # the var's own trace handles this
+
+        _add_category("Wildlife", _build_wildlife)
+
+        # ---- Automation ---------------------------------------------------------
+        def _build_automation(panel):
+            _heading(panel, "Automation")
+            _check(panel, "Auto-water", self.auto_water_normal, lambda: None)
+            _check(panel, "Auto-water in Fast Forward", self.auto_water_ff, lambda: None)
+            _check(panel, "Auto-record temperature", self.auto_record_temperature, lambda: None)
+            _check(panel, "Show Emasculation / Pollination dialogs",
+                   self.show_breed_dialogs, lambda: None)
+
+        _add_category("Automation", _build_automation)
+
+        # ---- Audio ------------------------------------------------------------
+        # Built directly into this panel (same controls as the standalone
+        # Audio Settings dialog — _open_audio_settings_dialog, still used
+        # by the old Game Settings menu) rather than a button that opens
+        # yet another popup on top of this one.
+        def _build_audio(panel):
+            _heading(panel, "Audio")
+
+            sfx_on_var = tk.BooleanVar(value=_sfx_enabled)
+            music_on_var = tk.BooleanVar(value=_music_enabled)
+
+            def _on_sfx_toggle():
+                _set_sfx_enabled(sfx_on_var.get())
+
+            def _on_music_toggle():
+                _set_music_enabled(music_on_var.get())
+                # Immediate resync rather than waiting for the sim's own
+                # next tick — see _set_music_enabled's own docstring.
+                self.render_all()
+
+            _check(panel, "Sound Effects", sfx_on_var, _on_sfx_toggle)
+
+            tk.Label(panel, text="Sound Effects Volume", font=("Segoe UI", 9),
+                     bg=PANEL_BG, fg=HEADING_FG, anchor="w").pack(fill="x", pady=(2, 0))
+            # Built without `command` first, positioned via .set(), THEN
+            # given a command — see _open_audio_settings_dialog for why:
+            # attaching command before .set() would fire it immediately
+            # with whatever value was already loaded, silently "saving"
+            # it as an explicit choice the first time this panel is ever
+            # shown.
+            sfx_scale = tk.Scale(
+                panel, from_=0, to=100, orient="horizontal", length=280,
+                bg=PANEL_BG, highlightthickness=0, troughcolor=_SETTINGS_BUTTON_BG,
+            )
+            sfx_scale.set(int(round(_sfx_volume * 100)))
+            sfx_scale.configure(command=lambda v: _set_sfx_volume(float(v) / 100.0))
+            sfx_scale.pack(anchor="w", fill="x", pady=(0, 14))
+
+            _check(panel, "Background Music (incl. rain)", music_on_var, _on_music_toggle)
+
+            tk.Label(panel, text="Music Volume", font=("Segoe UI", 9),
+                     bg=PANEL_BG, fg=HEADING_FG, anchor="w").pack(fill="x", pady=(2, 0))
+            music_scale = tk.Scale(
+                panel, from_=0, to=100, orient="horizontal", length=280,
+                bg=PANEL_BG, highlightthickness=0, troughcolor=_SETTINGS_BUTTON_BG,
+            )
+            music_scale.set(int(round(_music_volume * 100)))
+            music_scale.configure(command=lambda v: _set_music_volume(float(v) / 100.0))
+            music_scale.pack(anchor="w", fill="x", pady=(0, 4))
+
+        _add_category("Audio", _build_audio)
+
+        # ---- Garden Setup -------------------------------------------------------
+        def _open_grid_wizard_from_settings():
+            # _ask_grid_size (inside _on_grid_wizard) is modal — it blocks
+            # via wait_window and is already closed by the time this call
+            # returns — so re-lifting `win` right after is enough to bring
+            # the settings popup back in front rather than leaving the
+            # main garden window on top (what was happening before this
+            # passed itself through as the wizard's parent and re-lifted
+            # itself afterwards).
+            self._on_grid_wizard(parent=win)
+            try:
+                win.lift()
+                win.focus_force()
+            except Exception:
+                pass
+
+        def _build_setup(panel):
+            _heading(panel, "Garden Setup")
+            _dialog_button(panel, "Garden size wizard…", _open_grid_wizard_from_settings)
+
+        _add_category("Garden Setup", _build_setup)
+
+        tk.Frame(sidebar, bg=SIDEBAR_BG, height=10).pack()
+
+        def _on_reset_clicked():
+            if self._silent_askyesno(
+                "Reset Game Settings",
+                "Reset every setting here back to its default — the same "
+                "values a brand-new game starts with?\n\nThis won't touch "
+                "your garden itself, only these settings.",
+                parent=win,
+            ):
+                self._reset_game_settings_to_defaults()
+
+        footer = tk.Frame(win, bg=BG)
+        footer.pack(fill="x", padx=20, pady=(0, 16))
+
+        tk.Button(
+            footer, text="Reset to Defaults", font=("Segoe UI", 10),
+            bg="#efe3cc", activebackground="#e4d4b2",
+            relief="flat", bd=0, padx=12, pady=6, cursor="hand2",
+            command=_on_reset_clicked,
+        ).pack(side="left")
+
+        tk.Button(
+            footer, text="Close", font=("Segoe UI", 10, "bold"),
+            bg=ACCENT, fg="white", activebackground=SIDEBAR_BG, activeforeground="white",
+            relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
+            command=win.destroy,
+        ).pack(side="right")
+
+        _show_category("Difficulty & Speed")
+
+    def _start_tutorial(self, lecture_index=0):
+        """
+        Launches the tutorial sequence (see tutorial.py) — reached by
+        clicking the Monastery map's "Friar's quarters" region. Kept in
+        its own module, separate from the real simulator, so its scenes
+        and dialogue can be extended with more lectures without touching
+        this file; this is just the hand-off.
+        """
+        try:
+            import tutorial
+            tutorial.start_tutorial(self, lecture_index=lecture_index)
+        except Exception as e:
+            logging.error(f"Failed to start tutorial: {e}", exc_info=True)
+            self._toast("Could not start the tutorial.", level="warn")
+
+    def _exit_tutorial_to_normal_garden(self):
+        """
+        Bound to the Monastery map's "Mendel's Garden" region. That
+        region never opens the Load Garden file picker any more — it
+        simply takes the player back to the normal simulator, restoring
+        the real garden exactly as it was before the tutorial (if one is
+        in progress) via tutorial.exit_tutorial. Safe to click even when
+        no tutorial is running (it just confirms there's nothing to
+        restore).
+        """
+        try:
+            import tutorial
+            tutorial.exit_tutorial(self)
+        except Exception as e:
+            logging.error(f"Failed to exit tutorial: {e}", exc_info=True)
+            self._toast("Could not return to the garden.", level="warn")
 
     def _open_load_garden_dialog(self):
         """Standalone Load Garden popup.
@@ -14513,6 +15559,23 @@ def _apply_grid_size(rows, cols):
     GRID_SIZE = ROWS * COLS
     TILES_PER_ROW = COLS
 
+# Shared palette for the consolidated Game Settings popup
+# (GardenApp._open_game_settings_dialog) and anything opened from inside
+# it, like the Garden size wizard below — a warm, parchment-ish look
+# echoing the Monastery popup and the tutorial's own nav buttons, rather
+# than each dialog using the plain system grey it happened to be written
+# with originally.
+_SETTINGS_BG = "#f6efe0"
+_SETTINGS_PANEL_BG = "#fbf7ee"
+_SETTINGS_HEADING_FG = "#3b2a1a"
+_SETTINGS_SIDEBAR_BG = "#5C2810"
+_SETTINGS_SIDEBAR_FG = "#f4ead9"
+_SETTINGS_ACCENT = "#8B4226"
+_SETTINGS_BORDER = "#d9cdb4"
+_SETTINGS_BUTTON_BG = "#efe3cc"
+_SETTINGS_BUTTON_BG_ACTIVE = "#e4d4b2"
+
+
 def _ask_grid_size(root, existing_config=None):
     """Small popup to choose grid size (rows x cols) with recommended resolutions."""
 
@@ -14531,17 +15594,51 @@ def _ask_grid_size(root, existing_config=None):
     win.transient(root)
     win.grab_set()
     win.resizable(False, False)
+    win.configure(bg=_SETTINGS_BG)
 
     try:
         win.geometry("+%d+%d" % (root.winfo_rootx() + 80, root.winfo_rooty() + 80))
     except Exception:
         pass
 
-    main = tk.Frame(win, padx=12, pady=12)
+    # Same warm parchment look as the consolidated Game Settings popup
+    # this is normally opened from (see _SETTINGS_* constants above) —
+    # a scoped ttk.Style so the native Combobox/Entry/Checkbutton fit in
+    # without changing any other ttk widget elsewhere in the app.
+    style = ttk.Style(win)
+    try:
+        style.theme_use(style.theme_use())  # ensure a real theme is active to layer on top of
+    except Exception:
+        pass
+    for _name, _opts in (
+        ("GridWizard.TCombobox", {"fieldbackground": _SETTINGS_PANEL_BG, "background": _SETTINGS_BUTTON_BG}),
+        ("GridWizard.TEntry", {"fieldbackground": _SETTINGS_PANEL_BG}),
+        ("GridWizard.TCheckbutton", {"background": _SETTINGS_PANEL_BG}),
+        ("GridWizard.TButton", {"background": _SETTINGS_BUTTON_BG}),
+    ):
+        try:
+            style.configure(_name, **_opts)
+        except Exception:
+            pass
+
+    outer = tk.Frame(win, bg=_SETTINGS_BG)
+    outer.pack(fill="both", expand=True, padx=16, pady=16)
+
+    tk.Label(
+        outer, text="Garden Size", font=("Segoe UI", 15, "bold"),
+        bg=_SETTINGS_BG, fg=_SETTINGS_HEADING_FG, anchor="w",
+    ).pack(fill="x", pady=(0, 10))
+
+    panel = tk.Frame(outer, bg=_SETTINGS_PANEL_BG, bd=1, relief="solid",
+                      highlightbackground=_SETTINGS_BORDER, highlightthickness=1)
+    panel.pack(fill="both", expand=True)
+
+    main = tk.Frame(panel, padx=16, pady=16, bg=_SETTINGS_PANEL_BG)
     main.pack(fill="both", expand=True)
 
     # Preset combo
-    tk.Label(main, text="Preset:", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0,4))
+    tk.Label(main, text="Preset:", font=("Segoe UI", 11, "bold"),
+             bg=_SETTINGS_PANEL_BG, fg=_SETTINGS_HEADING_FG).grid(row=0, column=0, sticky="w", pady=(0,4))
 
     presets = {
         # 4K Ultra HD (3840×2160)
@@ -14580,17 +15677,18 @@ def _ask_grid_size(root, existing_config=None):
         rows_var.set(str(r))
 
 
-    combo = ttk.Combobox(main, textvariable=preset_var, values=preset_names, state="readonly", width=30)
+    combo = ttk.Combobox(main, textvariable=preset_var, values=preset_names,
+                          state="readonly", width=30, style="GridWizard.TCombobox")
     combo.grid(row=0, column=1, columnspan=2, sticky="w", padx=(6,0), pady=(0,4))
     combo.bind("<<ComboboxSelected>>", on_preset)
 
     # Manual entry for cols/rows
-    tk.Label(main, text="Columns (x):").grid(row=1, column=0, sticky="e", pady=4)
-    cols_entry = ttk.Entry(main, textvariable=cols_var, width=6)
+    tk.Label(main, text="Columns (x):", bg=_SETTINGS_PANEL_BG).grid(row=1, column=0, sticky="e", pady=4)
+    cols_entry = ttk.Entry(main, textvariable=cols_var, width=6, style="GridWizard.TEntry")
     cols_entry.grid(row=1, column=1, sticky="w", pady=4)
 
-    tk.Label(main, text="Rows (y):").grid(row=2, column=0, sticky="e", pady=4)
-    rows_entry = ttk.Entry(main, textvariable=rows_var, width=6)
+    tk.Label(main, text="Rows (y):", bg=_SETTINGS_PANEL_BG).grid(row=2, column=0, sticky="e", pady=4)
+    rows_entry = ttk.Entry(main, textvariable=rows_var, width=6, style="GridWizard.TEntry")
     rows_entry.grid(row=2, column=1, sticky="w", pady=4)
 
     # Info text
@@ -14599,17 +15697,20 @@ def _ask_grid_size(root, existing_config=None):
         "• More columns/rows → more plants, but needs a larger screen.\n"
         "• If the grid does not fit, try a smaller preset."
     )
-    tk.Label(main, text=info, justify="left", wraplength=320).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6,8))
+    tk.Label(main, text=info, justify="left", wraplength=320,
+             bg=_SETTINGS_PANEL_BG, fg="#7a6a55", font=("Segoe UI", 9, "italic"),
+             ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6,8))
 
     # Checkbox: don't show at next start
     dont_show_var = tk.IntVar()
     if not show_dialog_next_time:
         dont_show_var.set(1)
-    chk = ttk.Checkbutton(main, text="Don't show at next start", variable=dont_show_var)
+    chk = ttk.Checkbutton(main, text="Don't show at next start", variable=dont_show_var,
+                           style="GridWizard.TCheckbutton")
     chk.grid(row=4, column=0, columnspan=3, sticky="w", pady=(0,8))
 
     # Buttons
-    btns = tk.Frame(main)
+    btns = tk.Frame(main, bg=_SETTINGS_PANEL_BG)
     btns.grid(row=5, column=0, columnspan=3, sticky="e")
 
     cancelled = {"value": False}
@@ -14641,9 +15742,17 @@ def _ask_grid_size(root, existing_config=None):
         cancelled["value"] = True
         win.destroy()
 
-    ok_btn = ttk.Button(btns, text="OK", command=on_ok)
-    ok_btn.pack(side="right", padx=(4,0))
-    cancel_btn = ttk.Button(btns, text="Cancel", command=on_cancel)
+    ok_btn = tk.Button(
+        btns, text="OK", font=("Segoe UI", 10, "bold"), command=on_ok,
+        bg=_SETTINGS_ACCENT, fg="white", activebackground=_SETTINGS_SIDEBAR_BG,
+        activeforeground="white", relief="flat", bd=0, padx=14, pady=5, cursor="hand2",
+    )
+    ok_btn.pack(side="right", padx=(6, 0))
+    cancel_btn = tk.Button(
+        btns, text="Cancel", font=("Segoe UI", 10), command=on_cancel,
+        bg=_SETTINGS_BUTTON_BG, activebackground=_SETTINGS_BUTTON_BG_ACTIVE,
+        relief="flat", bd=0, padx=14, pady=5, cursor="hand2",
+    )
     cancel_btn.pack(side="right")
 
     win.bind("<Return>", lambda e: on_ok())
@@ -14713,6 +15822,13 @@ def main():
         pass
 
     app = GardenApp(root)
+
+    # Greet the player with the Monastery map on every fresh start —
+    # delayed slightly so the main window has a moment to finish laying
+    # itself out (same pattern as the border-stone bake in __init__)
+    # rather than racing it.
+    root.after(400, app._open_monastery_popup)
+
     root.mainloop()
 
 if __name__ == "__main__":

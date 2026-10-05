@@ -170,6 +170,10 @@ def _teardrop_points(cx, bulb_cy, r, point_height, gap_half=35, steps=16):
 # Tile Canvas Widget
 # ============================================================================
 
+# Colour of the selected-tile border (matches the drag rectangle).
+SELECTION_BORDER_COLOR = "#4FC3F7"
+
+
 class TileCanvas(tk.Canvas):
     """
     Visual representation of a single garden plot.
@@ -183,10 +187,11 @@ class TileCanvas(tk.Canvas):
     - Plant ID or status label
     """
     
-    def __init__(self, parent, idx, app, soil_color, plant: Plant, configs, selected: bool = False):
+    def __init__(self, parent, idx, app, soil_color, plant: Plant, configs,
+                 selected: bool = False, locked: bool = False, season_override=None):
         """
         Initialize a tile canvas.
-        
+
         Args:
             parent: Parent widget
             idx: Tile index in garden grid
@@ -195,12 +200,26 @@ class TileCanvas(tk.Canvas):
             plant: Plant instance (or None for empty plot)
             configs: Configuration dictionary
             selected: Whether this tile is currently selected
+            locked: When True, this tile ignores all mouse interaction
+                (planting, selection, context menu, etc.) — used for the
+                un-plantable border tiles in tutorial scenes (see
+                tutorial.py). Purely a click-eating flag; rendering is
+                unaffected except via season_override below.
+            season_override: One of "spring"/"summer"/"autumn"/"winter",
+                or None. When set, this tile always renders with this
+                season's background texture regardless of the app's
+                current global season (self.app._bg_current_season) —
+                used so a tutorial scene can show, e.g., a locked autumn
+                border around a spring interior. None (the default)
+                keeps the existing behavior of following the app's season.
         """
         self.configs = configs
         self.idx = idx
         self.app = app
         self.soil = soil_color
         self.plant = plant
+        self.locked = bool(locked)
+        self._season_override = season_override
         # None, or a string like "beehive" / "measuring_station" — a tile
         # with this set permanently blocks planting and normal selection;
         # clicking it triggers its own special handler instead (see
@@ -656,7 +675,12 @@ class TileCanvas(tk.Canvas):
 
     def _set_bindings(self):
         """Set up mouse event bindings for interaction."""
-        self.bind("<Button-1>", 
+        if getattr(self, 'locked', False):
+            # Locked tiles (tutorial.py's un-plantable border) ignore every
+            # mouse interaction entirely — no planting, selection, drag, or
+            # context menu. Nothing to bind at all.
+            return
+        self.bind("<Button-1>",
                  lambda e: self.app._on_tile_left_press(e, self.idx))
         self.bind("<B1-Motion>", 
                  self.app._on_drag_motion)
@@ -905,10 +929,13 @@ class TileCanvas(tk.Canvas):
                     if covering is not None and _ms_own_right_shown(covering):
                         left_suppressed = True
 
-            self.itemconfig(self.sel_line_top,    fill="white")
-            self.itemconfig(self.sel_line_left,   fill=("" if left_suppressed else "white"))
-            self.itemconfig(self.sel_line_bottom, fill=("" if bottom_owned_by_neighbor else "white"))
-            self.itemconfig(self.sel_line_right,  fill=("" if right_owned_by_neighbor else "white"))
+            # Same light blue as the drag-selection rectangle (a test:
+            # was white) — SELECTION_BORDER_COLOR below.
+            c = SELECTION_BORDER_COLOR
+            self.itemconfig(self.sel_line_top,    fill=c)
+            self.itemconfig(self.sel_line_left,   fill=("" if left_suppressed else c))
+            self.itemconfig(self.sel_line_bottom, fill=("" if bottom_owned_by_neighbor else c))
+            self.itemconfig(self.sel_line_right,  fill=("" if right_owned_by_neighbor else c))
             self.tag_raise("sel_border")
             # Lines are now visible (or some may be "") — either way,
             # they're no longer in the known-fully-hidden state the
@@ -1396,7 +1423,11 @@ class TileCanvas(tk.Canvas):
                 mode = 'grass'; vi = self._bg_grass_vi
 
             # ── Season ────────────────────────────────────────────────────
-            season      = app.__dict__.get('_bg_current_season', 'spring')
+            # A per-tile override (see __init__'s season_override param)
+            # takes priority over the app's global season — lets a single
+            # scene mix seasons tile-by-tile (tutorial.py's locked autumn
+            # border around a spring interior).
+            season = getattr(self, '_season_override', None) or app.__dict__.get('_bg_current_season', 'spring')
             snow_bkt    = min(7, round(self.snow_cover * 7))
 
             # Winter always shows autumn textures as its base — winter textures

@@ -673,3 +673,217 @@ class WildlifeManager:
             )
         except Exception:
             return False
+
+
+# ---------------------------------------------------------------------------
+# BeeScene — a small self-contained "plot" for info popups
+# ---------------------------------------------------------------------------
+class BeeScene:
+    """
+    A single garden plot drawn on its own small Canvas: spring soil texture
+    behind a randomly chosen mature (flowering) plant, with a few bees
+    behaving like the ones in the wildlife simulator — each lands on a free
+    flower cluster of the plant icon, flaps (frame animation), wanders a
+    couple of pixels at a time, stays 4-14 s, then leaves and later returns
+    to another free flower cluster. Only the revisit gap is shorter than in
+    the simulator, so a popup scene always has bees in it.
+
+    Everything (soil, plant, bees) is drawn at `scale` times its tile size.
+    Use `.canvas` to place it; it stops itself when the canvas is destroyed.
+    """
+
+    REVISIT_MIN_MS = 1500
+    REVISIT_MAX_MS = 5000
+
+    def __init__(self, parent, app, tile_size=85, scale=1.5, n_bees=3,
+                 bg="#f5f0e6"):
+        self.app = app
+        self.ts = int(tile_size)
+        self.k = float(scale)
+        self.S = int(round(self.ts * self.k))
+        self.canvas = tk.Canvas(parent, width=self.S, height=self.S,
+                                highlightthickness=0, bd=0, bg=bg)
+        self._alive = True
+        self._jobs = set()
+        self._refs = []
+        self._occupied = set()
+        self._clusters = []     # (key, x, y, weight) in canvas pixels
+        self._variants = []     # list of lists of PhotoImage frames
+        self.canvas.bind("<Destroy>", lambda e: self._stop(), add="+")
+        if not _PIL:
+            return
+        try:
+            self._build_background()
+            self._build_plant()
+            self._load_bee_frames()
+        except Exception as exc:
+            log.error("BeeScene build error: %s", exc)
+            return
+        if self._clusters and self._variants:
+            for i in range(n_bees):
+                self._later(250 + i * 700, self._spawn)
+
+    # -- scheduling --------------------------------------------------------
+    def _later(self, ms, fn):
+        if not self._alive:
+            return None
+        try:
+            jid = self.canvas.after(ms, fn)
+            self._jobs.add(jid)
+            return jid
+        except Exception:
+            return None
+
+    def _stop(self):
+        self._alive = False
+        for j in list(self._jobs):
+            try:
+                self.canvas.after_cancel(j)
+            except Exception:
+                pass
+        self._jobs.clear()
+
+    # -- scene -------------------------------------------------------------
+    def _photo(self, pil):
+        ph = ImageTk.PhotoImage(pil)
+        self._refs.append(ph)
+        return ph
+
+    def _scaled(self, pil):
+        w = max(1, round(pil.width * self.k))
+        h = max(1, round(pil.height * self.k))
+        return pil.resize((w, h), Image.LANCZOS)
+
+    def _build_background(self):
+        img = None
+        try:
+            from tile import _find_base_image
+            pil_imgs = getattr(self.app, "_bg_pil_images", None) or {}
+            n = max(1, int(getattr(self.app, "_bg_soil_variants", 1) or 1))
+            img = _find_base_image(pil_imgs, "soil", "spring",
+                                   random.randint(0, n - 1), 100)
+        except Exception:
+            img = None
+        if img is None:
+            img = Image.new("RGBA", (self.ts, self.ts), (107, 79, 53, 255))
+        img = img.convert("RGBA").resize((self.S, self.S), Image.LANCZOS)
+        # Rounded corners: cut the soil image with an anti-aliased
+        # rounded-rectangle alpha mask (drawn 4x larger, then shrunk), so
+        # the corners show the canvas background instead.
+        try:
+            from PIL import ImageDraw
+            r = max(6, round(self.S * 0.12))
+            big = Image.new("L", (self.S * 4, self.S * 4), 0)
+            ImageDraw.Draw(big).rounded_rectangle(
+                (0, 0, self.S * 4 - 1, self.S * 4 - 1), radius=r * 4, fill=255)
+            mask = big.resize((self.S, self.S), Image.LANCZOS)
+            alpha = img.getchannel("A")
+            from PIL import ImageChops
+            img.putalpha(ImageChops.multiply(alpha, mask))
+        except Exception:
+            pass
+        self.canvas.create_image(0, 0, anchor="nw", image=self._photo(img))
+
+    def _build_plant(self):
+        import icon_loader as il
+        pos = random.choice(("axial", "terminal"))
+        col = random.choice(("purple", "white"))
+        path = ""
+        try:
+            path = il.flower_icon_path_hi(pos, col) or il.flower_icon_path(pos, col)
+        except Exception:
+            path = ""
+        if not path:
+            path = il.stage_icon_path(5)
+        pil = Image.open(path).convert("RGBA")
+        if random.random() < 0.5:
+            pil = pil.transpose(Image.FLIP_LEFT_RIGHT)
+
+        icx = self.ts // 2
+        icy = self.ts // 2 + 4
+        x0 = icx - pil.width // 2
+        y0 = icy - pil.height // 2
+        clusters = _cluster_spots(_scan_spots(pil, False), radius=8)
+        for cl in clusters:
+            cx, cy = _centroid(cl)
+            sx = round((x0 + cx) * self.k)
+            sy = round((y0 + cy) * self.k)
+            self._clusters.append(((sx, sy), sx, sy, len(cl)))
+
+        self.canvas.create_image(round(icx * self.k), round(icy * self.k),
+                                 anchor="center",
+                                 image=self._photo(self._scaled(pil)))
+
+    def _load_bee_frames(self):
+        d = _find_icon_dir()
+        if not d:
+            return
+        bases = sorted(f[:-len("_frame1.png")] for f in os.listdir(d)
+                       if f.startswith("bee") and f.endswith("_frame1.png"))
+        for base in bases:
+            frames = []
+            for n in (1, 2):
+                p = os.path.join(d, f"{base}_frame{n}.png")
+                if not os.path.exists(p):
+                    break
+                frames.append(self._photo(self._scaled(Image.open(p).convert("RGBA"))))
+            if frames:
+                self._variants.append(frames)
+
+    # -- bees --------------------------------------------------------------
+    def _spawn(self):
+        if not self._alive:
+            return
+        free = [c for c in self._clusters if c[0] not in self._occupied]
+        if not free:
+            self._later(2000, self._spawn)
+            return
+        key, x, y, _w = random.choices(free, weights=[c[3] for c in free], k=1)[0]
+        self._occupied.add(key)
+        frames = random.choice(self._variants)
+        mx = frames[0].width() // 2
+        my = frames[0].height() // 2
+        bee = {"x": x, "y": y, "fi": 0, "frames": frames, "key": key,
+               "mx": mx, "my": my, "live": True}
+        bee["item"] = self.canvas.create_image(x, y, image=frames[0],
+                                               anchor="center", tags="bee")
+        self.canvas.tag_raise("bee")
+        self._later(FRAME_MS, lambda: self._anim(bee))
+        self._later(WANDER_MS, lambda: self._wander(bee))
+        self._later(random.randint(MIN_STAY_MS, MAX_STAY_MS),
+                    lambda: self._depart(bee))
+
+    def _anim(self, bee):
+        if not (self._alive and bee["live"]):
+            return
+        bee["fi"] = (bee["fi"] + 1) % len(bee["frames"])
+        try:
+            self.canvas.itemconfig(bee["item"], image=bee["frames"][bee["fi"]])
+            self.canvas.tag_raise("bee")
+        except Exception:
+            return
+        self._later(FRAME_MS, lambda: self._anim(bee))
+
+    def _wander(self, bee):
+        if not (self._alive and bee["live"]):
+            return
+        step = max(1, round(2 * self.k))
+        bee["x"] = max(bee["mx"], min(self.S - bee["mx"],
+                                      bee["x"] + random.randint(-step, step)))
+        bee["y"] = max(bee["my"], min(self.S - bee["my"],
+                                      bee["y"] + random.randint(-step, step)))
+        try:
+            self.canvas.coords(bee["item"], bee["x"], bee["y"])
+        except Exception:
+            return
+        self._later(WANDER_MS, lambda: self._wander(bee))
+
+    def _depart(self, bee):
+        bee["live"] = False
+        try:
+            self.canvas.delete(bee["item"])
+        except Exception:
+            pass
+        self._occupied.discard(bee["key"])
+        self._later(random.randint(self.REVISIT_MIN_MS, self.REVISIT_MAX_MS),
+                    self._spawn)
