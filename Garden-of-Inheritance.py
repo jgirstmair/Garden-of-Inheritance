@@ -6393,6 +6393,14 @@ class GardenApp:
         self.mendel_label.image = mendel_img
         self.mendel_label.pack(anchor="center", pady=(0, 0))  # No bottom padding
         self._mendel_hover_idx = 0
+        # Season-aware, randomly changing portrait (see mendel_portrait.py).
+        try:
+            from mendel_portrait import MendelPortrait
+            self._mendel_portrait = MendelPortrait(self, self.mendel_label)
+            self.root.after(300, self._mendel_portrait.start)
+        except Exception as _e:
+            logging.error(f"Mendel portrait animation unavailable: {_e}")
+            self._mendel_portrait = None
         self.mendel_label.bind("<Enter>", self._on_mendel_hover)
         # Tutorial note: both handlers below are suppressed while
         # self._tutorial_active is set (see tutorial.py) — otherwise
@@ -10754,6 +10762,11 @@ class GardenApp:
         msg = self.garden.water_all()
         self.render_all()
         _play_sound_variant("water*.ogg")
+        try:
+            if getattr(self, "_mendel_portrait", None):
+                self._mendel_portrait.show_watering()
+        except Exception:
+            pass
         # Start automated phase progression (slight delay for safety)
         try:
             self._ensure_auto_loop(delay_ms=50)
@@ -10988,6 +11001,11 @@ class GardenApp:
 
         if watered > 0:
             _play_sound_variant("water*.ogg")
+            try:
+                if getattr(self, "_mendel_portrait", None):
+                    self._mendel_portrait.show_watering()
+            except Exception:
+                pass
 
 
         try:
@@ -15742,17 +15760,16 @@ def _ask_grid_size(root, existing_config=None):
         cancelled["value"] = True
         win.destroy()
 
-    ok_btn = tk.Button(
-        btns, text="OK", font=("Segoe UI", 10, "bold"), command=on_ok,
-        bg=_SETTINGS_ACCENT, fg="white", activebackground=_SETTINGS_SIDEBAR_BG,
-        activeforeground="white", relief="flat", bd=0, padx=14, pady=5, cursor="hand2",
-    )
+    # Label-based flat buttons: tk.Button ignores bg/fg on macOS (the OK
+    # button showed up as a plain white box with invisible white text).
+    ok_btn = _make_flat_button_raw(
+        btns, "OK", on_ok, bg=_SETTINGS_ACCENT, fg="white",
+        hover_bg=_SETTINGS_SIDEBAR_BG, font=("Segoe UI", 10, "bold"))
     ok_btn.pack(side="right", padx=(6, 0))
-    cancel_btn = tk.Button(
-        btns, text="Cancel", font=("Segoe UI", 10), command=on_cancel,
-        bg=_SETTINGS_BUTTON_BG, activebackground=_SETTINGS_BUTTON_BG_ACTIVE,
-        relief="flat", bd=0, padx=14, pady=5, cursor="hand2",
-    )
+    cancel_btn = _make_flat_button_raw(
+        btns, "Cancel", on_cancel, bg=_SETTINGS_BUTTON_BG,
+        fg=_SETTINGS_HEADING_FG, hover_bg=_SETTINGS_BUTTON_BG_ACTIVE,
+        font=("Segoe UI", 10))
     cancel_btn.pack(side="right")
 
     win.bind("<Return>", lambda e: on_ok())

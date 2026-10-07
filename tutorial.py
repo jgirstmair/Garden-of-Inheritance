@@ -40,6 +40,16 @@ def _autosave_path():
     return os.path.join(_data_dir(), f"garden_{_AUTOSAVE_NAME}.json")
 
 
+# Tutorial progress save, written once part 1 is over (and refreshed while
+# the player waits for their seedlings / when they leave mid-way), so the
+# tutorial can be picked up again at part 2 from the Friar's quarters.
+_PROGRESS_NAME = "auto-save-tutorial-progress"
+
+
+def _progress_path():
+    return os.path.join(_data_dir(), f"garden_{_PROGRESS_NAME}.json")
+
+
 def _play_sound_via_app(app, filename):
     """Plays a sound effect using Garden-of-Inheritance.py's own
     _play_sound() (safe to call unconditionally — it no-ops if pygame or
@@ -343,6 +353,20 @@ LECTURES = [
     },
 ]
 
+# Part 2 — Cyril returns once every planted seed has become a seedling
+# (see _watch_for_seedlings / _play_lecture_2). More lines can follow here.
+LECTURE_2_DIALOGUE = [
+    ("Cyril",
+     "Ah, there they are! Your first little seedlings.",
+     {"mood": 2, "highlight_words": ["seedlings"]}),
+    ("Cyril",
+     "Look how bravely they push up through the soil.",
+     {"mood": 2}),
+    ("Cyril",
+     "Keep watering them, Brother, and I shall be back with more soon.",
+     {"auto_advance_ms": 5000}),
+]
+
 
 # ============================================================================
 # Highlighting: a fading arrow pointing at a real widget, from below
@@ -480,63 +504,59 @@ class _ArrowHighlight:
         # applies: it renders above the main window (being a Toplevel
         # created after it) but a dialog or menu opened afterward still
         # comes to the front over it, same as any other window would.
-        try:
-            self.win.wm_attributes("-transparentcolor", self._key)
-        except Exception:
-            # Not supported on this platform — falls back to a plain,
-            # non-transparent key-colored rectangle behind the glyph.
-            pass
+        bg_color = self._key
+        if sys.platform == "darwin":
+            # macOS has no -transparentcolor; it uses a real transparent
+            # window with the special "systemTransparent" color instead.
+            try:
+                self.win.wm_attributes("-transparent", True)
+                self.win.configure(bg="systemTransparent")
+                bg_color = "systemTransparent"
+            except Exception:
+                pass
+        else:
+            try:
+                self.win.wm_attributes("-transparentcolor", self._key)
+            except Exception:
+                # Not supported on this platform — falls back to a plain,
+                # non-transparent key-colored rectangle behind the arrow.
+                pass
 
         self.canvas = tk.Canvas(
-            self.win, bg=self._key, highlightthickness=0, bd=0,
+            self.win, bg=bg_color, highlightthickness=0, bd=0,
             cursor="arrow",
         )
         self.canvas.pack()
 
-        self._glyph = "⬆"
-        self._font = ("Segoe UI", self.FONT_SIZE, "bold")
         self._build_items()
         self._reposition()
         self._start_cycling()
 
     def _build_items(self):
-        # Measures the glyph with a throwaway text item first, so the
-        # canvas (and the window around it) is sized to fit it plus the
-        # outline's own offset, rather than some guessed fixed size.
-        tmp = self.canvas.create_text(0, 0, text=self._glyph, font=self._font, anchor="center")
-        bbox = self.canvas.bbox(tmp)
-        self.canvas.delete(tmp)
-        t = self.OUTLINE_THICKNESS
-        pad = t + 4
-        if bbox:
-            w = (bbox[2] - bbox[0]) + pad * 2
-            h = (bbox[3] - bbox[1]) + pad * 2
-        else:
-            w = h = self.FONT_SIZE * 2
+        # Drawn as a polygon (not a font glyph) so it looks identical on
+        # every platform — the "⬆" glyph depended on Segoe UI, which
+        # macOS doesn't have, and rendered as an odd fallback shape.
+        o = self.OUTLINE_THICKNESS
+        pad = o + 4
+        aw, ah = 62, 96          # arrow width / height
+        w, h = aw + pad * 2, ah + pad * 2
         self.canvas.configure(width=w, height=h)
-        cx, cy = w // 2, h // 2
-
-        # A ring of just 8 copies at one fixed distance leaves visible
-        # gaps/overlaps between them — most obvious at the arrow's
-        # pointed tip and the corners of the shaft, where the gaps
-        # between adjacent copies show through as odd little jagged
-        # shapes. Filling every offset inside the outline's radius
-        # (not just its rim) instead gives a solid, smooth outline with
-        # no such artifacts, at the cost of more canvas items — cheap
-        # enough for one static glyph drawn once.
-        for dx in range(-t, t + 1):
-            for dy in range(-t, t + 1):
-                if dx == 0 and dy == 0:
-                    continue
-                if dx * dx + dy * dy > t * t:
-                    continue
-                self.canvas.create_text(
-                    cx + dx, cy + dy, text=self._glyph, font=self._font,
-                    fill="black", anchor="center",
-                )
-        self._main_id = self.canvas.create_text(
-            cx, cy, text=self._glyph, font=self._font,
-            fill=self.COLOR_A, anchor="center",
+        cx = w // 2
+        top, bottom = pad, pad + ah
+        head_h = int(ah * 0.45)
+        shaft_hw = int(aw * 0.19)
+        pts = [
+            cx, top,                              # tip
+            cx + aw // 2, top + head_h,           # right head corner
+            cx + shaft_hw, top + head_h,
+            cx + shaft_hw, bottom,
+            cx - shaft_hw, bottom,
+            cx - shaft_hw, top + head_h,
+            cx - aw // 2, top + head_h,           # left head corner
+        ]
+        self._main_id = self.canvas.create_polygon(
+            *pts, fill=self.COLOR_A, outline="black",
+            width=o, joinstyle="round",
         )
 
     def _reposition(self):
@@ -871,12 +891,16 @@ class _StatusBarDialogue:
         self._mood_tick()
 
     def _make_nav_button(self, text, command):
-        btn = tk.Button(
+        # A styled Label rather than tk.Button: on macOS (Aqua) a real
+        # Button ignores bg/fg and renders as a plain white native
+        # button with white (invisible) text. A Label honors the colors
+        # on every platform; the click is bound by hand.
+        btn = tk.Label(
             self.app.root, text=text, font=("Segoe UI", 11, "bold"),
-            width=2, relief="flat", bd=0, bg=self._btn_bg_normal, fg="white",
-            activebackground="#7A3A18", activeforeground="white",
-            cursor="hand2", command=command,
+            width=2, padx=4, pady=2, relief="flat", bd=0,
+            bg=self._btn_bg_normal, fg="white", cursor="hand2",
         )
+        btn.bind("<Button-1>", lambda e: command())
         # A flat, borderless button like this one doesn't get any
         # hover feedback from Tk by default — bind it explicitly so it's
         # obvious the button is clickable.
@@ -1864,10 +1888,15 @@ def _restore_pre_tutorial_state(app):
     _restore_speed(app)
 
     try:
-        mendel_img = safe_image(os.path.join(ICONS_DIR, "mendel.png"))
-        if mendel_img is not None:
-            app.mendel_label.configure(image=mendel_img)
-            app.mendel_label.image = mendel_img
+        mp = getattr(app, "_mendel_portrait", None)
+        if mp is not None:
+            app._tutorial_active = False   # hand the portrait back first
+            mp.refresh()
+        else:
+            mendel_img = safe_image(os.path.join(ICONS_DIR, "mendel.png"))
+            if mendel_img is not None:
+                app.mendel_label.configure(image=mendel_img)
+                app.mendel_label.image = mendel_img
     except Exception:
         pass
 
@@ -1926,6 +1955,197 @@ def _wait_for_all_seeds_planted(app, lecture, on_done):
     _check()
 
 
+# ============================================================================
+# Tutorial progress (autosave after part 1) and part 2
+# ============================================================================
+
+def _save_tutorial_progress(app, part_done, path=None):
+    """Silently saves the tutorial garden plus how far the player got
+    (part_done: 1 = lecture 1 finished, 2 = lecture 2 finished)."""
+    try:
+        try:
+            app._eager_seed_and_backfill()
+        except Exception:
+            pass
+        os.makedirs(_data_dir(), exist_ok=True)
+        payload = {
+            "tutorial_part_done": int(part_done),
+            "day_length_s": float(getattr(app, "day_length_s", 1.0)),
+            "garden": app._serialize_garden_state(),
+        }
+        with open(path or _progress_path(), "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        if path is None:
+            app._tutorial_part_done = int(part_done)
+    except Exception:
+        pass
+
+
+def _part1_snapshot_path():
+    return os.path.join(_data_dir(), f"garden_{_PROGRESS_NAME}-part1.json")
+
+
+def _load_part1_snapshot():
+    return _load_tutorial_progress(_part1_snapshot_path())
+
+
+def _stash_real_settings(app, was_active):
+    """When the tutorial is already running, difficulty/speed already hold
+    tutorial values — remember the REAL ones so re-applying the tutorial
+    settings doesn't overwrite what exit_tutorial must restore."""
+    if not was_active:
+        return None
+    return (getattr(app, "_pre_tutorial_season_mode", None),
+            getattr(app, "_pre_tutorial_day_length_s", None))
+
+
+def _stash_real_settings_restore(app, stash):
+    if stash is None:
+        return
+    if stash[0] is not None:
+        app._pre_tutorial_season_mode = stash[0]
+    if stash[1] is not None:
+        app._pre_tutorial_day_length_s = stash[1]
+
+
+def _load_tutorial_progress(path=None):
+    path = path or _progress_path()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("garden"), dict):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _delete_tutorial_progress():
+    try:
+        os.remove(_progress_path())
+    except Exception:
+        pass
+
+
+def _cancel_seedling_watch(app):
+    job = getattr(app, "_tutorial_seedling_job", None)
+    if job is not None:
+        try:
+            app.root.after_cancel(job)
+        except Exception:
+            pass
+    app._tutorial_seedling_job = None
+
+
+def _all_plants_seedlings(app):
+    """True once at least one plant is growing, every starter seed is in
+    the ground, and every living plant has reached the seedling stage."""
+    try:
+        if int(getattr(app, "available_seeds", 0) or 0) > 0:
+            return False
+        plants = [t.plant for t in app._all_plot_tiles()
+                  if t.plant is not None and getattr(t.plant, "alive", True)]
+        return bool(plants) and all(int(p.stage) >= 2 for p in plants)
+    except Exception:
+        return False
+
+
+def _watch_for_seedlings(app):
+    """Polls once a second (while the tutorial is active and no dialogue
+    is showing) for the moment all plants are seedlings, then plays part 2.
+    Also refreshes the progress save every couple of minutes."""
+    _cancel_seedling_watch(app)
+    state = {"ticks": 0}
+
+    def _check():
+        app._tutorial_seedling_job = None
+        if not getattr(app, "_tutorial_active", False):
+            return
+        if getattr(app, "_tutorial_dialogue", None) is None:
+            if _all_plants_seedlings(app):
+                _play_lecture_2(app)
+                return
+            state["ticks"] += 1
+            if state["ticks"] % 120 == 0:
+                _save_tutorial_progress(app, 1)
+        app._tutorial_seedling_job = app.root.after(1000, _check)
+
+    app._tutorial_seedling_job = app.root.after(1000, _check)
+
+
+def _play_lecture_2(app):
+    _swap_portrait_for_tutorial(app)
+    _lock_down_sidebar(app)
+
+    def _done():
+        _unlock_sidebar(app)
+        _swap_portrait_for_tutorial(app, _PORTRAIT_AWAY_FILENAME)
+        _save_tutorial_progress(app, 2)
+
+    _StatusBarDialogue(app, LECTURE_2_DIALOGUE, on_finish=_done)
+
+
+def _resume_tutorial(app, progress, was_active=False):
+    """Picks the tutorial up again after part 1: the player's real garden
+    is backed up first (as for a fresh start), then the saved tutorial
+    garden is loaded and the seedling watch resumes."""
+    _cancel_seedling_watch(app)
+    _teardown_active_dialogue(app)
+    app._tutorial_active = True
+    if not was_active:
+        _save_pre_tutorial_state(app)
+    _swap_portrait_for_tutorial(app, _PORTRAIT_AWAY_FILENAME)
+    _stash = _stash_real_settings(app, was_active)
+    _set_easy_difficulty(app)
+    if not was_active:
+        try:
+            app._pre_tutorial_day_length_s = float(getattr(app, "day_length_s", 1.0))
+        except Exception:
+            pass
+    _stash_real_settings_restore(app, _stash)
+    try:
+        app._deserialize_garden_state(progress["garden"])
+    except Exception:
+        # Corrupt save — fall back to a fresh start.
+        start_tutorial(app, 0, choice="part1")
+        return
+    try:
+        speed = float(progress.get("day_length_s", _TUTORIAL_DAY_LENGTH_S))
+        app._set_day_length(speed)
+        app.day_length_s = speed
+    except Exception:
+        pass
+    try:
+        for tile in app._all_plot_tiles():
+            tile.locked = False
+            tile._season_override = None
+            tile._render_state = None
+    except Exception:
+        pass
+    _unlock_sidebar(app)
+    try:
+        app._refresh_seed_counter_var()
+    except Exception:
+        pass
+    try:
+        app._apply_daynight_to_tiles()
+    except Exception:
+        pass
+    try:
+        app.render_all()
+    except Exception:
+        pass
+    app._tutorial_part_done = int(progress.get("tutorial_part_done", 1))
+    try:
+        app._toast("Tutorial progress restored.", level="info")
+    except Exception:
+        pass
+    if app._tutorial_part_done == 1:
+        _watch_for_seedlings(app)
+
+
 def exit_tutorial(app):
     """
     Leaves the tutorial and returns to the normal simulator. Bound to the
@@ -1934,6 +2154,13 @@ def exit_tutorial(app):
     player back to their real garden exactly as it was before the
     tutorial started, rather than opening a file picker.
     """
+    # Leaving between parts 1 and 2: keep the tutorial garden's progress
+    # so it can be resumed from the Friar's quarters.
+    if (getattr(app, "_tutorial_active", False)
+            and getattr(app, "_tutorial_part_done", 0) == 1
+            and getattr(app, "_tutorial_dialogue", None) is None):
+        _save_tutorial_progress(app, 1)
+    _cancel_seedling_watch(app)
     try:
         restored = _restore_pre_tutorial_state(app)
     except Exception:
@@ -1952,7 +2179,124 @@ def exit_tutorial(app):
 # Entry point
 # ============================================================================
 
-def start_tutorial(app, lecture_index=0):
+# ============================================================================
+# Tutorial map — pick which part to play (shown when saves exist)
+# ============================================================================
+
+# (title, subtitle) per part, left to right. Add entries as parts are written.
+_TUTORIAL_PARTS = [
+    ("Part 1", "The First Seeds"),
+    ("Part 2", "The Seedlings"),
+    ("Part 3", "Coming soon"),
+]
+
+
+def _map_button(parent, text, command, bg="#8B4226", fg="white", hover="#5C2810"):
+    # Label-based so colors work on macOS (tk.Button ignores them there).
+    lbl = tk.Label(parent, text=text, font=("Segoe UI", 10, "bold"), bg=bg, fg=fg,
+                   padx=12, pady=5, cursor="hand2")
+    lbl.bind("<Enter>", lambda e: lbl.configure(bg=hover))
+    lbl.bind("<Leave>", lambda e: lbl.configure(bg=bg))
+    lbl.bind("<Button-1>", lambda e: command())
+    return lbl
+
+
+def show_tutorial_map(app):
+    """Popup with the tutorial parts laid out left to right as a map:
+    Part 1 (replay), Part 2 (restart from the end of part 1, or continue
+    from the autosave) and locked placeholders for parts still to come."""
+    try:
+        old = getattr(app, "_tutorial_map_win", None)
+        if old is not None and old.winfo_exists():
+            old.lift()
+            return
+    except Exception:
+        pass
+
+    BG, PANEL, FG = "#f6efe0", "#fbf7ee", "#3b2a1a"
+    win = tk.Toplevel(app.root)
+    app._tutorial_map_win = win
+    win.title("Tutorial")
+    win.configure(bg=BG)
+    win.resizable(False, False)
+    try:
+        win.transient(app.root)
+    except Exception:
+        pass
+
+    tk.Label(win, text="Friar Cyril's Lessons", font=("Segoe UI", 16, "bold"),
+             bg=BG, fg=FG).pack(pady=(14, 2))
+    tk.Label(win, text="Choose where to continue your training.",
+             font=("Segoe UI", 10, "italic"), bg=BG, fg="#7a6a55").pack(pady=(0, 8))
+
+    col_w = 210
+    n = len(_TUTORIAL_PARTS)
+    has_snapshot = _load_part1_snapshot() is not None
+    has_progress = _load_tutorial_progress() is not None
+    progress = _load_tutorial_progress() if has_progress else None
+    part_done = int(progress.get("tutorial_part_done", 0)) if progress else 0
+    unlocked = 2 if (has_snapshot or part_done >= 1) else 1  # parts available
+
+    # The path: a line with a numbered circle per part.
+    path = tk.Canvas(win, width=col_w * n, height=64, bg=BG, highlightthickness=0)
+    path.pack(padx=14)
+    cy = 32
+    path.create_line(col_w // 2, cy, col_w * n - col_w // 2, cy,
+                     fill="#b59b73", width=5, capstyle="round")
+    for i in range(n):
+        cx = col_w * i + col_w // 2
+        ok = (i < unlocked)
+        path.create_oval(cx - 22, cy - 22, cx + 22, cy + 22,
+                         fill=("#8B4226" if ok else "#cfc6b2"),
+                         outline="#5C2810" if ok else "#b5ab95", width=3)
+        path.create_text(cx, cy, text=str(i + 1), fill="white",
+                         font=("Segoe UI", 15, "bold"))
+
+    cards = tk.Frame(win, bg=BG)
+    cards.pack(padx=14, pady=(4, 6))
+
+    def _pick(choice):
+        try:
+            win.destroy()
+        except Exception:
+            pass
+        app.root.after(10, lambda: start_tutorial(app, 0, choice=choice))
+
+    for i, (title, sub) in enumerate(_TUTORIAL_PARTS):
+        col = tk.Frame(cards, bg=PANEL, width=col_w - 12, height=150,
+                       highlightbackground="#d9cdb4", highlightthickness=1)
+        col.grid(row=0, column=i, padx=6, sticky="n")
+        col.grid_propagate(False)
+        col.pack_propagate(False)
+        tk.Label(col, text=title, font=("Segoe UI", 12, "bold"),
+                 bg=PANEL, fg=FG).pack(pady=(10, 0))
+        tk.Label(col, text=sub, font=("Segoe UI", 10, "italic"),
+                 bg=PANEL, fg="#7a6a55", wraplength=col_w - 30).pack(pady=(0, 8))
+        if i == 0:
+            _map_button(col, "Replay", lambda: _pick("part1")).pack(pady=3)
+        elif i == 1 and unlocked >= 2:
+            if has_snapshot:
+                _map_button(col, "Restart", lambda: _pick("restart2")).pack(pady=3)
+            if has_progress:
+                _map_button(col, "Continue", lambda: _pick("continue"),
+                            bg="#7A9A3C", hover="#5f7a2e").pack(pady=3)
+        else:
+            tk.Label(col, text="🔒", font=("Segoe UI", 16), bg=PANEL,
+                     fg="#aaa090").pack(pady=6)
+
+    _map_button(win, "Close", win.destroy, bg="#e0dccf", fg="#333333",
+                hover="#d0cbb8").pack(pady=(4, 14))
+
+    try:
+        win.update_idletasks()
+        x = app.root.winfo_rootx() + (app.root.winfo_width() - win.winfo_width()) // 2
+        y = app.root.winfo_rooty() + 120
+        win.geometry(f"+{max(0, x)}+{max(0, y)}")
+    except Exception:
+        pass
+
+
+def start_tutorial(app, lecture_index=0, choice=None):
     """
     Starts the tutorial on the real, running simulator: takes a silent
     save of the player's real garden first (so it can be restored later),
@@ -1970,22 +2314,43 @@ def start_tutorial(app, lecture_index=0):
     # (already-flattened) garden again and created a second dialogue
     # with its own "next" button on top of the first one's — the
     # leftover, never-disappearing button plus a duplicate reported.
-    if lecture_index == 0 and getattr(app, "_tutorial_active", False):
-        try:
-            app._toast("Already in the tutorial.", level="info")
-        except Exception:
-            pass
-        return
+    was_active = bool(getattr(app, "_tutorial_active", False))
+    if lecture_index == 0 and choice is None:
+        has_saves = _load_tutorial_progress() is not None or _load_part1_snapshot() is not None
+        if was_active and (getattr(app, "_tutorial_dialogue", None) is not None
+                           or not has_saves):
+            try:
+                app._toast("Already in the tutorial.", level="info")
+            except Exception:
+                pass
+            return
+        if has_saves:
+            show_tutorial_map(app)
+            return
 
     lecture = LECTURES[lecture_index]
 
     if lecture_index == 0:
+        if choice in ("restart2", "continue"):
+            data = (_load_part1_snapshot() if choice == "restart2"
+                    else _load_tutorial_progress())
+            if data is not None:
+                _resume_tutorial(app, data, was_active)
+                return
+        # Fresh run (part 1). Saved progress is kept until part 1 is
+        # finished again and overwrites it.
+        _cancel_seedling_watch(app)
+        _teardown_active_dialogue(app)
+        app._tutorial_part_done = 0
         app._tutorial_active = True
-        _save_pre_tutorial_state(app)
+        if not was_active:
+            _save_pre_tutorial_state(app)
 
     _swap_portrait_for_tutorial(app)
+    _stash = _stash_real_settings(app, was_active)
     _set_easy_difficulty(app)
     _set_tutorial_speed(app)
+    _stash_real_settings_restore(app, _stash)
     _lock_down_sidebar(app)
     _apply_lecture_to_real_grid(app, lecture)
 
@@ -1999,6 +2364,11 @@ def start_tutorial(app, lecture_index=0):
         # Cyril leaves once the lecture is over; franz_0 stays up until
         # he is back for the next one.
         _swap_portrait_for_tutorial(app, _PORTRAIT_AWAY_FILENAME)
+        # Part 1 is over: autosave the tutorial garden, then wait for the
+        # seedlings that trigger part 2.
+        _save_tutorial_progress(app, 1, path=_part1_snapshot_path())
+        _save_tutorial_progress(app, 1)
+        _watch_for_seedlings(app)
 
     def _on_dialogue_dismissed():
         wait_for = lecture.get("wait_for")
