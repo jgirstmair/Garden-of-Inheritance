@@ -107,6 +107,11 @@ def _format_live_readout(app, name):
     Right. Returning this as a short suffix appended to the dialogue
     line itself (see _StatusBarDialogue._set_status) puts that same
     information somewhere it's actually visible."""
+    if name == "water_progress":
+        targets = [p for p in getattr(app, "_tutorial_dry_targets", None) or []
+                   if getattr(p, "alive", True)]
+        done = sum(1 for p in targets if int(p.water) >= _water_min(app))
+        return f"   [{done}/{len(targets)} watered]"
     if name != "game_speed":
         return ""
     try:
@@ -184,6 +189,18 @@ def _format_live_readout(app, name):
 #       milliseconds (rather than advancing the instant it first becomes
 #       true), e.g. making the player actually land on and hold a given
 #       game speed for a few seconds rather than just flick past it.
+#   "portrait": "mendel" shows Mendel (instead of Cyril) in the portrait
+#       slot for this line — used where the player has to act.
+#   "unlock_buttons": a list of app button attribute names opened for good
+#       from this line on (everything else stays blocked until explained).
+#   "enable_buttons": a list of app attribute names of (sidebar) buttons
+#       to switch on while this line shows, e.g. ["water_btn"].
+#   "set_water": N sets every living plant's water to N % (and clears the
+#       sky / moves to working hours) the first time the line is shown.
+#       "dry_count": K dries only K random plants instead of all.
+#       Pair with "wait_for_condition": "targets_watered" (just the dried
+#       ones) or "plants_watered" (every plant), and optionally
+#       "live_readout": "water_progress" for an "x/n watered" counter.
 #   "auto_advance_ms": overrides how long a (non-paused) line stays up
 #       after it finishes typing before advancing by itself (default
 #       AUTO_ADVANCE_MS).
@@ -229,6 +246,7 @@ LECTURES = [
              # button (rather than a fixed delay) before moving on —
              # see "wait_for_condition" above and _WAIT_CONDITIONS below.
              {"highlight_words": ["Plant"], "highlight_target": "plant_button",
+              "unlock_buttons": ["plant_seeds_btn"],
               "pause": True, "no_skip": True,
               "wait_for_condition": "first_seed_planted"}),
             ("Cyril",
@@ -316,8 +334,7 @@ LECTURES = [
               "wait_for_condition": "real_time_speed_set",
               "wait_for_hold_ms": 3000, "live_readout": "game_speed"}),
             ("Cyril",
-             "Splendid! Isn’t it almost magical? You may have noticed "
-             "that day and night now pass with time.",
+             "Splendid! Isn’t it magical how time seems to fly?",
              {"mood": 2}),
             ("Cyril",
              "But remember, Brother, we all need time to sleep, "
@@ -334,7 +351,7 @@ LECTURES = [
              "passing of time,"),
             ("Cyril",
              "simply press Space to pause for a moment.",
-             {"highlight_words": ["Space"]}),
+             {"highlight_words": ["Space"], "highlight_target": "pause_button"}),
             ("Cyril",
              "That will be all for today, Brother. I think you "
              "have learned quite a lot!",
@@ -356,14 +373,63 @@ LECTURES = [
 # Part 2 — Cyril returns once every planted seed has become a seedling
 # (see _watch_for_seedlings / _play_lecture_2). More lines can follow here.
 LECTURE_2_DIALOGUE = [
-    ("Cyril",
-     "Ah, there they are! Your first little seedlings.",
-     {"mood": 2, "highlight_words": ["seedlings"]}),
-    ("Cyril",
-     "Look how bravely they push up through the soil.",
-     {"mood": 2}),
-    ("Cyril",
-     "Keep watering them, Brother, and I shall be back with more soon.",
+    # 5 random plants dry out to 20 % (and the sun comes out for the whole
+    # watering part) right as the lecture starts, so they are clearly
+    # thirsty well before Cyril mentions it.
+    ("Cyril", "Ah, there they are! Your first little seedlings.",
+     {"mood": 2, "highlight_words": ["seedlings"],
+      "set_water": 20, "dry_count": 5}),
+    ("Cyril", "Occasionally, these little fellows will need some water.",
+     {"pause": True}),
+    ("Cyril", "Look, a few of them are already thirsty!",
+     {"highlight_words": ["thirsty"]}),
+    ("Cyril", "You’ve probably noticed the little water drop icon beside "
+     "each plant.",
+     {"highlight_words": ["water drop icon"], "auto_advance_ms": 4500}),
+    ("Cyril", "Its color tells you whether a plant is thirsty...",
+     {"highlight_words": ["color", "thirsty"], "auto_advance_ms": 4000}),
+    ("Cyril", "...or has had quite enough for the day!",
+     {"highlight_words": ["quite enough"]}),
+    # Mendel's turn: waits (no ▶) until all 5 dried plants are watered,
+    # with a live "x/5 watered" count.
+    ("Cyril", "Now, select a thirsty plant and water it.",
+     {"highlight_words": ["Water"], "highlight_target": "water_button",
+      "portrait": "mendel", "pause": True, "no_skip": True,
+      "unlock_buttons": ["water_btn"], "live_readout": "water_progress",
+      "wait_for_condition": "targets_watered"}),
+    # Now every plant dries out to 35 %.
+    ("Cyril", "Oh, what a glorious sunny day!",
+     {"set_water": 35, "auto_advance_ms": 3000, "mood": 2}),
+    ("Cyril", "Well, I suppose most of them could use some watering right now.",
+     {"auto_advance_ms": 4000}),
+    # Waits for Water All; then time goes back to 1 sec = 1 hour.
+    ("Cyril", "Go on, then, tend to them all at once.",
+     {"highlight_words": ["all at once"],
+      "unlock_buttons": ["water_all_btn"],
+      "highlight_target": "water_all_button",
+      "portrait": "mendel", "pause": True, "no_skip": True,
+      "live_readout": "water_progress",
+      "wait_for_condition": "plants_watered"}),
+    ("Cyril", "Good! Keep the soil moist, but never soaking wet!",
+     {"highlight_words": ["moist", "never soaking wet"], "pause": True}),
+    ("Cyril", "Naturally, you’ll want to inspect your plants from time to "
+     "time...",
+     {"highlight_words": ["inspect"]}),
+    ("Cyril", "...see how they’re doing and what traits they might have "
+     "revealed already!"),
+    # Waits until the player has actually inspected a plant.
+    ("Cyril", "You can inspect each plant with the button, or press I.",
+     {"highlight_words": ["button", "I"], "highlight_target": "inspect_button",
+      "portrait": "mendel", "pause": True, "no_skip": True,
+      "unlock_buttons": ["inspect_btn"],
+      "wait_for_condition": "plant_inspected"}),
+    ("Cyril", "Didn’t you mention at supper that you were particularly "
+     "interested in seven traits?",
+     {"highlight_words": ["seven traits"], "auto_advance_ms": 4000}),
+    ("Cyril", "Anyway, we can talk about that later!",
+     {"auto_advance_ms": 4000}),
+    ("Cyril", "I am sure you will take good care of them, Gregor."),
+    ("Cyril", "I’ll be back once they’ve grown a little taller.",
      {"auto_advance_ms": 5000}),
 ]
 
@@ -378,7 +444,17 @@ LECTURE_2_DIALOGUE = [
 _HIGHLIGHT_TARGETS = {
     "seed_count": lambda app: getattr(app, "seed_label", None),
     "plant_button": lambda app: getattr(app, "plant_seeds_btn", None),
+    "water_button": lambda app: getattr(app, "water_btn", None),
+    "water_all_button": lambda app: getattr(app, "water_all_btn", None),
+    "inspect_button": lambda app: getattr(app, "inspect_btn", None),
+    "pause_button": lambda app: getattr(app, "pause_btn", None),
 }
+
+
+# Targets whose arrow sits to the right of the widget and points left;
+# everything else sits below the widget and points up.
+_ARROW_SIDES = {"plant_button": "right", "water_all_button": "right",
+                "inspect_button": "right"}
 
 
 # Maps a lecture line's "wait_for_condition" name to a function that
@@ -388,7 +464,170 @@ _HIGHLIGHT_TARGETS = {
 # and returns True once the player has done the thing being asked.
 # Polled every 400ms (see _StatusBarDialogue._poll_wait_condition),
 # same cadence as _wait_for_all_seeds_planted below.
+def _water_min(app):
+    return int(getattr(app, "_tutorial_water_min", 51))
+
+
+def _tutorial_force_sun(app):
+    """Clear sky and working hours, so rain or the evening 'night gate'
+    can't block (or replace) the watering the player is asked to do."""
+    try:
+        g = app.garden
+        changed = False
+        if getattr(g, "weather_lock", None) != "☀️":
+            # GardenEnvironment.weather returns this instead of the real
+            # (hourly recomputed) weather until the lock is cleared, so
+            # rain can't start between our checks.
+            g.weather_lock = "☀️"
+            changed = True
+        try:
+            hour = int(g.clock_hour) % 24
+        except Exception:
+            hour = 9
+        if hour >= 17 or hour < 6:
+            from garden import PHASES
+            g.clock_hour = 9
+            g.phase_index = 0
+            g.phase = PHASES[0]
+            changed = True
+        if changed:
+            try:
+                app.render_all()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _release_sun(app):
+    """Gives the real weather back (end of the watering part / tutorial)."""
+    app._tutorial_keep_sun = False
+    try:
+        if getattr(app.garden, "weather_lock", None):
+            app.garden.weather_lock = None
+            app.render_all()
+    except Exception:
+        pass
+
+
+def _start_sun_keeper(app):
+    """Holds a clear sky (and working hours) every half second for the
+    whole watering part of lecture 2, not just while a line is waiting."""
+    app._tutorial_keep_sun = True
+    if getattr(app, "_tutorial_sun_job", None) is not None:
+        return
+
+    def _tick():
+        app._tutorial_sun_job = None
+        if not getattr(app, "_tutorial_active", False):
+            _release_sun(app)
+            return
+        if not getattr(app, "_tutorial_keep_sun", False):
+            return
+        _tutorial_force_sun(app)
+        # Real time from 9:00 on, so the player isn't rushed; decided
+        # here (not only while a line waits) so it can't be missed.
+        if getattr(app, "_tutorial_water_speed", None) is None:
+            try:
+                hour = int(app.garden.clock_hour) % 24
+            except Exception:
+                hour = 9
+            if 9 <= hour < 17:
+                _tutorial_set_speed(app, _TUTORIAL_DAY_LENGTH_S)
+                app._tutorial_water_speed = "slow"
+        try:
+            app._tutorial_sun_job = app.root.after(500, _tick)
+        except Exception:
+            pass
+
+    _tick()
+
+
+def _tutorial_dry_out_plants(app, level, count=None):
+    """Sets living plants' water to `level` (and clears the sky): all of
+    them, or `count` randomly chosen ones. The affected plants are kept
+    in app._tutorial_dry_targets for the 'x/n watered' check."""
+    app._tutorial_water_speed = None   # re-arm the slow-down for this step
+    targets = []
+    try:
+        living = [t.plant for t in app._all_plot_tiles()
+                  if t.plant is not None and getattr(t.plant, "alive", True)]
+        if count and count < len(living):
+            targets = random.sample(living, int(count))
+        else:
+            targets = living
+        for p in targets:
+            p.water = int(level)
+    except Exception:
+        pass
+    app._tutorial_dry_targets = targets
+    _start_sun_keeper(app)
+    # Watered = out of the "dry" band (> 25 %) after a handful of plants
+    # were dried hard; 51 %+ (evenly moist) when everything was dried.
+    app._tutorial_water_min = 26 if count else 51
+    _tutorial_force_sun(app)
+    try:
+        app.render_all()
+    except Exception:
+        pass
+
+
+def _plants_watered(app, baseline=None):
+    """True once no living plant is dry any more (water above the
+    'slightly moist' band; overwatered plants don't hold it up). Also keeps the sun out while
+    the player is being asked to water."""
+    plants = [t.plant for t in app._all_plot_tiles()
+              if t.plant is not None and getattr(t.plant, "alive", True)]
+    ok = all(int(p.water) >= _water_min(app) for p in plants)   # no dry plant left (overwatered ones are fine)
+    if ok:
+        # Done: back to 1 sec = 1 hour; the dialogue carries on by itself.
+        if getattr(app, "_tutorial_water_speed", None) != "fast":
+            _tutorial_set_speed(app, 1.0)
+            app._tutorial_water_speed = "fast"
+            _release_sun(app)   # the weather is free again
+    elif getattr(app, "_tutorial_water_speed", None) is None:
+        # Time runs at 1 sec = 1 hour until the working day is reached
+        # (9:00 or later); then real time, so the player isn't rushed.
+        try:
+            hour = int(app.garden.clock_hour) % 24
+        except Exception:
+            hour = 9
+        if 9 <= hour < 17:
+            _tutorial_set_speed(app, _TUTORIAL_DAY_LENGTH_S)
+            app._tutorial_water_speed = "slow"
+    return ok
+
+
+def _targets_watered(app, baseline=None):
+    """True once every plant the step dried out has been watered back
+    (no speed change here — the pace only speeds up after the last step)."""
+    targets = [p for p in getattr(app, "_tutorial_dry_targets", None) or []
+               if getattr(p, "alive", True)]
+    ok = all(int(p.water) >= _water_min(app) for p in targets)
+    if not ok and getattr(app, "_tutorial_water_speed", None) is None:
+        try:
+            hour = int(app.garden.clock_hour) % 24
+        except Exception:
+            hour = 9
+        if 9 <= hour < 17:
+            _tutorial_set_speed(app, _TUTORIAL_DAY_LENGTH_S)
+            app._tutorial_water_speed = "slow"
+    return ok
+
+
+def _tutorial_set_speed(app, secs):
+    try:
+        app._set_day_length(secs)
+        app.day_length_s = secs
+    except Exception:
+        pass
+
+
 _WAIT_CONDITIONS = {
+    "plants_watered": _plants_watered,
+    "targets_watered": _targets_watered,
+    # Set by GardenApp._on_inspect_unified when a plant was inspected.
+    "plant_inspected": lambda app, baseline: bool(getattr(app, "_tutorial_inspected", False)),
     "first_seed_planted": lambda app, baseline: getattr(app, "available_seeds", baseline) < baseline,
     "all_seeds_planted": lambda app, baseline: getattr(app, "available_seeds", 0) <= 0,
     # Set by the key watcher (see _ensure_key_watch) when the line's
@@ -441,6 +680,30 @@ def _lerp_color(c1, c2, t):
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+class _ArrowGroup:
+    """Several _ArrowHighlight arrows handled as one (a line may point at
+    more than one button at the same time)."""
+
+    def __init__(self, arrows):
+        self.arrows = list(arrows)
+
+    def fade_out(self, on_done=None):
+        for a in self.arrows:
+            try:
+                a.fade_out()
+            except Exception:
+                pass
+        if callable(on_done):
+            on_done()
+
+    def destroy(self):
+        for a in self.arrows:
+            try:
+                a.destroy()
+            except Exception:
+                pass
+
+
 class _ArrowHighlight:
     """
     A large "⬆" with a thick black outline, pulsing between crimson red
@@ -474,9 +737,10 @@ class _ArrowHighlight:
     COLOR_A = "#DC143C"  # crimson
     COLOR_B = "#954535"  # chestnut brown
 
-    def __init__(self, app, target_widget):
+    def __init__(self, app, target_widget, side="bottom"):
         self.app = app
         self.target = target_widget
+        self.side = side      # "bottom" (points up) or "right" (points left)
         self._job = None
         self._alive = True
         self._step = 0
@@ -530,6 +794,7 @@ class _ArrowHighlight:
 
         self._build_items()
         self._reposition()
+        self._build_ring()
         self._start_cycling()
 
     def _build_items(self):
@@ -539,21 +804,37 @@ class _ArrowHighlight:
         o = self.OUTLINE_THICKNESS
         pad = o + 4
         aw, ah = 62, 96          # arrow width / height
-        w, h = aw + pad * 2, ah + pad * 2
-        self.canvas.configure(width=w, height=h)
-        cx = w // 2
-        top, bottom = pad, pad + ah
         head_h = int(ah * 0.45)
         shaft_hw = int(aw * 0.19)
-        pts = [
-            cx, top,                              # tip
-            cx + aw // 2, top + head_h,           # right head corner
-            cx + shaft_hw, top + head_h,
-            cx + shaft_hw, bottom,
-            cx - shaft_hw, bottom,
-            cx - shaft_hw, top + head_h,
-            cx - aw // 2, top + head_h,           # left head corner
-        ]
+        if self.side == "right":
+            # Sits to the right of the target, pointing left (←).
+            w, h = ah + pad * 2, aw + pad * 2
+            self.canvas.configure(width=w, height=h)
+            cy = h // 2
+            left, right = pad, pad + ah
+            pts = [
+                left, cy,                             # tip
+                left + head_h, cy - aw // 2,
+                left + head_h, cy - shaft_hw,
+                right, cy - shaft_hw,
+                right, cy + shaft_hw,
+                left + head_h, cy + shaft_hw,
+                left + head_h, cy + aw // 2,
+            ]
+        else:
+            w, h = aw + pad * 2, ah + pad * 2
+            self.canvas.configure(width=w, height=h)
+            cx = w // 2
+            top, bottom = pad, pad + ah
+            pts = [
+                cx, top,                              # tip
+                cx + aw // 2, top + head_h,           # right head corner
+                cx + shaft_hw, top + head_h,
+                cx + shaft_hw, bottom,
+                cx - shaft_hw, bottom,
+                cx - shaft_hw, top + head_h,
+                cx - aw // 2, top + head_h,           # left head corner
+            ]
         self._main_id = self.canvas.create_polygon(
             *pts, fill=self.COLOR_A, outline="black",
             width=o, joinstyle="round",
@@ -562,11 +843,50 @@ class _ArrowHighlight:
     def _reposition(self):
         try:
             self.target.update_idletasks()
-            x = self.target.winfo_rootx() + self.target.winfo_width() // 2
-            y = self.target.winfo_rooty() + self.target.winfo_height() + 4
             self.win.update_idletasks()
+            if self.side == "right":
+                x = self.target.winfo_rootx() + self.target.winfo_width() + 8
+                h = self.win.winfo_reqheight()
+                y = (self.target.winfo_rooty()
+                     + self.target.winfo_height() // 2 - h // 2)
+                self.win.geometry(f"+{x}+{y}")
+                return
+            x = self.target.winfo_rootx() + self.target.winfo_width() // 2
+            y = self.target.winfo_rooty() + self.target.winfo_height() + 8
             w = self.win.winfo_reqwidth()
             self.win.geometry(f"+{x - w // 2}+{y}")
+        except Exception:
+            pass
+
+    RING_THICKNESS = 3
+
+    def _build_ring(self):
+        """Four thin borderless bars just outside the target, pulsing in
+        step with the arrow, so the pointed-at control is outlined too.
+        Bars (not one big overlay) so nothing ever covers the widget and
+        clicks still reach it."""
+        self._ring = []
+        try:
+            t = self.RING_THICKNESS
+            tg = self.target
+            tg.update_idletasks()
+            x, y = tg.winfo_rootx(), tg.winfo_rooty()
+            w, h = tg.winfo_width(), tg.winfo_height()
+            rects = [
+                (x - t, y - t, w + 2 * t, t),        # top
+                (x - t, y + h, w + 2 * t, t),        # bottom
+                (x - t, y, t, h),                    # left
+                (x + w, y, t, h),                    # right
+            ]
+            for rx, ry, rw, rh in rects:
+                bar = tk.Toplevel(self.app.root)
+                try:
+                    bar.overrideredirect(True)
+                except Exception:
+                    pass
+                bar.configure(bg=self.COLOR_A)
+                bar.geometry(f"{rw}x{rh}+{rx}+{ry}")
+                self._ring.append(bar)
         except Exception:
             pass
 
@@ -575,6 +895,8 @@ class _ArrowHighlight:
         try:
             color = _lerp_color(self.COLOR_A, self.COLOR_B, self._step / self.STEPS)
             self.canvas.itemconfigure(self._main_id, fill=color)
+            for bar in getattr(self, "_ring", []):
+                bar.configure(bg=color)
         except Exception:
             self._alive = False
 
@@ -614,6 +936,12 @@ class _ArrowHighlight:
     def destroy(self):
         self._alive = False
         self._cancel_job()
+        for bar in getattr(self, "_ring", []):
+            try:
+                bar.destroy()
+            except Exception:
+                pass
+        self._ring = []
         try:
             self.win.destroy()
         except Exception:
@@ -662,6 +990,17 @@ def _ensure_rich_status_widget(app):
     txt.tag_configure("normal", foreground="#c01818")
     txt.tag_configure("highlight", foreground="black")
     txt.configure(state="disabled")
+
+    def _on_click(event=None):
+        dlg = getattr(app, "_tutorial_dialogue", None)
+        if dlg is not None:
+            try:
+                dlg._on_text_clicked()
+            except Exception:
+                pass
+        return "break"      # no text selection / cursor games
+
+    txt.bind("<Button-1>", _on_click)
     app._tutorial_rich_status = txt
     return txt
 
@@ -785,7 +1124,7 @@ class _StatusBarDialogue:
 
     AUTO_ADVANCE_MS = 2500
 
-    def __init__(self, app, lines, on_finish=None, speed_ms=18):
+    def __init__(self, app, lines, on_finish=None, speed_ms=20):
         self.app = app
         self.lines = lines
         self.on_finish = on_finish
@@ -1079,10 +1418,22 @@ class _StatusBarDialogue:
         speaker is already showing, so this isn't re-decoding/re-
         drawing the image on every single typed character — only when
         the speaker for the current line actually changes."""
+        if getattr(self, "_mendel_shown", False):
+            return    # Mendel's own portrait is up (see "portrait")
+        if _portrait_lock_left(self.app) > 0:
+            # A watering/planting image has priority; it redraws the
+            # dialogue's portrait itself once it is over.
+            self._caption_speaker = None
+            return
         if speaker == self._caption_speaker:
             return
         try:
-            photo = None
+            photo = _garden_only_image(self.app)
+            if photo is not None:
+                self.app.mendel_label.configure(image=photo)
+                self.app.mendel_label.image = photo
+                self._caption_speaker = speaker
+                return
             # Chosen mood first, then franz_1 as a fallback if that
             # particular file isn't there.
             for fname in (self._mood_file, _MOOD_FILES[1]):
@@ -1096,6 +1447,31 @@ class _StatusBarDialogue:
         except Exception:
             pass
         self._caption_speaker = speaker
+
+    def _show_mendel_portrait(self):
+        """Puts Mendel's expression image for the current season in the
+        portrait slot. Returns False (Cyril stays) if no image exists."""
+        if _portrait_lock_left(self.app) > 0:
+            return True     # shown again by the action image's end handler
+        try:
+            season = getattr(self.app, "_bg_current_season", "spring")
+            scene = _garden_only_image(self.app)
+            if scene is not None:
+                self.app.mendel_label.configure(image=scene)
+                self.app.mendel_label.image = scene
+                return True
+            for sea in (season, "spring"):
+                path = os.path.join(ICONS_DIR, "mendel",
+                                    f"mendel_looking_{sea}.png")
+                if os.path.isfile(path):
+                    img = safe_image(path)
+                    if img is not None:
+                        self.app.mendel_label.configure(image=img)
+                        self.app.mendel_label.image = img
+                        return True
+        except Exception:
+            pass
+        return False
 
     def _set_mood(self, mood):
         """Switches Cyril's portrait to franz_<mood>.png (1 explaining,
@@ -1208,6 +1584,8 @@ class _StatusBarDialogue:
         self._stop_live_readout()
         self._live_readout_name = extra.get("live_readout")
         self._no_skip = bool(extra.get("no_skip", False))
+        if self._wait_condition_name == "plant_inspected":
+            self.app._tutorial_inspected = False
         watch_keys = extra.get("wait_for_keys")
         self.app._tutorial_key_pressed = False
         self.app._tutorial_key_watch_active = bool(watch_keys)
@@ -1237,11 +1615,43 @@ class _StatusBarDialogue:
                 self._smile_started_at = None
             if now >= self._smile_linger_until:
                 self._set_mood(self._line_mood)
+        # "portrait": "mendel" shows Mendel instead of Cyril while the
+        # line asks the player to act; any other line brings Cyril back.
+        want_mendel = extra.get("portrait") == "mendel"
+        if want_mendel:
+            self._mendel_shown = self._show_mendel_portrait()
+        elif getattr(self, "_mendel_shown", False):
+            self._mendel_shown = False
+            self._caption_speaker = None      # force Cyril to be redrawn
         self._apply_speaker_caption(speaker)
         self._full_text = text
         self._char_pos = 0
         self._highlight_words = extra.get("highlight_words") or []
         self._apply_seed_grant(idx, extra.get("grant_seeds"))
+        # "enable_buttons": sidebar buttons (app attribute names) that are
+        # usable while this line is showing; they are locked again as soon
+        # as the player moves on to another line.
+        for name in getattr(self, "_enabled_btns", []):
+            try:
+                getattr(self.app, name).configure(state="disabled")
+            except Exception:
+                pass
+        self._enabled_btns = list(extra.get("enable_buttons") or [])
+        for name in self._enabled_btns:
+            try:
+                getattr(self.app, name).configure(state="normal")
+            except Exception:
+                pass
+        # "unlock_buttons": opens these buttons for the rest of the
+        # tutorial (they have just been explained).
+        if extra.get("unlock_buttons"):
+            _unlock_buttons(self.app, extra["unlock_buttons"])
+        # "set_water": dry every plant out to this water level, once per
+        # line (so ◀ then ▶ doesn't dry them again).
+        if extra.get("set_water") and ("water", idx) not in self._granted_lines:
+            self._granted_lines.add(("water", idx))
+            _tutorial_dry_out_plants(self.app, extra["set_water"],
+                                 extra.get("dry_count"))
 
         # Nothing to go back to from the very first line — _reposition_
         # buttons() simply place_forget()s it there.
@@ -1250,18 +1660,37 @@ class _StatusBarDialogue:
         except Exception:
             pass
 
-        target_name = extra.get("highlight_target")
-        target_widget = _HIGHLIGHT_TARGETS.get(target_name, lambda app: None)(self.app) if target_name else None
-        if target_widget is not None:
-            self._active_arrow = _ArrowHighlight(self.app, target_widget)
-            # Dismiss the arrow the moment the player actually clicks
-            # the thing it's pointing at (e.g. clicking "Plant" opens
+        target_names = extra.get("highlight_target")
+        if isinstance(target_names, str):
+            target_names = [target_names]
+        widgets = []
+        sides = []
+        for name in (target_names or []):
+            w = _HIGHLIGHT_TARGETS.get(name, lambda app: None)(self.app)
+            if w is not None:
+                widgets.append(w)
+                sides.append(_ARROW_SIDES.get(name, "bottom"))
+        if widgets:
+            arrows = [_ArrowHighlight(self.app, w, s)
+                      for w, s in zip(widgets, sides)]
+            self._active_arrow = arrows[0] if len(arrows) == 1 else _ArrowGroup(arrows)
+            # Dismiss the arrow(s) the moment the player actually clicks
+            # the thing being pointed at (e.g. clicking "Plant" opens
             # the Choose Seeds dialog) — not just when they advance the
             # dialogue text — so it doesn't linger on screen, on top of
             # whatever that click just opened, once its job is done.
-            self._arrow_click_cleanup = self._bind_arrow_dismiss_on_click(target_widget)
+            cleanups = [c for c in (self._bind_arrow_dismiss_on_click(w) for w in widgets) if c]
+
+            def _cleanup_all(_cs=cleanups):
+                for c in _cs:
+                    try:
+                        c()
+                    except Exception:
+                        pass
+            self._arrow_click_cleanup = _cleanup_all
 
         self._set_status(self._prefix)
+        self._type_started = time.monotonic()
         self._type_next_char()
         self._start_live_readout()
 
@@ -1287,9 +1716,17 @@ class _StatusBarDialogue:
             self._typing_job = None
             self._schedule_auto_advance()
             return
-        self._char_pos += 1
-        self._set_status(self._prefix + self._full_text[:self._char_pos])
-        self._typing_job = self.app.root.after(self.speed_ms, self._type_next_char)
+        # Time-based typing: how many characters are shown depends on the
+        # elapsed time, not on how many timer callbacks have fired. On
+        # macOS each "after" tick plus the rich-text re-render takes much
+        # longer than the nominal delay, so counting ticks made the text
+        # crawl; this keeps the same speed on every platform.
+        elapsed_ms = (time.monotonic() - getattr(self, "_type_started", time.monotonic())) * 1000.0
+        target = min(len(self._full_text), int(elapsed_ms / self.speed_ms) + 1)
+        if target > self._char_pos:
+            self._char_pos = target
+            self._set_status(self._prefix + self._full_text[:self._char_pos])
+        self._typing_job = self.app.root.after(8, self._type_next_char)
 
     def _finish_typing_instantly(self):
         if self._typing_job is not None:
@@ -1433,6 +1870,20 @@ class _StatusBarDialogue:
             if callable(self.on_finish):
                 self.on_finish()
 
+    def _on_text_clicked(self):
+        """Clicking the dialogue text itself: while it is still being
+        typed it appears at once (even on lines the player can't skip);
+        while a timed line is just waiting out its pause the wait is
+        skipped. Lines that wait for ▶ or for the player to do
+        something are left alone, so a stray click can't skip them."""
+        if self._typing_job is not None:
+            self._finish_typing_instantly()
+            return
+        if (self._auto_advance and not self._no_skip
+                and not self._wait_condition_name
+                and self._auto_advance_job is not None):
+            self._on_next_clicked()
+
     def _on_back_clicked(self):
         if self._line_idx <= 0:
             return
@@ -1452,19 +1903,47 @@ class _StatusBarDialogue:
 # Real-grid scene setup
 # ============================================================================
 
-def _lock_down_sidebar(app):
-    """Disables every button in the left action sidebar (Water, Inspect,
-    Harvest, Pollinate, Remove, Genotype, ...) so the player can't do
-    anything but follow along at first. Iterates the sidebar frame's
-    children rather than naming each button, so it automatically covers
-    any button added there later too — EXCEPT the Monastery button
-    itself, which must stay clickable: it's the only way back to the
-    Monastery map (and, from there, out of the tutorial), so it must
-    never become unavailable."""
+# Buttons that are blocked in the tutorial until they have been explained
+# (name -> app attribute). The Monastery, pause and 1-hour-forward buttons
+# are never blocked. A line's "unlock_buttons" extra opens buttons for good
+# (for the rest of the tutorial); Fast Forward comes back with part 3.
+_TUTORIAL_LOCKABLE = (
+    "plant_seeds_btn", "water_btn", "water_all_btn", "inspect_btn",
+    "harvest_btn", "pollen_btn", "pollinate_btn", "remove_btn",
+    "genetics_btn", "tie_btn", "fast_btn", "measure_temp_btn", "observatory_btn",
+    "btn_test_laws",
+)
+
+
+def _policy_active(app):
+    return (getattr(app, "_tutorial_active", False)
+            and not getattr(app, "_tutorial_policy_off", False))
+
+
+def _apply_button_policy(app, enable=False):
+    """Disables every blocked button; with enable=True the unlocked ones
+    are switched on as well (otherwise the game's own selection logic keeps
+    deciding whether e.g. Water is usable right now)."""
+    unlocked = getattr(app, "_tutorial_unlocked", None) or set()
+    monastery = getattr(app, "monastery_btn", None)
+    seen = set()
+    for name in _TUTORIAL_LOCKABLE:
+        btn = getattr(app, name, None)
+        if btn is None:
+            continue
+        seen.add(id(btn))
+        try:
+            if name in unlocked:
+                if enable:
+                    btn.configure(state="normal")
+            else:
+                btn.configure(state="disabled")
+        except Exception:
+            pass
+    # Anything else in the left sidebar (added later) stays blocked too.
     try:
-        monastery_btn = getattr(app, "monastery_btn", None)
         for child in app.left_actions.winfo_children():
-            if child is monastery_btn:
+            if child is monastery or id(child) in seen:
                 continue
             try:
                 child.configure(state="disabled")
@@ -1474,12 +1953,79 @@ def _lock_down_sidebar(app):
         pass
 
 
+def _unlock_buttons(app, names):
+    unlocked = getattr(app, "_tutorial_unlocked", None)
+    if unlocked is None:
+        unlocked = set()
+        app._tutorial_unlocked = unlocked
+    for name in names:
+        unlocked.add(name)
+        try:
+            getattr(app, name).configure(state="normal")
+        except Exception:
+            pass
+
+
+def _start_button_keeper(app):
+    """Makes the blocking stick without fighting the game: each locked
+    button gets a guard on its configure() so any attempt by the game
+    (selection changes, the temperature check on every tick, ...) to
+    switch it on is turned into 'disabled' while it is still blocked.
+    (An earlier version re-disabled the buttons on a timer, which made
+    them flicker whenever the game switched them on again.)"""
+    for name in _TUTORIAL_LOCKABLE:
+        btn = getattr(app, name, None)
+        if btn is None or getattr(btn, "_tutorial_guarded", False):
+            continue
+
+        def _make_guard(btn=btn, name=name, original=btn.configure):
+            def guarded(cnf=None, **kw):
+                if (_policy_active(app)
+                        and name not in (getattr(app, "_tutorial_unlocked", None) or ())):
+                    if isinstance(cnf, dict) and "state" in cnf:
+                        cnf = dict(cnf, state="disabled")
+                    if "state" in kw:
+                        kw["state"] = "disabled"
+                return original(cnf, **kw)
+            return guarded
+
+        try:
+            guard = _make_guard()
+            btn.configure = guard
+            btn.config = guard
+            btn._tutorial_guarded = True
+        except Exception:
+            pass
+
+
+def _reset_button_policy(app, unlocked=()):
+    app._tutorial_policy_off = False
+    app._tutorial_unlocked = set(unlocked)
+    _apply_button_policy(app, enable=True)
+    _start_button_keeper(app)
+
+
+def _lock_down_sidebar(app):
+    """Applies the tutorial's button blocking (see _TUTORIAL_LOCKABLE)."""
+    _apply_button_policy(app)
+    _start_button_keeper(app)
+
+
 def _unlock_sidebar(app):
-    """Re-enables every button in the left action sidebar."""
+    """Inside the tutorial: re-applies the blocking (only explained
+    buttons are usable). Outside it: gives every button back."""
+    if _policy_active(app):
+        _apply_button_policy(app, enable=True)
+        return
     try:
         for child in app.left_actions.winfo_children():
             try:
                 child.configure(state="normal")
+            except Exception:
+                pass
+        for name in _TUTORIAL_LOCKABLE:
+            try:
+                getattr(app, name).configure(state="normal")
             except Exception:
                 pass
     except Exception:
@@ -1564,6 +2110,25 @@ def _portrait_with_speaker_caption(path, caption_text, bottom_inset=14):
     return photo
 
 
+def _garden_only_image(app):
+    """In 'garden view only' (Game Settings) the portrait slot shows the
+    garden scene — no Cyril, no Mendel. Returns that image, or None when
+    the setting is off / there is no scene image."""
+    if not getattr(app, "_garden_only_portrait", False):
+        return None
+    try:
+        path = app._mendel_portrait._garden_scene_path()
+        return safe_image(path) if path else None
+    except Exception:
+        return None
+
+
+def _portrait_lock_left(app):
+    """Seconds left of a watering/planting image that has priority over
+    every other portrait (0 if none)."""
+    return max(0.0, getattr(app, "_portrait_locked_until", 0.0) - time.monotonic())
+
+
 def _swap_portrait_for_tutorial(app, filename=_TUTOR_PORTRAIT_FILENAME):
     """
     Swaps the left-panel portrait (self.mendel_label, normally
@@ -1572,9 +2137,20 @@ def _swap_portrait_for_tutorial(app, filename=_TUTOR_PORTRAIT_FILENAME):
     drop icons/franz.png in whenever it's ready; nothing else needs to
     change here.
     """
+    left = _portrait_lock_left(app)
+    if left > 0:
+        # An action image has priority: swap right after it is over.
+        try:
+            app.root.after(int(left * 1000) + 40,
+                           lambda: _swap_portrait_for_tutorial(app, filename))
+        except Exception:
+            pass
+        return
     try:
-        path = os.path.join(ICONS_DIR, filename)
-        img = safe_image(path)
+        img = _garden_only_image(app)
+        if img is None:
+            path = os.path.join(ICONS_DIR, filename)
+            img = safe_image(path)
         if img is None:
             return
         app.mendel_label.configure(image=img)
@@ -1620,6 +2196,16 @@ def _restore_difficulty(app):
 _TUTORIAL_DAY_LENGTH_S = 3600.0
 
 
+def _set_ff_locked(app, locked):
+    """Fast Forward (button and F key) is off during tutorial parts 1 and
+    2 — it would skip right over the things the player is asked to do
+    (and refill the plants dried out for the watering step). Part 3 is
+    meant to call _set_ff_locked(app, False) to hand it back."""
+    app._tutorial_ff_locked = bool(locked)
+    if not locked:
+        _unlock_buttons(app, ["fast_btn"])
+
+
 def _set_tutorial_speed(app):
     """Slows the simulation down to real time (60 real seconds per
     simulated minute) for the tutorial, so a novice isn't watching the
@@ -1640,6 +2226,7 @@ def _restore_speed(app):
         app.day_length_s = prev
     except Exception:
         pass
+    _set_ff_locked(app, False)
 
 
 def _flatten_garden_and_reset_time(app):
@@ -1937,11 +2524,15 @@ def _wait_for_all_seeds_planted(app, lecture, on_done):
     tutorial wait on something the player actually does in the garden,
     rather than firing the moment the last line is dismissed.
     """
+    session = getattr(app, "_tutorial_session", 0)
+
     def _check():
         # The player may have left the tutorial entirely (via "Mendel's
-        # Garden") while this was waiting — stop rather than fire
-        # against whatever garden state got restored underneath it.
+        # Garden") or started another part from the map while this was
+        # waiting — stop rather than fire against a different state.
         if not getattr(app, "_tutorial_active", False):
+            return
+        if getattr(app, "_tutorial_session", 0) != session:
             return
         if getattr(app, "available_seeds", 0) > 0:
             app.root.after(400, _check)
@@ -2063,7 +2654,11 @@ def _watch_for_seedlings(app):
         app._tutorial_seedling_job = None
         if not getattr(app, "_tutorial_active", False):
             return
-        if getattr(app, "_tutorial_dialogue", None) is None:
+        # While a Fast Forward runs (its loop pumps Tk events, so this
+        # callback fires mid-run) Cyril waits: the FF loop waters plants
+        # every simulated hour, which would undo the dried-out plants.
+        if (getattr(app, "_tutorial_dialogue", None) is None
+                and not getattr(app, "fast_forward", False)):
             if _all_plants_seedlings(app):
                 _play_lecture_2(app)
                 return
@@ -2075,13 +2670,73 @@ def _watch_for_seedlings(app):
     app._tutorial_seedling_job = app.root.after(1000, _check)
 
 
+def _force_water_drops(app):
+    """Shows the water-drop icons for the tutorial without touching the
+    player's saved setting (they may normally use the fill bar)."""
+    if getattr(app, "_tutorial_drop_stash", None) is not None:
+        return
+    app._tutorial_drop_stash = bool(getattr(app, "_water_drop_enabled", False))
+    _apply_water_drops(app, True)
+
+
+def _restore_water_drops(app):
+    stash = getattr(app, "_tutorial_drop_stash", None)
+    if stash is None:
+        return
+    app._tutorial_drop_stash = None
+    _apply_water_drops(app, stash)
+
+
+def _apply_water_drops(app, enabled):
+    try:
+        app._water_drop_enabled = enabled
+        try:
+            app._water_drop_var.set(enabled)
+        except Exception:
+            pass
+        for tile in app._all_plot_tiles():
+            tile._render_state = None
+            tile.render()
+    except Exception:
+        pass
+
+
+_CYRIL_LEAVES_S = 2
+
+
+def _cyril_leaves(app):
+    """Cyril's 'away' portrait for a few seconds after a lecture, then
+    Mendel's own (season-aware) portraits take over again until the next
+    lecture starts."""
+    _swap_portrait_for_tutorial(app, _PORTRAIT_AWAY_FILENAME)
+    session = getattr(app, "_tutorial_session", 0)
+
+    def _hand_back():
+        if (not getattr(app, "_tutorial_active", False)
+                or getattr(app, "_tutorial_session", 0) != session
+                or getattr(app, "_tutorial_dialogue", None) is not None):
+            return
+        app._tutorial_portrait_free = True
+        try:
+            app._mendel_portrait.refresh()
+        except Exception:
+            pass
+
+    try:
+        app.root.after(int(_CYRIL_LEAVES_S * 1000), _hand_back)
+    except Exception:
+        pass
+
+
 def _play_lecture_2(app):
+    app._tutorial_portrait_free = False      # Cyril is back
     _swap_portrait_for_tutorial(app)
     _lock_down_sidebar(app)
+    _force_water_drops(app)
 
     def _done():
         _unlock_sidebar(app)
-        _swap_portrait_for_tutorial(app, _PORTRAIT_AWAY_FILENAME)
+        _cyril_leaves(app)
         _save_tutorial_progress(app, 2)
 
     _StatusBarDialogue(app, LECTURE_2_DIALOGUE, on_finish=_done)
@@ -2093,10 +2748,11 @@ def _resume_tutorial(app, progress, was_active=False):
     garden is loaded and the seedling watch resumes."""
     _cancel_seedling_watch(app)
     _teardown_active_dialogue(app)
+    app._tutorial_session = getattr(app, "_tutorial_session", 0) + 1
     app._tutorial_active = True
     if not was_active:
         _save_pre_tutorial_state(app)
-    _swap_portrait_for_tutorial(app, _PORTRAIT_AWAY_FILENAME)
+    _cyril_leaves(app)
     _stash = _stash_real_settings(app, was_active)
     _set_easy_difficulty(app)
     if not was_active:
@@ -2115,8 +2771,14 @@ def _resume_tutorial(app, progress, was_active=False):
         speed = float(progress.get("day_length_s", _TUTORIAL_DAY_LENGTH_S))
         app._set_day_length(speed)
         app.day_length_s = speed
+        _set_ff_locked(app, True)
     except Exception:
         pass
+    _done = int(progress.get("tutorial_part_done", 1))
+    _reset_button_policy(
+        app,
+        ("plant_seeds_btn",) if _done < 2 else
+        ("plant_seeds_btn", "water_btn", "water_all_btn", "inspect_btn"))
     try:
         for tile in app._all_plot_tiles():
             tile.locked = False
@@ -2161,6 +2823,11 @@ def exit_tutorial(app):
             and getattr(app, "_tutorial_dialogue", None) is None):
         _save_tutorial_progress(app, 1)
     _cancel_seedling_watch(app)
+    app._tutorial_policy_off = True     # all buttons come back
+    app._tutorial_portrait_free = False
+    _release_sun(app)
+    _restore_water_drops(app)
+    app._tutorial_session = getattr(app, "_tutorial_session", 0) + 1
     try:
         restored = _restore_pre_tutorial_state(app)
     except Exception:
@@ -2183,12 +2850,37 @@ def exit_tutorial(app):
 # Tutorial map — pick which part to play (shown when saves exist)
 # ============================================================================
 
-# (title, subtitle) per part, left to right. Add entries as parts are written.
+# (title, subtitle, plant growth stage shown as the node icon) per part, left
+# to right — the path follows the life of a pea plant, from seedling to a
+# mature plant. Add parts by replacing the "Coming soon" entries.
 _TUTORIAL_PARTS = [
-    ("Part 1", "The First Seeds"),
-    ("Part 2", "The Seedlings"),
-    ("Part 3", "Coming soon"),
+    ("Part 1", "The First Seeds", 2),     # seedling
+    ("Part 2", "The Seedlings", 3),       # leafy young plant
+    ("Part 3", "Coming soon", 4),         # budding
+    ("Part 4", "Coming soon", 5),         # flowering
+    ("Part 5", "Coming soon", 6),         # mature
 ]
+
+
+def _stage_node_image(stage, size, locked):
+    """Plant-stage icon for a map node, scaled to `size`; greyed out and
+    faded when the part is still locked. None if the icon is unavailable."""
+    try:
+        from PIL import Image, ImageTk
+        from icon_loader import stage_icon_path
+        path = stage_icon_path(stage)
+        if not path:
+            return None
+        im = Image.open(path).convert("RGBA")
+        im.thumbnail((size, size), Image.LANCZOS)
+        if locked:
+            r, g, b, al = im.split()
+            grey = Image.merge("RGB", (r, g, b)).convert("L").convert("RGB")
+            al = al.point(lambda v: int(v * 0.45))
+            im = Image.merge("RGBA", (*grey.split(), al))
+        return ImageTk.PhotoImage(im)
+    except Exception:
+        return None
 
 
 def _map_button(parent, text, command, bg="#8B4226", fg="white", hover="#5C2810"):
@@ -2229,7 +2921,7 @@ def show_tutorial_map(app):
     tk.Label(win, text="Choose where to continue your training.",
              font=("Segoe UI", 10, "italic"), bg=BG, fg="#7a6a55").pack(pady=(0, 8))
 
-    col_w = 210
+    col_w = 150
     n = len(_TUTORIAL_PARTS)
     has_snapshot = _load_part1_snapshot() is not None
     has_progress = _load_tutorial_progress() is not None
@@ -2237,20 +2929,34 @@ def show_tutorial_map(app):
     part_done = int(progress.get("tutorial_part_done", 0)) if progress else 0
     unlocked = 2 if (has_snapshot or part_done >= 1) else 1  # parts available
 
-    # The path: a line with a numbered circle per part.
-    path = tk.Canvas(win, width=col_w * n, height=64, bg=BG, highlightthickness=0)
+    # The path: a line through one plant-stage icon per part, growing from
+    # seedling (left) to a mature plant (right).
+    node_r = 34
+    path = tk.Canvas(win, width=col_w * n, height=node_r * 2 + 14, bg=BG,
+                     highlightthickness=0)
     path.pack(padx=14)
-    cy = 32
+    path._images = []
+    cy = node_r + 7
     path.create_line(col_w // 2, cy, col_w * n - col_w // 2, cy,
                      fill="#b59b73", width=5, capstyle="round")
-    for i in range(n):
+    # the stretch of path already open is drawn darker
+    if unlocked > 1:
+        path.create_line(col_w // 2, cy, col_w * (unlocked - 1) + col_w // 2, cy,
+                         fill="#8B4226", width=5, capstyle="round")
+    for i, (_t, _s, stage) in enumerate(_TUTORIAL_PARTS):
         cx = col_w * i + col_w // 2
         ok = (i < unlocked)
-        path.create_oval(cx - 22, cy - 22, cx + 22, cy + 22,
-                         fill=("#8B4226" if ok else "#cfc6b2"),
-                         outline="#5C2810" if ok else "#b5ab95", width=3)
-        path.create_text(cx, cy, text=str(i + 1), fill="white",
-                         font=("Segoe UI", 15, "bold"))
+        path.create_oval(cx - node_r, cy - node_r, cx + node_r, cy + node_r,
+                         fill=("#fbf7ee" if ok else "#e6dfcf"),
+                         outline=("#8B4226" if ok else "#b5ab95"), width=3)
+        img = _stage_node_image(stage, node_r * 2 - 14, locked=not ok)
+        if img is not None:
+            path._images.append(img)
+            path.create_image(cx, cy, image=img)
+        else:
+            path.create_text(cx, cy, text=str(i + 1),
+                             fill=("#8B4226" if ok else "#aaa090"),
+                             font=("Segoe UI", 15, "bold"))
 
     cards = tk.Frame(win, bg=BG)
     cards.pack(padx=14, pady=(4, 6))
@@ -2262,27 +2968,29 @@ def show_tutorial_map(app):
             pass
         app.root.after(10, lambda: start_tutorial(app, 0, choice=choice))
 
-    for i, (title, sub) in enumerate(_TUTORIAL_PARTS):
-        col = tk.Frame(cards, bg=PANEL, width=col_w - 12, height=150,
+    for i, (title, sub, _stage) in enumerate(_TUTORIAL_PARTS):
+        ok = (i < unlocked)
+        col = tk.Frame(cards, bg=(PANEL if ok else BG), width=col_w - 10, height=140,
                        highlightbackground="#d9cdb4", highlightthickness=1)
-        col.grid(row=0, column=i, padx=6, sticky="n")
+        col.grid(row=0, column=i, padx=5, sticky="n")
         col.grid_propagate(False)
         col.pack_propagate(False)
         tk.Label(col, text=title, font=("Segoe UI", 12, "bold"),
-                 bg=PANEL, fg=FG).pack(pady=(10, 0))
+                 bg=(PANEL if ok else BG), fg=(FG if ok else "#aaa090")).pack(pady=(10, 0))
         tk.Label(col, text=sub, font=("Segoe UI", 10, "italic"),
-                 bg=PANEL, fg="#7a6a55", wraplength=col_w - 30).pack(pady=(0, 8))
+                 bg=(PANEL if ok else BG), fg=("#7a6a55" if ok else "#b5ab95"),
+                 wraplength=col_w - 30).pack(pady=(0, 8))
         if i == 0:
             _map_button(col, "Replay", lambda: _pick("part1")).pack(pady=3)
-        elif i == 1 and unlocked >= 2:
+        elif i == 1 and ok:
             if has_snapshot:
                 _map_button(col, "Restart", lambda: _pick("restart2")).pack(pady=3)
             if has_progress:
                 _map_button(col, "Continue", lambda: _pick("continue"),
                             bg="#7A9A3C", hover="#5f7a2e").pack(pady=3)
         else:
-            tk.Label(col, text="🔒", font=("Segoe UI", 16), bg=PANEL,
-                     fg="#aaa090").pack(pady=6)
+            tk.Label(col, text="🔒", font=("Segoe UI", 14), bg=BG,
+                     fg="#aaa090").pack(pady=4)
 
     _map_button(win, "Close", win.destroy, bg="#e0dccf", fg="#333333",
                 hover="#d0cbb8").pack(pady=(4, 14))
@@ -2317,8 +3025,7 @@ def start_tutorial(app, lecture_index=0, choice=None):
     was_active = bool(getattr(app, "_tutorial_active", False))
     if lecture_index == 0 and choice is None:
         has_saves = _load_tutorial_progress() is not None or _load_part1_snapshot() is not None
-        if was_active and (getattr(app, "_tutorial_dialogue", None) is not None
-                           or not has_saves):
+        if was_active and not has_saves:
             try:
                 app._toast("Already in the tutorial.", level="info")
             except Exception:
@@ -2341,16 +3048,20 @@ def start_tutorial(app, lecture_index=0, choice=None):
         # finished again and overwrites it.
         _cancel_seedling_watch(app)
         _teardown_active_dialogue(app)
+        app._tutorial_session = getattr(app, "_tutorial_session", 0) + 1
         app._tutorial_part_done = 0
         app._tutorial_active = True
         if not was_active:
             _save_pre_tutorial_state(app)
 
+    app._tutorial_portrait_free = False
     _swap_portrait_for_tutorial(app)
     _stash = _stash_real_settings(app, was_active)
     _set_easy_difficulty(app)
     _set_tutorial_speed(app)
+    _set_ff_locked(app, True)
     _stash_real_settings_restore(app, _stash)
+    _reset_button_policy(app)          # everything blocked until explained
     _lock_down_sidebar(app)
     _apply_lecture_to_real_grid(app, lecture)
 
@@ -2361,9 +3072,9 @@ def start_tutorial(app, lecture_index=0, choice=None):
         # can also leave early at any point via the Monastery map's
         # "Mendel's Garden" region, which calls exit_tutorial() above.
         _unlock_sidebar(app)
-        # Cyril leaves once the lecture is over; franz_0 stays up until
-        # he is back for the next one.
-        _swap_portrait_for_tutorial(app, _PORTRAIT_AWAY_FILENAME)
+        # Cyril leaves once the lecture is over (franz_0 for 5 s), then
+        # Mendel's portraits are back until the next lecture.
+        _cyril_leaves(app)
         # Part 1 is over: autosave the tutorial garden, then wait for the
         # seedlings that trigger part 2.
         _save_tutorial_progress(app, 1, path=_part1_snapshot_path())

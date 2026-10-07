@@ -170,6 +170,11 @@ _print_loading_banner()
 # ...)" / "Hello from the pygame community" banner, which otherwise
 # would've been the very first thing printed instead of the line above.
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+# pygame's own pkgdata.py still imports the deprecated pkg_resources and
+# prints a UserWarning on start-up (seen on macOS); it is harmless, so
+# silence just that warning instead of cluttering the console.
+import warnings
+warnings.filterwarnings("ignore", message=r"pkg_resources is deprecated", category=UserWarning)
 try:
     import pygame
     _PYGAME_AVAILABLE = True
@@ -1773,6 +1778,7 @@ class GardenApp:
         rows = self._build_inspector_status_rows(plant)
 
         self._open_plant_inspector(plant, rows)
+        self._tutorial_inspected = True   # lets the tutorial know (see tutorial.py)
         self.render_all()
         try:
             self._ensure_auto_loop(delay_ms=50)
@@ -3094,9 +3100,10 @@ class GardenApp:
                 pass
             self._open_tie_for_selected()
 
-        self._make_flat_button(bottom_row, "Trait Inheritance Explorer", _open_tie_close_inspector_first,
-                                bg="#e0dccf", fg="#333333",
-                                font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
+        if not getattr(self, "_tutorial_active", False):
+            self._make_flat_button(bottom_row, "Trait Inheritance Explorer", _open_tie_close_inspector_first,
+                                    bg="#e0dccf", fg="#333333",
+                                    font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
 
         def _open_law_wizard_close_inspector_first():
             # Same reasoning as the TIE button above — without this, the
@@ -3109,9 +3116,10 @@ class GardenApp:
                 pass
             self._test_mendelian_laws_now()
 
-        self._make_flat_button(bottom_row, "Unlock Laws", _open_law_wizard_close_inspector_first,
-                                bg="#e0dccf", fg="#333333",
-                                font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
+        if not getattr(self, "_tutorial_active", False):
+            self._make_flat_button(bottom_row, "Unlock Laws", _open_law_wizard_close_inspector_first,
+                                    bg="#e0dccf", fg="#333333",
+                                    font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
 
         win.update_idletasks()
         ww = win.winfo_reqwidth()
@@ -3136,6 +3144,8 @@ class GardenApp:
 
     def _test_mendelian_laws_now(self):
         """Open the Mendelian Law Unlock wizard."""
+        if getattr(self, "_tutorial_active", False):
+            return          # not available during the tutorial
         try:
             if getattr(self, "_plant_cursor_active", False):
                 self._stop_plant_cursor_mode()
@@ -3715,6 +3725,42 @@ class GardenApp:
 
         try:
             self._toast(f"Background texture: {'on' if enabled else 'off'}")
+        except Exception:
+            pass
+
+    def _set_plant_info_visible(self, enabled):
+        """Game Settings: show / hide the selected plant's icon, ID,
+        generation and stage above the sidebar buttons."""
+        enabled = bool(enabled)
+        self._plant_info_visible = enabled
+        try:
+            self._plant_info_var.set(enabled)
+        except Exception:
+            pass
+        _save_plant_info_visible(enabled)
+        try:
+            if enabled:
+                self.icon_row.pack(anchor="center", pady=(0, 2), before=self.left_actions)
+                self.stage_label.pack(anchor="center", pady=(0, 8), before=self.left_actions)
+            else:
+                self.icon_row.pack_forget()
+                self.stage_label.pack_forget()
+        except Exception:
+            pass
+
+    def _set_garden_only_portrait(self, enabled):
+        """Game Settings: show only the garden (day / night) in the left
+        panel instead of Mendel's portraits."""
+        enabled = bool(enabled)
+        self._garden_only_portrait = enabled
+        try:
+            self._garden_only_var.set(enabled)
+        except Exception:
+            pass
+        _save_garden_only_portrait(enabled)
+        try:
+            if getattr(self, "_mendel_portrait", None):
+                self._mendel_portrait.refresh()
         except Exception:
             pass
 
@@ -4475,6 +4521,8 @@ class GardenApp:
         # from the start, rather than always starting checked/unchecked
         # regardless of what was saved last session.
         self._water_drop_enabled = _load_water_drop_enabled()
+        self._garden_only_portrait = _load_garden_only_portrait()
+        self._plant_info_visible = _load_plant_info_visible()
         self._health_hearts_enabled = _load_health_hearts_enabled()
         self._build_ui()
         self._update_temp_button_state()
@@ -4767,6 +4815,21 @@ class GardenApp:
             # Fallback to immediate emasculation if dialog fails
             print(f"Error opening emasculation dialog: {e}")
             on_emasculation_complete(True)
+
+    def _center_on_screen(self, win):
+        """Places a popup in the middle of the screen (using its requested
+        size, which is known before the window manager maps it)."""
+        try:
+            win.update_idletasks()
+            ww = win.winfo_reqwidth()
+            wh = win.winfo_reqheight()
+            sw = win.winfo_screenwidth()
+            sh = win.winfo_screenheight()
+            x = max(0, (sw - ww) // 2)
+            y = max(0, (sh - wh) // 2)
+            win.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
 
     def _force_window_not_maximized(self, win):
         """
@@ -5798,6 +5861,7 @@ class GardenApp:
             self.render_all()
             if not getattr(self, "_suppress_plant_sound", False):
                 _play_sound("plant.ogg")
+                self._mendel_planting()
 
             return True
             
@@ -5854,6 +5918,7 @@ class GardenApp:
         self.render_all()
         if not getattr(self, "_suppress_plant_sound", False):
             _play_sound("plant.ogg")
+            self._mendel_planting()
 
         return True
 
@@ -5979,6 +6044,7 @@ class GardenApp:
 
         if planted > 0:
             _play_sound("plant.ogg")
+            self._mendel_planting()
 
         self._toast(f"Planted {planted} seed(s) in area.", level="info")
         reason = getattr(self, "_last_night_block_reason", None)
@@ -5989,6 +6055,14 @@ class GardenApp:
 # ============================================================================
 # Event Handlers
 # ============================================================================
+    def _mendel_planting(self):
+        """Shows Mendel's planting portrait for a few seconds."""
+        try:
+            if getattr(self, "_mendel_portrait", None):
+                self._mendel_portrait.show_planting()
+        except Exception:
+            pass
+
     def _on_plant_seed_quick(self):
         """Open grouped seed chooser for the currently selected tile if it's
         free. If nothing is selected, or the selected tile has a living
@@ -6255,6 +6329,19 @@ class GardenApp:
             command=lambda: self._set_water_drop_enabled(self._water_drop_var.get())
         )
 
+        self._plant_info_var = tk.BooleanVar(value=getattr(self, "_plant_info_visible", True))
+        game_menu.add_checkbutton(
+            label="Show selected plant info",
+            variable=self._plant_info_var,
+            command=lambda: self._set_plant_info_visible(self._plant_info_var.get())
+        )
+        self._garden_only_var = tk.BooleanVar(value=getattr(self, "_garden_only_portrait", False))
+        game_menu.add_checkbutton(
+            label="Garden view only (no Mendel)",
+            variable=self._garden_only_var,
+            command=lambda: self._set_garden_only_portrait(self._garden_only_var.get())
+        )
+
         # ── Health Display ───────────────────────────────────────────
         # Off (default) = the existing horizontal fill bar; on = a row of
         # 4 heart icons (same size as the water drop) in the same spot.
@@ -6429,8 +6516,18 @@ class GardenApp:
         self.id_label.grid(row=0, column=0, padx=(0, 4))
 
         # Plant icon display (center) - will show empty/dead icons too
-        self.plant_icon_label = tk.Label(self.icon_row, bg=self.grid_bg)
-        self.plant_icon_label.grid(row=0, column=1)
+        # Sits in a fixed-size cell: its content changes size depending
+        # on what is selected (plant icon, dead icon, the "..." of an empty
+        # plot), which used to resize this row and make every button below
+        # jump up and down (and drift away from the tutorial arrows).
+        _cell = INNER_ICON + 6
+        self.icon_cell = tk.Frame(self.icon_row, width=_cell, height=_cell,
+                                  bg=self.grid_bg)
+        self.icon_cell.grid(row=0, column=1)
+        self.icon_cell.grid_propagate(False)
+        self.icon_cell.pack_propagate(False)
+        self.plant_icon_label = tk.Label(self.icon_cell, bg=self.grid_bg)
+        self.plant_icon_label.place(relx=0.5, rely=0.5, anchor="center")
         
         # Generation label (right of icon) - fixed width
         self.gen_label = tk.Label(
@@ -6450,7 +6547,8 @@ class GardenApp:
             text="",
             font=("Segoe UI", 10, "italic"),
             bg=self.grid_bg,
-            fg="#555555"
+            fg="#555555",
+            height=1,   # one line even while empty, so the buttons never shift
         )
         self.stage_label.pack(anchor="center", pady=(0, 8))
         
@@ -6470,6 +6568,10 @@ class GardenApp:
         # 2) make the actions frame stretch horizontally
         self.left_actions = tk.Frame(self.left_panel)
         self.left_actions.pack(anchor="nw", pady=(0,6), fill="x")   # ← add fill="x"
+        # "Show selected plant info" off: hide the icon row + stage label.
+        if not getattr(self, "_plant_info_visible", True):
+            self.icon_row.pack_forget()
+            self.stage_label.pack_forget()
 
         self.btn_font = ("Segoe UI", 12)
 
@@ -6543,7 +6645,56 @@ class GardenApp:
             btn.pack(anchor="nw", pady=2, fill="x")
             return btn
 
-        self.monastery_btn = make_icon_button(self.left_actions, "Monastery (Map)", "monastery.png", self._open_monastery_popup)
+        # The Monastery (Map) button is just the map picture (icons/map.png)
+        # when that file exists; otherwise the usual text + icon button.
+        self.monastery_btn = None
+        try:
+            _map_path = os.path.join(ICONS_DIR, "map.png")
+            if os.path.isfile(_map_path):
+                from PIL import Image as _PILImage, ImageTk as _PILImageTk
+                _im = _PILImage.open(_map_path).convert("RGBA")
+                _im.thumbnail((150, 100))
+                # Hover = a soft golden glow around the picture instead of
+                # the usual grey button highlight. Both versions are drawn
+                # on the same padded transparent canvas (so the button
+                # doesn't change size) with PIL, which behaves the same on
+                # Windows and macOS.
+                from PIL import ImageFilter as _PILFilter, ImageChops as _PILChops
+                _pad = 9
+                _canvas = _PILImage.new("RGBA", (_im.width + 2 * _pad, _im.height + 2 * _pad), (0, 0, 0, 0))
+                _canvas.paste(_im, (_pad, _pad))
+                _alpha = _canvas.split()[3]
+                _halo = _alpha.filter(_PILFilter.MaxFilter(5)).filter(_PILFilter.GaussianBlur(4))
+                _halo = _halo.point(lambda v: min(255, int(v * 1.7)))
+                _glow = _PILImage.new("RGBA", _canvas.size, (255, 205, 90, 0))
+                _glow.putalpha(_halo)
+                _glow_canvas = _PILImage.alpha_composite(_glow, _canvas)
+                _map_img = _PILImageTk.PhotoImage(_canvas)
+                _map_img_glow = _PILImageTk.PhotoImage(_glow_canvas)
+                self.monastery_btn = _FlatIconButton(
+                    self.left_actions,
+                    text="",
+                    image=_map_img,
+                    command=self._open_monastery_popup,
+                    bg=self.grid_bg,
+                    fg="black",
+                    hover_bg=self.grid_bg,          # no grey hover box
+                    disabled_bg=self.grid_bg,
+                    padx=0,
+                    pady=0,
+                )
+                self.monastery_btn.image = _map_img
+                self.monastery_btn._glow_img = _map_img_glow
+                self.monastery_btn.bind(
+                    "<Enter>", lambda e, b=self.monastery_btn, i=_map_img_glow: b.configure(image=i), add="+")
+                self.monastery_btn.bind(
+                    "<Leave>", lambda e, b=self.monastery_btn, i=_map_img: b.configure(image=i), add="+")
+                self.monastery_btn.pack(anchor="nw", pady=2, fill="x")
+        except Exception as _e:
+            print(f"⚠ Could not build the map button: {_e}")
+            self.monastery_btn = None
+        if self.monastery_btn is None:
+            self.monastery_btn = make_icon_button(self.left_actions, "Monastery (Map)", "monastery.png", self._open_monastery_popup)
         # Centered rather than left-aligned like the plant-action buttons
         # above it — it's a navigation button, not an action on the
         # currently selected plant, so it reads better set apart.
@@ -6551,7 +6702,42 @@ class GardenApp:
             self.monastery_btn.configure(anchor="center")
         except Exception:
             pass
-        self.water_btn     = make_icon_button(self.left_actions, "Water",         "can.png",       self._on_water_selected)
+        # Plant (moved here from the top bar), directly above Water.
+        self.plant_seeds_btn = make_icon_button(self.left_actions, "Plant", "shovel.png", self._on_plant_seed_quick)
+
+        # Water is one wide button split by a thin line: the left half
+        # waters the selected plant(s), the right half ("All") waters
+        # every plant. Both stay separate widgets (water_btn and
+        # water_all_btn) so the rest of the game and the tutorial can
+        # still enable, disable and point at each one individually.
+        _water_row = tk.Frame(self.left_actions, bg=self.grid_bg)
+        _water_row.pack(anchor="nw", pady=2, fill="x")
+        _w_font = self.button_style.get("font", ("Segoe UI", 12))
+        _w_padx = self.button_style.get("padx", 16)
+        _w_pady = self.button_style.get("pady", 10)
+        _can_img = None
+        try:
+            _can_path = os.path.join(ICONS_DIR, "can.png")
+            if cached_path_exists(_can_path):
+                _can_img = tk.PhotoImage(file=_can_path)
+        except Exception:
+            _can_img = None
+        self.water_btn = _FlatIconButton(
+            _water_row, text="Water", image=_can_img,
+            compound=("left" if _can_img else None),
+            command=self._on_water_selected, bg=self.grid_bg, fg="black",
+            hover_bg="#DDDDDD", disabled_bg=self.grid_bg,
+            font=_w_font, padx=_w_padx, pady=_w_pady)
+        if _can_img is not None:
+            self.water_btn.image = _can_img
+        self.water_btn.pack(side="left", fill="both", expand=True)
+        tk.Frame(_water_row, width=1, bg="#9A9A9A").pack(side="left", fill="y", pady=4)
+        self.water_all_btn = _FlatIconButton(
+            _water_row, text="All",
+            command=self._on_water_all, bg=self.grid_bg, fg="black",
+            hover_bg="#DDDDDD", disabled_bg=self.grid_bg,
+            font=_w_font, padx=_w_padx, pady=_w_pady)
+        self.water_all_btn.pack(side="left", fill="both")
         self.inspect_btn = make_icon_button(
             self.left_actions,
             "Inspect",
@@ -6563,12 +6749,6 @@ class GardenApp:
         self.pollen_btn    = make_icon_button(self.left_actions, "Collect pollen","pollen.png",    self._on_collect_pollen)
         self.pollinate_btn = make_icon_button(self.left_actions, "Pollinate",     "pollinate.png", self._on_pollinate)
         self.remove_btn    = make_icon_button(self.left_actions, "Remove plant",  "remove.png",    self._on_remove_selected)
-
-        # Genetics tools
-        try:
-            self.genetics_btn = make_icon_button(self.left_actions, "Genotype", "genetics.png", self._on_genetics)
-        except Exception:
-            pass
 
         # Traits header + per-trait icon list used to live here, replaced by
         # the plant inspector window (see _open_plant_inspector). Kept as
@@ -6763,50 +6943,6 @@ class GardenApp:
             pady=self.button_style.get("pady", 6),
         )
 
-        # Plant Seeds button with shovel icon
-        try:
-            plant_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "shovel.png"))
-            self.plant_seeds_btn = _FlatIconButton(
-                inventory_left,
-                text=" Plant",
-                image=plant_icon,
-                compound="left",
-                command=self._on_plant_seed_quick,
-                **btn_kwargs,
-            )
-            self.plant_seeds_btn.image = plant_icon  # Keep reference
-        except Exception as e:
-            print(f"⚠ Could not load shovel icon: {e}")
-            self.plant_seeds_btn = _FlatIconButton(
-                inventory_left,
-                text="Plant 🌱",
-                command=self._on_plant_seed_quick,
-                **btn_kwargs,
-            )
-        self.plant_seeds_btn.pack(side="left", padx=2)
-
-        # Water All button with watering can icon
-        try:
-            water_all_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "can.png"))
-            self.water_all_btn = _FlatIconButton(
-                inventory_left,
-                text=" Water All",
-                image=water_all_icon,
-                compound="left",
-                command=self._on_water_all,
-                **btn_kwargs,
-            )
-            self.water_all_btn.image = water_all_icon  # Keep reference
-        except Exception as e:
-            print(f"⚠ Could not load can icon: {e}")
-            self.water_all_btn = _FlatIconButton(
-                inventory_left,
-                text="Water All 💧",
-                command=self._on_water_all,
-                **btn_kwargs,
-            )
-        self.water_all_btn.pack(side="left", padx=2)
-
         # Next Phase button
         self.next_phase_btn = _FlatIconButton(
             inventory_left,
@@ -6825,6 +6961,7 @@ class GardenApp:
             **btn_kwargs,
         )
         self.pause_btn.pack(side="left", padx=2)
+        self._update_pause_button()
 
         # Fast Forward button
         self.fast_btn = _FlatIconButton(
@@ -6845,6 +6982,37 @@ class GardenApp:
             **btn_kwargs,
         )
         self.measure_temp_btn.pack(side="left", padx=2)
+
+        # Genotype Viewer button (moved here from the left panel), just
+        # before the Observatory button.
+        try:
+            _geno_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "genetics.png"))
+            self.genetics_btn = _FlatIconButton(
+                inventory_left, text=" Genotype", image=_geno_icon,
+                compound="left", command=self._on_genetics, **btn_kwargs)
+            self.genetics_btn.image = _geno_icon
+        except Exception as e:
+            print(f"⚠ Could not load genetics icon: {e}")
+            self.genetics_btn = _FlatIconButton(
+                inventory_left, text="Genotype", command=self._on_genetics,
+                **btn_kwargs)
+        self.genetics_btn.pack(side="left", padx=2)
+
+        # TIR-Ex (Trait Inheritance Explorer) button, between Genotype and
+        # Observatory. Opens the explorer for the selected plant.
+        try:
+            _tie_icon = tk.PhotoImage(file=os.path.join(ICONS_DIR, "TIE.png"))
+            self.tie_btn = _FlatIconButton(
+                inventory_left, text=" TIR-Ex", image=_tie_icon,
+                compound="left", command=self._open_tie_for_selected,
+                **btn_kwargs)
+            self.tie_btn.image = _tie_icon
+        except Exception as e:
+            print(f"⚠ Could not load TIE icon: {e}")
+            self.tie_btn = _FlatIconButton(
+                inventory_left, text="TIR-Ex",
+                command=self._open_tie_for_selected, **btn_kwargs)
+        self.tie_btn.pack(side="left", padx=2)
 
         # Observatory button with custom icon — kept available, placed
         # after the reordered core action buttons above since it wasn't
@@ -7193,8 +7361,19 @@ class GardenApp:
         except Exception:
             pass
 
+    def _update_water_all_state(self):
+        """The "All" half of the Water button only works while at least
+        one plant is growing somewhere in the garden."""
+        try:
+            has_plant = any(getattr(t, "plant", None) is not None
+                            for t in self._all_plot_tiles())
+            self.water_all_btn.configure(state=("normal" if has_plant else "disabled"))
+        except Exception:
+            pass
+
     def render_all(self):
         self._sync_tile_selected_from_indices()
+        self._update_water_all_state()
 
         try:
             self._update_header()
@@ -7847,6 +8026,8 @@ class GardenApp:
     # ---------- Events ----------
     def _open_tie_for_selected(self, event=None):
         """Open Trait Inheritance Explorer for the currently selected plant."""
+        if getattr(self, "_tutorial_active", False):
+            return          # not available during the tutorial
         idx = getattr(self, "selected_index", None)
         plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
         if not plant:
@@ -8016,22 +8197,24 @@ class GardenApp:
             # Prefer the dedicated browser, else fall back to History viewer in archive-only mode
             self.open_history_archive_browser(self.root, default_pid=_pid)
             
-        btn = tk.Button(
-            toolbar,
-            text="  Reveal Genotype  ",
-            command=_reveal_alleles,
-            **self.button_style,
-        )
-        self._apply_hover(btn)
-        btn.pack(side="left", padx=(0,6))
-        btn = tk.Button(
-            toolbar,
-            text=" Trait Inheritance Explorer ",
-            command=_open_history_archiveonly,
-            **self.button_style,
-        )
-        self._apply_hover(btn)
-        btn.pack(side="left", padx=(6,0))
+        # Not offered inside the tutorial (only the "?" explanations stay).
+        if not getattr(self, "_tutorial_active", False):
+            btn = tk.Button(
+                toolbar,
+                text="  Reveal Genotype  ",
+                command=_reveal_alleles,
+                **self.button_style,
+            )
+            self._apply_hover(btn)
+            btn.pack(side="left", padx=(0,6))
+            btn = tk.Button(
+                toolbar,
+                text=" Trait Inheritance Explorer ",
+                command=_open_history_archiveonly,
+                **self.button_style,
+            )
+            self._apply_hover(btn)
+            btn.pack(side="left", padx=(6,0))
 
         logging.debug("[Genetics] Buttons created: Trait Inheritance Explorer")
 
@@ -9488,6 +9671,7 @@ class GardenApp:
 
         if planted_count > 0:
             _play_sound("plant.ogg")
+            self._mendel_planting()
 
         self.render_all()
 
@@ -10063,6 +10247,43 @@ class GardenApp:
             except Exception:
                 self.multi_selected_indices = set()
 
+            # The release of this very click must not run the normal
+            # "single selection" code (which used to wipe the selection
+            # right after, so Shift+click never kept more than one tile).
+            self._shift_click_handled = True
+
+            # The plant that was already selected counts as part of the
+            # selection even if it was selected some other way.
+            try:
+                if (not self.multi_selected_indices
+                        and getattr(self, "selected_index", None) is not None):
+                    self.multi_selected_indices.add(self.selected_index)
+                    self.tiles[self.selected_index].selected = True
+                    if getattr(self, "selected_tiles", None) is None:
+                        self.selected_tiles = set()
+                    self.selected_tiles.add(self.tiles[self.selected_index])
+            except Exception:
+                pass
+
+            # Shift+click on a tile that is already selected removes it
+            # again (as long as something else stays selected).
+            if index in self.multi_selected_indices and len(self.multi_selected_indices) > 1:
+                self.multi_selected_indices.discard(index)
+                try:
+                    self.tiles[index].selected = False
+                    self.selected_tiles.discard(self.tiles[index])
+                except Exception:
+                    pass
+                self.selected_index = min(self.multi_selected_indices)
+                self._drag_start_x = None
+                self._drag_start_y = None
+                self._dragging_select = False
+                try:
+                    self.render_all()
+                except Exception:
+                    pass
+                return
+
             self.multi_selected_indices.add(index)
             self.selected_index = index
 
@@ -10217,6 +10438,12 @@ class GardenApp:
                 return
         except Exception:
             pass
+        # Release of a Shift+click: the press already added the tile to the
+        # selection — leave it alone.
+        if getattr(self, "_shift_click_handled", False):
+            self._shift_click_handled = False
+            self._clear_drag_state()
+            return
         dragging = bool(self._dragging_select)
         sx, sy = self._drag_start_x, self._drag_start_y
         self._clear_drag_state()
@@ -12181,12 +12408,27 @@ class GardenApp:
 
         _render()
 
+    def _update_pause_button(self):
+        """Pause button label, plus a subtle red tint while the game is
+        paused so it's obvious at a glance that time is stopped."""
+        try:
+            normal_bg = self.button_style.get("bg", "#F4F4F4")
+            normal_hover = self.button_style.get("activebackground", "#E4E4E4")
+            if self.running:
+                self.pause_btn._hover_bg = normal_hover
+                self.pause_btn.configure(text="⏸", bg=normal_bg, fg="black")
+            else:
+                self.pause_btn._hover_bg = "#F2BDBD"
+                self.pause_btn.configure(text="▶", bg="#F8D4D4", fg="#B02A2A")
+        except Exception:
+            pass
+
     def _toggle_run(self):
         self.running = not getattr(self, "running", True)
         try:
             # Update button label
             if hasattr(self, "pause_btn"):
-                self.pause_btn.configure(text=("⏸" if self.running else "⏵"))
+                self._update_pause_button()
         except Exception:
             pass
         # Keep loop consistent
@@ -12216,6 +12458,9 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_fast_forward(self):
+        # Off during the first tutorial parts (see tutorial._set_ff_locked).
+        if getattr(self, "_tutorial_ff_locked", False):
+            return
         # Dialog now asks only for the number of days — daily-render and
         # hourly-render-interval moved to Game Settings ▸ Fast Forward
         # (persistent settings, not something to re-choose every run).
@@ -12459,7 +12704,7 @@ class GardenApp:
         # (fast_forward already cleared above)
         self.running = was_running
         try:
-            self.pause_btn.configure(text="⏸" if self.running else "⏵")
+            self._update_pause_button()
         except Exception:
             pass
 
@@ -13285,6 +13530,7 @@ class GardenApp:
                 relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
                 command=win.destroy,
             ).pack(side="right")
+            self._center_on_screen(win)
 
         except Exception as e:
             logging.error(f"Failed to open Monastery popup: {e}", exc_info=True)
@@ -13324,6 +13570,10 @@ class GardenApp:
         self._set_bg_texture_enabled(DEFAULT_BG_TEXTURE_ENABLED)
         self._water_drop_var.set(DEFAULT_WATER_DROP_ENABLED)
         self._set_water_drop_enabled(DEFAULT_WATER_DROP_ENABLED)
+        self._plant_info_var.set(DEFAULT_PLANT_INFO_VISIBLE)
+        self._set_plant_info_visible(DEFAULT_PLANT_INFO_VISIBLE)
+        self._garden_only_var.set(DEFAULT_GARDEN_ONLY_PORTRAIT)
+        self._set_garden_only_portrait(DEFAULT_GARDEN_ONLY_PORTRAIT)
         self._health_hearts_var.set(DEFAULT_HEALTH_HEARTS_ENABLED)
         self._set_health_hearts_enabled(DEFAULT_HEALTH_HEARTS_ENABLED)
         self._texture_blur_var.set(DEFAULT_TEXTURE_BLUR_PCT)
@@ -13510,6 +13760,10 @@ class GardenApp:
                    lambda: self._set_bg_texture_enabled(self._bg_texture_enabled_var.get()))
             _check(panel, "Water: show as drop icon", self._water_drop_var,
                    lambda: self._set_water_drop_enabled(self._water_drop_var.get()))
+            _check(panel, "Show selected plant info (icon, ID, stage)", self._plant_info_var,
+                   lambda: self._set_plant_info_visible(self._plant_info_var.get()))
+            _check(panel, "Garden view only (no Mendel / Cyril)", self._garden_only_var,
+                   lambda: self._set_garden_only_portrait(self._garden_only_var.get()))
             _check(panel, "Health: show as hearts", self._health_hearts_var,
                    lambda: self._set_health_hearts_enabled(self._health_hearts_var.get()))
 
@@ -13655,6 +13909,7 @@ class GardenApp:
         ).pack(side="right")
 
         _show_category("Difficulty & Speed")
+        self._center_on_screen(win)
 
     def _start_tutorial(self, lecture_index=0):
         """
@@ -14288,9 +14543,7 @@ class GardenApp:
         self._refresh_seed_counter_var()
         
         # Update pause button text
-        self.pause_btn.configure(
-            text=("⏸" if self.running else "▶")
-        )
+        self._update_pause_button()
 
     def _show_help(self):
         # --- Window ---
@@ -15121,6 +15374,8 @@ class GardenApp:
             return False
         
     def open_history_archive_browser(self, parent_window, default_pid=None):
+        if getattr(self, "_tutorial_active", False):
+            return          # TIE is not available during the tutorial
         # Central construction point for every TIE window regardless of
         # caller (the inspector's button, the Genotype Explorer, etc.) —
         # hooking the topmost-yield here covers all of them at once.
@@ -15510,6 +15765,45 @@ def _load_water_drop_enabled():
 def _save_water_drop_enabled(enabled):
     settings = _load_display_settings()
     settings["water_drop_enabled"] = bool(enabled)
+    _save_display_settings(settings)
+
+
+# Whether the selected-plant info (flower icon, ID, generation, stage)
+# above the sidebar buttons is shown. Cosmetic; persisted like the others.
+DEFAULT_PLANT_INFO_VISIBLE = False
+
+
+def _load_plant_info_visible():
+    settings = _load_display_settings()
+    try:
+        return bool(settings.get("plant_info_visible", DEFAULT_PLANT_INFO_VISIBLE))
+    except Exception:
+        return DEFAULT_PLANT_INFO_VISIBLE
+
+
+def _save_plant_info_visible(enabled):
+    settings = _load_display_settings()
+    settings["plant_info_visible"] = bool(enabled)
+    _save_display_settings(settings)
+
+
+# "Garden view only": the left-panel portrait shows just the garden scene
+# (day or night, no Mendel / Cyril). Cosmetic, persisted like the other
+# Game Settings toggles.
+DEFAULT_GARDEN_ONLY_PORTRAIT = False
+
+
+def _load_garden_only_portrait():
+    settings = _load_display_settings()
+    try:
+        return bool(settings.get("garden_only_portrait", DEFAULT_GARDEN_ONLY_PORTRAIT))
+    except Exception:
+        return DEFAULT_GARDEN_ONLY_PORTRAIT
+
+
+def _save_garden_only_portrait(enabled):
+    settings = _load_display_settings()
+    settings["garden_only_portrait"] = bool(enabled)
     _save_display_settings(settings)
 
 

@@ -51,6 +51,19 @@ class GardenEnvironment:
     Handles hourly and daily progression of simulation.
     """
     
+    # --- weather, with an optional lock -------------------------------
+    # The tutorial pins the sky to sunny for a while (weather_lock); the
+    # real weather keeps being computed underneath and comes back as soon
+    # as the lock is cleared (set to None).
+    @property
+    def weather(self):
+        lock = self.__dict__.get("weather_lock")
+        return lock if lock else self.__dict__.get("_weather", "☀️")
+
+    @weather.setter
+    def weather(self, value):
+        self.__dict__["_weather"] = value
+
     def __init__(self, size):
         """
         Initialize the garden environment.

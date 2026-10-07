@@ -41,12 +41,14 @@ _OVERWATERED_ABOVE = 90
 
 CHANGE_EVERY_S = 30.0      # random expression change interval
 IDLE_AFTER_S = 45.0        # no input for this long -> idle expressions
-WATERING_SHOW_S = 3.5      # how long the watering image stays
+WATERING_SHOW_S = 1.5
+PLANTING_SHOW_S = 1.0      # ... and the planting image
 TICK_MS = 1000
 
 
 _KNOWN_MOODS = {"looking", "smiling", "noting", "thinking", "thinking2",
-                "eyes-closed", "watering"}
+                "eyes-closed", "watering", "planting"}
+_ACTION_MOODS = ("watering", "planting")
 _DARK_BELOW = 0.25         # light factor under which the scene counts as dark
 
 
@@ -125,6 +127,13 @@ class MendelPortrait:
         self._apply()
         self._job = self.app.root.after(TICK_MS, self._tick)
 
+    def _tut_owns(self):
+        """True while the tutorial owns the portrait (Cyril, or Mendel on
+        the dialogue's own lines). Between lectures the tutorial hands it
+        back (app._tutorial_portrait_free) and this class takes over."""
+        return (bool(getattr(self.app, "_tutorial_active", False))
+                and not getattr(self.app, "_tutorial_portrait_free", False))
+
     def _on_input(self, event=None):
         self._last_input = time.monotonic()
 
@@ -175,6 +184,24 @@ class MendelPortrait:
             hour = int(getattr(self.app.garden, "clock_hour", 8)) % 24
             return hour >= 21 or hour < 5
 
+    def _garden_only(self):
+        return bool(getattr(self.app, "_garden_only_portrait", False))
+
+    def _garden_scene_path(self):
+        """The Mendel-less garden image for the current season: the night
+        one when it is dark, else the day one (each falls back to the
+        other kind); None if there are no scene images at all."""
+        season = self._season()
+        order = ("night", "day") if self._is_dark() else ("day", "night")
+        for kind in order:
+            files = self._scenes.get(kind, {}).get(season)
+            if files:
+                key = (kind, season)
+                if self._scene_choice.get(key) not in files:
+                    self._scene_choice[key] = random.choice(files)
+                return self._scene_choice[key]
+        return None
+
     def _scene_path(self):
         """Path of the Mendel-less scene to show right now, or None."""
         if not self._mendel_away():
@@ -191,8 +218,13 @@ class MendelPortrait:
         return None
 
     def _apply(self, force=False):
+        # While an action image (watering / planting) has priority, only it
+        # may be shown.
+        if (time.monotonic() < getattr(self.app, "_portrait_locked_until", 0.0)
+                and self.mood not in _ACTION_MOODS):
+            return
         season = self._season()
-        scene = self._scene_path()
+        scene = self._garden_scene_path() if self._garden_only() else self._scene_path()
         if scene:
             key = ("scene", scene)
             path = scene
@@ -218,30 +250,87 @@ class MendelPortrait:
 
     # ------------------------------------------------------------------
     def show_watering(self):
-        if getattr(self.app, "_tutorial_active", False):
-            return
-        # Repeated waterings don't extend the display; one exact timer
-        # (not the 1 s tick) ends it.
-        if self.mood == "watering":
-            return
-        self.mood = "watering"
-        self._apply()
-        try:
-            self.app.root.after(int(WATERING_SHOW_S * 1000), self._end_watering)
-        except Exception:
-            self._watering_until = time.monotonic() + WATERING_SHOW_S
+        self._show_action("watering", WATERING_SHOW_S)
 
-    def _end_watering(self):
-        if self.mood != "watering":
+    def show_planting(self):
+        self._show_action("planting", PLANTING_SHOW_S)
+
+    def _show_action_in_tutorial(self, mood, secs):
+        """During the tutorial the portrait belongs to Cyril (or Mendel on
+        the "your turn" lines): flash the action image for `secs`, then
+        put back whatever the dialogue was showing."""
+        if getattr(self, "_tut_action", False):
+            return
+        path = self._path(mood, self._season())
+        if not os.path.isfile(path):
+            return
+        try:
+            self._tut_prev = getattr(self.label, "image", None)
+            img = safe_image(path)
+            self.label.configure(image=img)
+            self.label.image = img
+            self._tut_action = True
+            # Nothing (Cyril, Mendel's tutorial image...) may overwrite it
+            # until it is over (see tutorial._portrait_locked).
+            self.app._portrait_locked_until = time.monotonic() + secs
+            self.app.root.after(int(secs * 1000), self._end_tutorial_action)
+        except Exception:
+            self._tut_action = False
+
+    def _end_tutorial_action(self):
+        self._tut_action = False
+        try:
+            if not self._tut_owns():
+                self.refresh()          # tutorial ended meanwhile
+                return
+            dlg = getattr(self.app, "_tutorial_dialogue", None)
+            if dlg is not None and getattr(dlg, "_speaker", None):
+                if getattr(dlg, "_mendel_shown", False):
+                    dlg._show_mendel_portrait()
+                else:
+                    dlg._caption_speaker = None     # force a redraw
+                    dlg._apply_speaker_caption(dlg._speaker)
+            elif getattr(self, "_tut_prev", None) is not None:
+                self.label.configure(image=self._tut_prev)
+                self.label.image = self._tut_prev
+        except Exception:
+            pass
+
+    def _show_action(self, mood, secs):
+        if self._garden_only():
+            return          # no Mendel in "garden view only"
+        if self._tut_owns():
+            self._show_action_in_tutorial(mood, secs)
+            return
+        # Repeated actions don't extend the display; one exact timer
+        # (not the 1 s tick) ends it. An action image that is already
+        # showing (watering or planting) is left alone.
+        if self.mood in _ACTION_MOODS:
+            return
+        # Missing image for this season -> leave the portrait as it is.
+        if not os.path.isfile(self._path(mood, self._season())):
+            return
+        self.mood = mood
+        self._apply()
+        self.app._portrait_locked_until = time.monotonic() + secs
+        try:
+            self.app.root.after(int(secs * 1000), self._end_action)
+        except Exception:
+            self._watering_until = time.monotonic() + secs
+
+    def _end_action(self):
+        if self.mood not in _ACTION_MOODS:
             return
         self.mood = self._next_mood(IDLE_OR_ACTIVE(self))
         self._next_change = time.monotonic() + CHANGE_EVERY_S
         self._apply()
 
+    _end_watering = _end_action
+
     def _tick(self):
         self._job = None
         try:
-            if getattr(self.app, "_tutorial_active", False):
+            if self._tut_owns():
                 # The tutorial swaps in Cyril's portrait — hands off.
                 self._tutorial_owned = True
                 self._job = self.app.root.after(TICK_MS, self._tick)
@@ -253,12 +342,12 @@ class MendelPortrait:
             stressed = self._garden_stressed()
             if stressed != self._stressed:
                 self._stressed = stressed
-                if self.mood != "watering":
+                if self.mood not in _ACTION_MOODS:
                     # Worry sets in (or passes) right away.
                     self.mood = (_WORRY_MOOD if stressed
                                  else _pick(_IDLE_MOODS if self._idle else _ACTIVE_MOODS))
                     self._next_change = now + CHANGE_EVERY_S
-            if self.mood == "watering":
+            if self.mood in _ACTION_MOODS:
                 if self._watering_until and now >= self._watering_until:
                     self._watering_until = 0.0
                     self.mood = self._next_mood(_ACTIVE_MOODS)
