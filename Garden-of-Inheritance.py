@@ -3268,13 +3268,24 @@ class GardenApp:
         cache_key = (date_obj.year, date_obj.month, date_obj.day)
         cached = getattr(self, "_sun_times_cache", None)
         if cached is not None and cached[0] == cache_key:
-            sr, ss = cached[1]
+            sr, ss, tw = cached[1]
         else:
             sr, ss = self.garden._sunrise_sunset_local_hours(date_obj)
-            self._sun_times_cache = (cache_key, (sr, ss))
+            # Twilight length follows the real sky: how long the sun takes
+            # to go from the horizon down to 12 degrees below it (nautical
+            # twilight) at Brno's latitude. Roughly 1.2 h around the
+            # equinoxes, 1.3 h in midwinter and 1.8 h at midsummer —
+            # instead of a flat 21 minutes all year.
+            try:
+                sr_t, ss_t = self.garden._sunrise_sunset_local_hours(date_obj, zenith_deg=102.0)
+                tw = ((sr - sr_t) % 24.0 + (ss_t - ss) % 24.0) / 2.0
+                tw = max(0.35, min(2.0, tw))
+            except Exception:
+                tw = 0.35
+            self._sun_times_cache = (cache_key, (sr, ss, tw))
         h = hour_float % 24.0
 
-        twilight = 0.35
+        twilight = tw
         twilight_peak = 0.18
 
         if h < sr - twilight or h > ss + twilight:
@@ -4135,6 +4146,13 @@ class GardenApp:
             _t = (L - _lo) / (_hi - _lo)
             L_display = _t * _t * (3.0 - 2.0 * _t)  # smoothstep
 
+        # Tell Mendel's portrait the garden's day/night level (before rain
+        # dimming) so its day/night scene changes in step with the tiles.
+        try:
+            self._mendel_portrait.on_light_changed(L_display)
+        except Exception:
+            pass
+
         # Rain caps how bright it can get — clouds block light, they
         # don't add any, so this only ever pulls L_display DOWN toward
         # a midpoint between full day and full night, never brightens
@@ -4955,6 +4973,26 @@ class GardenApp:
             pass
         self.root.after(100, self._speed_indicator_tick)
 
+    def _on_speed_key(self, event):
+        try:
+            _mods = 0x4 | (0x8 if sys.platform == "darwin" else 0)   # Control (+ Command on a Mac)
+            if not (event.state & _mods):
+                return
+            ks = event.keysym
+            ch = event.char or ""
+            if ks in ("period", "greater") or ch == ">":
+                faster = True
+            elif ks in ("comma", "less") or ch == "<":
+                faster = False
+            else:
+                return
+            if getattr(self, "_tutorial_key_watch_active", False):
+                self._tutorial_key_pressed = True
+            self._step_game_speed(faster=faster)
+            return "break"
+        except Exception:
+            return
+
     def _step_game_speed(self, faster: bool):
         """
         Moves simulation speed one step up or down through
@@ -5608,6 +5646,20 @@ class GardenApp:
         # Shift bindings, never moves or extends the selection.
         self.root.bind('<Control-Right>', lambda e: self._step_game_speed(faster=True))
         self.root.bind('<Control-Left>',  lambda e: self._step_game_speed(faster=False))
+        # macOS reserves Ctrl+Left/Right for Mission Control (the app
+        # never sees them), so Ctrl with the "<" / ">" keys works too.
+        # One catch-all key handler (rather than per-key sequences, which
+        # Tk on macOS doesn't match reliably while Control is held) that
+        # checks the Control modifier and the key itself — works for the
+        # unshifted (, .) and shifted (< >) forms and the dedicated "<"
+        # key on ISO keyboards.
+        self.root.bind_all('<KeyPress>', self._on_speed_key, add='+')
+        if sys.platform == "darwin":
+            # Cocoa swallows Ctrl+Arrow (Mission Control) and doesn't
+            # deliver Ctrl+punctuation reliably, so on a Mac the Command
+            # key (⌘) works as well: ⌘+Left / ⌘+Right.
+            self.root.bind('<Command-Right>', lambda e: self._step_game_speed(faster=True))
+            self.root.bind('<Command-Left>',  lambda e: self._step_game_speed(faster=False))
 
         self.root.bind('<space>',  lambda e: self._toggle_run())
 
@@ -13523,12 +13575,10 @@ class GardenApp:
             # dismissable overlay rather than something blocking.
             footer = tk.Frame(win, bg=self.grid_bg)
             footer.pack(fill="x", padx=10, pady=(0, 10))
-            tk.Button(
+            _FlatIconButton(
                 footer, text="Close", font=("Segoe UI", 10, "bold"),
-                bg=_SETTINGS_ACCENT, fg="white",
-                activebackground=_SETTINGS_SIDEBAR_BG, activeforeground="white",
-                relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
-                command=win.destroy,
+                bg=_SETTINGS_ACCENT, fg="white", hover_bg=_SETTINGS_SIDEBAR_BG,
+                padx=16, pady=6, command=win.destroy,
             ).pack(side="right")
             self._center_on_screen(win)
 
@@ -13676,12 +13726,12 @@ class GardenApp:
             panel = tk.Frame(inner, bg=PANEL_BG, width=420)
             build_fn(panel)
             panels[name] = panel
-            btn = tk.Button(
+            # _FlatIconButton (a styled Label) — a real tk.Button ignores
+            # its colors on macOS and showed light text on a light button.
+            btn = _FlatIconButton(
                 sidebar, text=name, font=("Segoe UI", 11, "bold"),
-                bg=SIDEBAR_BG, fg=SIDEBAR_FG,
-                activebackground=SIDEBAR_SEL_BG, activeforeground=SIDEBAR_FG,
-                relief="flat", bd=0, anchor="w", padx=18, pady=12,
-                width=20, cursor="hand2",
+                bg=SIDEBAR_BG, fg=SIDEBAR_FG, hover_bg=SIDEBAR_SEL_BG,
+                padx=18, pady=12, width=20,
                 command=lambda n=name: _show_category(n),
             )
             btn.pack(fill="x")
@@ -13729,11 +13779,10 @@ class GardenApp:
                 ).pack(fill="x", padx=(6, 0))
 
         def _dialog_button(parent, text, command):
-            tk.Button(
+            _FlatIconButton(
                 parent, text=text, font=("Segoe UI", 10),
-                bg="#efe3cc", activebackground="#e4d4b2",
-                relief="flat", bd=0, padx=10, pady=5, cursor="hand2",
-                command=command,
+                bg="#efe3cc", hover_bg="#e4d4b2", fg="black",
+                padx=10, pady=5, command=command,
             ).pack(anchor="w", pady=4)
 
         # ---- Difficulty & Speed -------------------------------------------
@@ -13894,18 +13943,16 @@ class GardenApp:
         footer = tk.Frame(win, bg=BG)
         footer.pack(fill="x", padx=20, pady=(0, 16))
 
-        tk.Button(
+        _FlatIconButton(
             footer, text="Reset to Defaults", font=("Segoe UI", 10),
-            bg="#efe3cc", activebackground="#e4d4b2",
-            relief="flat", bd=0, padx=12, pady=6, cursor="hand2",
-            command=_on_reset_clicked,
+            bg="#efe3cc", hover_bg="#e4d4b2", fg="black",
+            padx=12, pady=6, command=_on_reset_clicked,
         ).pack(side="left")
 
-        tk.Button(
+        _FlatIconButton(
             footer, text="Close", font=("Segoe UI", 10, "bold"),
-            bg=ACCENT, fg="white", activebackground=SIDEBAR_BG, activeforeground="white",
-            relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
-            command=win.destroy,
+            bg=ACCENT, fg="white", hover_bg=SIDEBAR_BG,
+            padx=16, pady=6, command=win.destroy,
         ).pack(side="right")
 
         _show_category("Difficulty & Speed")

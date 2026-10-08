@@ -591,7 +591,8 @@ class GardenEnvironment:
         
         return 2 if (date >= dst_start and date < dst_end) else 1
     
-    def _sunrise_sunset_local_hours(self, date: dt.date, lat=BRNO_LAT, lon=BRNO_LON):
+    def _sunrise_sunset_local_hours(self, date: dt.date, lat=BRNO_LAT, lon=BRNO_LON,
+                                    zenith_deg: float = 90.833):
         """
         Calculate sunrise and sunset times using NOAA algorithm.
         
@@ -599,6 +600,9 @@ class GardenEnvironment:
             date: Date to calculate for
             lat: Latitude in degrees
             lon: Longitude in degrees
+            zenith_deg: Solar zenith angle that counts as "the edge" —
+                90.833 = sunrise/sunset; 96 = civil and 102 = nautical
+                twilight (used for the dusk/dawn glow length).
             
         Returns:
             Tuple of (sunrise_hour, sunset_hour) in local time (0-24)
@@ -632,7 +636,7 @@ class GardenEnvironment:
         lat_rad = math.radians(lat)
         
         # Solar zenith for sunrise/sunset (~90.833°)
-        zenith = math.radians(90.833)
+        zenith = math.radians(zenith_deg)
         
         # Hour angle
         cos_ha = (math.cos(zenith) - math.sin(lat_rad) * math.sin(decl)) / (

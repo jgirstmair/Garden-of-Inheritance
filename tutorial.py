@@ -311,14 +311,20 @@ LECTURES = [
              "Now, this may take some time, Brother. So let me "
              "share with you a true gardener's secret!"),
             ("Cyril",
-             "Hold Ctrl and tap the < or > arrow key to slow "
-             "down or speed up time.",
+             ("Hold Command (⌘) and tap the ← or → arrow key to slow "
+              if sys.platform == "darwin" else
+              "Hold Ctrl and tap the < or > key to slow ")
+             + "down or speed up time.",
              # Waits for the player to actually press Ctrl+Left or
              # Ctrl+Right (see "wait_for_keys" above) before moving on,
              # with no "▶" to skip past it ("no_skip").
-             {"highlight_words": ["Ctrl", "< or > arrow key"],
+             {"highlight_words": (["Command", "⌘", "← or → arrow key"]
+                                 if sys.platform == "darwin" else ["Ctrl", "< or >"]),
               "pause": True, "no_skip": True,
-              "wait_for_keys": ("<Control-Left>", "<Control-Right>"),
+              "wait_for_keys": (("<Control-Left>", "<Control-Right>",
+                                "<Command-Left>", "<Command-Right>")
+                               if sys.platform == "darwin" else
+                               ("<Control-Left>", "<Control-Right>")),
               "wait_for_condition": "key_pressed"}),
             ("Cyril",
              "Good, now set the pace to 1 sec = one hour.",

@@ -49,6 +49,8 @@ TICK_MS = 1000
 _KNOWN_MOODS = {"looking", "smiling", "noting", "thinking", "thinking2",
                 "eyes-closed", "watering", "planting"}
 _ACTION_MOODS = ("watering", "planting")
+_DARK_ENTER = 0.40         # garden brightness (0-1) below which the portrait goes to night
+_DARK_LEAVE = 0.60         # ... and above which it returns to day
 _DARK_BELOW = 0.25         # light factor under which the scene counts as dark
 
 
@@ -86,6 +88,35 @@ def _scan_scenes():
     return scenes
 
 
+_NIGHT_STEPS = 8
+_night_cache = {}
+
+
+def _night_image(path, step):
+    """Mendel's daylight portrait darkened and tinted blue by `step`
+    (1.._NIGHT_STEPS; _NIGHT_STEPS = full night), so he can stand in the
+    dark garden too. Cached per (file, step). Returns a PhotoImage, or
+    None if anything goes wrong (the plain daylight image is used then)."""
+    key = (path, step)
+    if key in _night_cache:
+        return _night_cache[key]
+    try:
+        from PIL import Image, ImageEnhance, ImageTk
+        d = step / float(_NIGHT_STEPS)
+        im = Image.open(path).convert("RGBA")
+        r, g, b, a = im.split()
+        rgb = Image.merge("RGB", (r, g, b))
+        rgb = ImageEnhance.Brightness(rgb).enhance(1.0 - 0.58 * d)
+        tint = Image.new("RGB", rgb.size, (28, 44, 96))
+        rgb = Image.blend(rgb, tint, 0.22 * d)
+        r, g, b = rgb.split()
+        photo = ImageTk.PhotoImage(Image.merge("RGBA", (r, g, b, a)))
+    except Exception:
+        photo = None
+    _night_cache[key] = photo
+    return photo
+
+
 def _pick(pool, avoid=None):
     choices = [(m, w) for m, w in pool if m != avoid] or list(pool)
     total = sum(w for _, w in choices)
@@ -116,6 +147,9 @@ class MendelPortrait:
         self._tutorial_owned = False
         self._scenes = _scan_scenes()
         self._scene_choice = {}       # (kind, season) -> chosen path
+        self._dark_state = None       # follows the garden's day/night level
+        self._garden_level = None
+        self._night_step = 0          # 0 = day ... _NIGHT_STEPS = full night
 
     # ------------------------------------------------------------------
     def start(self):
@@ -173,7 +207,46 @@ class MendelPortrait:
             return False
         return hour >= 19 or hour < 6
 
+    def on_light_changed(self, level):
+        """Called by the garden every time it works out its day/night
+        brightness (0 = night, 1 = full day, before any rain dimming).
+        The portrait follows the same value, with a little hysteresis so
+        it doesn't flicker around the half-way point, and redraws as soon
+        as it flips."""
+        try:
+            self._garden_level = float(level)
+            was = self._dark_state
+            if self._garden_level < _DARK_ENTER:
+                self._dark_state = True
+            elif self._garden_level > _DARK_LEAVE:
+                self._dark_state = False
+            elif self._dark_state is None:
+                self._dark_state = self._garden_level < 0.5
+            step = self._current_night_step()
+            changed_step = step != self._night_step
+            self._night_step = step
+            if (self._dark_state != was or changed_step) and not self._tut_owns():
+                self._apply()
+        except Exception:
+            pass
+
+    def _current_night_step(self):
+        """How far into the night the garden is, in whole steps, so
+        Mendel's portrait darkens in step with the tiles."""
+        try:
+            if (self._garden_level is None
+                    or not getattr(self.app, "enable_daynight", True)):
+                return 0
+            return max(0, min(_NIGHT_STEPS,
+                              int(round((1.0 - self._garden_level) * _NIGHT_STEPS))))
+        except Exception:
+            return 0
+
     def _is_dark(self):
+        # Same brightness the garden tiles are showing right now.
+        if (self._dark_state is not None
+                and getattr(self.app, "enable_daynight", True)):
+            return bool(self._dark_state)
         try:
             import datetime as dt
             g = self.app.garden
@@ -231,12 +304,18 @@ class MendelPortrait:
         else:
             key = (self.mood, season)
             path = self._path(self.mood, season)
+        step = 0 if scene else self._night_step
+        if not scene and not getattr(self.app, "enable_daynight", True):
+            step = 0
+        key = key + (step,)
         if key == self._shown and not force:
             return
         if not os.path.isfile(path):
             return
         try:
-            img = safe_image(path)
+            img = _night_image(path, step) if step > 0 else None
+            if img is None:
+                img = safe_image(path)
             self.label.configure(image=img)
             self.label.image = img
             self._shown = key
