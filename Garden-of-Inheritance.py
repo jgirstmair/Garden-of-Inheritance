@@ -514,6 +514,8 @@ def _start_bgm():
 
 
 _bgm_paused = False
+_bgm_pause_wall = None          # wall-clock moment the music was paused
+_BGM_XFADE_S = 4.0              # songs overlap/fade for this long when one ends
 
 
 def _resume_bgm():
@@ -529,7 +531,7 @@ def _resume_bgm():
     Sound entirely; here it's the same Sound, just suspended and
     resumed, which pygame already handles correctly on its own.
     """
-    global _bgm_paused
+    global _bgm_paused, _bgm_pause_wall, _bgm_seg_start_wall
     if not _mixer_ready or not _music_enabled:
         return
     try:
@@ -537,6 +539,11 @@ def _resume_bgm():
             _start_bgm()
         elif _bgm_paused and _bgm_channel is not None:
             _bgm_channel.unpause()
+            # The track didn't advance while paused: shift its start so
+            # the "how far into the song are we" bookkeeping stays right.
+            if _bgm_pause_wall is not None and _bgm_seg_start_wall is not None:
+                _bgm_seg_start_wall += time.time() - _bgm_pause_wall
+        _bgm_pause_wall = None
         _bgm_paused = False
     except Exception:
         pass
@@ -547,10 +554,12 @@ def _pause_bgm():
     suspends background music (not rain; scoped to background music
     specifically, matching what was actually asked for) in place so
     _resume_bgm() can continue it from the exact same position."""
-    global _bgm_paused
+    global _bgm_paused, _bgm_pause_wall
     if not _mixer_ready or _bgm_channel is None:
         return
     try:
+        if not _bgm_paused:
+            _bgm_pause_wall = time.time()
         _bgm_channel.pause()
         _bgm_paused = True
     except Exception:
@@ -580,8 +589,21 @@ def _check_bgm_track_complete():
     if _bgm_channel is None:
         return
     try:
-        if _bgm_channel.get_busy():
-            return  # still playing (or paused) — nothing to do yet
+        busy = _bgm_channel.get_busy()
+        fade_ms = 2000
+        if busy:
+            # Still playing (or paused). Near the end of the song, start the
+            # next one now and let the two overlap — the old one fades out
+            # while the new one fades in, instead of a hard cut.
+            if _bgm_paused:
+                return
+            cur = _sound_cache.get(_bgm_current_filename)
+            if cur is None:
+                return
+            remaining = cur.get_length() - _bgm_elapsed_normal_seconds()
+            if remaining > _BGM_XFADE_S:
+                return
+            fade_ms = int(_BGM_XFADE_S * 1000)
         path, key = _pick_random_sound_variant("maintheme*.ogg")
         if path is None:
             return
@@ -591,10 +613,13 @@ def _check_bgm_track_complete():
             if snd is None:
                 snd = pygame.mixer.Sound(path)
                 _sound_cache[key] = snd
-        _bgm_channel = _play_on_channel(snd, _music_volume, 500, loops=0)
+        old_channel = _bgm_channel
+        _bgm_channel = _play_on_channel(snd, _music_volume, fade_ms, loops=0)
         _bgm_current_filename = key
         _bgm_seg_start_wall = time.time()
         _bgm_seg_start_progress = 0.0
+        if busy and old_channel is not None:
+            old_channel.fadeout(fade_ms)
     except Exception:
         pass
 
@@ -4766,7 +4791,7 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_emasculate_selected(self):
-        if not self._night_gate("emasculating"):
+        if not self._night_gate("emasculating") or not self._rain_gate():
             return
         idx = self.selected_index
         plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
@@ -6101,7 +6126,8 @@ class GardenApp:
         self._toast(f"Planted {planted} seed(s) in area.", level="info")
         reason = getattr(self, "_last_night_block_reason", None)
         if reason:
-            self.root.after(3000, lambda r=reason: self._toast(f"No sowing right now — {r}", level="warn"))
+            self.root.after(3000, lambda r=reason: self._toast(
+                r if r.startswith("Gregor") else f"No sowing right now — {r}", level="warn"))
         self.render_all()
 
 # ============================================================================
@@ -6172,6 +6198,7 @@ class GardenApp:
         
         # ---- File Menu ----
         file_menu = tk.Menu(self.menubar, tearoff=0, font=("Segoe UI", 11))
+        file_menu.add_command(label="New Garden", command=self._on_new_garden)
         file_menu.add_command(label="Save Garden", command=self._on_save_garden)
         
         # Load submenu (dynamically populated)
@@ -7777,7 +7804,7 @@ class GardenApp:
         If exactly one viable pollen source exists today, auto-apply it.
         Otherwise open Summary focused on Pollen tab so user can pick.
         """
-        if not self._night_gate("pollinating"):
+        if not self._night_gate("pollinating") or not self._rain_gate():
             return
         # Must have a valid recipient selected
         idx = getattr(self, "selected_index", None)
@@ -9755,7 +9782,17 @@ class GardenApp:
         # the moment it opens back up. Only THIS specific reason keeps
         # cursor mode alive through a zero-planted click; every other
         # failure (no room, season gate, etc.) still exits as before.
-        night_blocked = planted_count == 0 and bool(getattr(self, "_last_night_block_reason", None))
+        # Gregor staying indoors because of rain is the same kind of
+        # temporary block — checked directly too, so the shovel stays
+        # active however the reason text was recorded.
+        _rain_blocked = False
+        try:
+            _rain_blocked = (not getattr(self, "_tutorial_active", False)
+                             and bool(self._mendel_portrait._rain_away()))
+        except Exception:
+            pass
+        night_blocked = planted_count == 0 and (
+            bool(getattr(self, "_last_night_block_reason", None)) or _rain_blocked)
         if still_left <= 0 or (planted_count == 0 and not night_blocked):
             # Nothing left in the group (or this click accomplished
             # nothing for a non-transient reason) — stop rather than
@@ -11328,6 +11365,8 @@ class GardenApp:
 # Event Handlers
 # ============================================================================
     def _on_harvest_selected(self):
+            if not self._night_gate("harvesting"):
+                return
             idx = self.selected_index
             plant = self.tiles[idx].plant if (idx is not None) else None
             if not plant or not plant.alive or plant.stage < 7:
@@ -11627,6 +11666,8 @@ class GardenApp:
 # ============================================================================
     def _on_harvest_all_selected(self):
         """Harvest all remaining pods from the selected plant. Plant stays on the plot afterwards."""
+        if not self._night_gate("harvesting"):
+            return
         idx = self.selected_index
         plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
 
@@ -12865,6 +12906,177 @@ class GardenApp:
     # Save / Load System
     # ============================================================================
     
+    def _on_new_garden(self):
+        """File > New Garden: throws the current garden away and starts
+        again from scratch, exactly like a freshly launched game."""
+        if getattr(self, "_tutorial_active", False):
+            self._toast("Leave the tutorial first (Monastery > Mendel's Garden).", level="info")
+            return
+        fresh = getattr(self, "_fresh_state", None)
+        if not fresh:
+            self._silent_showerror("New Garden", "Could not start a new garden.")
+            return
+        if not self._silent_askyesno(
+                "New Garden",
+                "Start a new garden from scratch?\n\nThe current garden will be "
+                "replaced. Use File > Save Garden first if you want to keep it.",
+                icon='warning'):
+            return
+        try:
+            import copy
+            self._deserialize_garden_state(copy.deepcopy(fresh))
+            self._toast("A new garden begins.", level="info")
+        except Exception as e:
+            logging.error(f"Failed to start new garden: {e}", exc_info=True)
+            self._silent_showerror("New Garden", f"Could not start a new garden:\n{e}")
+
+    def _latest_save_info(self):
+        """(filepath, display name, date text) of the most recently saved
+        garden (the tutorial's own automatic saves don't count), or None."""
+        import datetime
+        data_dir = os.path.join(_PG_BASE_DIR, "data")
+        best = None
+        try:
+            for fn in os.listdir(data_dir):
+                if not (fn.startswith("garden_") and fn.endswith(".json")):
+                    continue
+                if "auto-save" in fn:
+                    continue          # tutorial saves never count as "latest garden"
+                fp = os.path.join(data_dir, fn)
+                mt = os.path.getmtime(fp)
+                if best is None or mt > best[0]:
+                    best = (mt, fp, fn)
+        except Exception:
+            return None
+        if best is None:
+            return None
+        mt, fp, fn = best
+        name = None
+        sim = ""
+        stats = ""
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            name = data.get("garden_name")
+            g = data.get("garden", {})
+            months = ["January", "February", "March", "April", "May", "June", "July",
+                      "August", "September", "October", "November", "December"]
+            sim = f"{months[int(g['month']) - 1]} {int(g['year'])}"
+            # A few useful numbers for the hover line.
+            import re as _re
+            growing = len(data.get("plants", []) or [])
+            ever = len((data.get("archive") or {}).get("plants", {}) or {})
+            gens = []
+            for pd in (data.get("plants", []) or []):
+                gens.append(pd.get("generation"))
+            for pd in ((data.get("archive") or {}).get("plants", {}) or {}).values():
+                if isinstance(pd, dict):
+                    gens.append(pd.get("generation"))
+            top = -1
+            for gv in gens:
+                m = _re.search(r"\d+", str(gv))
+                if m:
+                    top = max(top, int(m.group()))
+            seeds = len((data.get("inventory") or {}).get("seeds", []) or []) + \
+                int((data.get("ui_settings") or {}).get("available_seeds", 0) or 0)
+            parts = [f"{growing} growing"]
+            if ever > growing:
+                parts.append(f"{ever} grown in total")
+            if top >= 0:
+                parts.append(f"up to generation F{top}")
+            parts.append(f"{seeds} seeds")
+            stats = "  \u00b7  ".join(parts)
+        except Exception:
+            pass
+        when = datetime.datetime.fromtimestamp(mt).strftime("%d %b %Y, %H:%M")
+        if not name:
+            # An unnamed save: describe it by where the garden stands in time.
+            name = f"Your garden in {sim}" if sim else "Your last garden"
+        return fp, name, when, stats
+
+    def _ask_continue_or_new(self, name, when, stats=""):
+        """Start-up question: continue the latest garden or begin anew.
+        Returns "continue" or "new"."""
+        result = {"v": "new"}
+        win = tk.Toplevel(self.root)
+        win.title("Garden of Inheritance")
+        win.configure(bg="#f5eee0")
+        win.resizable(False, False)
+        try:
+            win.transient(self.root)
+        except Exception:
+            pass
+        tk.Label(win, text="Welcome back, Gregor!", font=("Segoe UI", 16, "bold"),
+                 bg="#f5eee0", fg="#3b2a1a").pack(padx=28, pady=(20, 6))
+        tk.Label(win, text="Continue your latest garden?",
+                 font=("Segoe UI", 11), bg="#f5eee0", fg="#3b2a1a",
+                 justify="center").pack(padx=28, pady=(0, 4))
+        name_lbl = tk.Label(win, text=f"\u201c{name}\u201d \u2014 saved {when}",
+                            font=("Segoe UI", 11, "bold"), bg="#f5eee0", fg="#3b2a1a",
+                            justify="center", cursor="hand2")
+        name_lbl.pack(padx=28, pady=(0, 2))
+        # Hover the name to see a few numbers about that garden.
+        stats_lbl = tk.Label(win, text="", font=("Segoe UI", 10, "italic"),
+                             bg="#f5eee0", fg="#6b5a44", height=1)
+        stats_lbl.pack(padx=28, pady=(0, 12))
+        if stats:
+            name_lbl.bind("<Enter>", lambda e: stats_lbl.configure(text=stats))
+            name_lbl.bind("<Leave>", lambda e: stats_lbl.configure(text=""))
+        row = tk.Frame(win, bg="#f5eee0")
+        row.pack(padx=28, pady=(0, 20))
+
+        def _pick(v):
+            result["v"] = v
+            win.destroy()
+
+        _make_flat_button_raw(row, "Continue latest garden", lambda: _pick("continue"),
+                              bg="#7A9A3C", fg="white", font=("Segoe UI", 11, "bold")
+                              ).pack(side="left", padx=(0, 10))
+        _make_flat_button_raw(row, "Start a new garden", lambda: _pick("new"),
+                              bg="#e0dccf", fg="#333333", font=("Segoe UI", 11)
+                              ).pack(side="left", padx=(0, 10))
+        _make_flat_button_raw(row, "Load a saved garden\u2026", lambda: _pick("choose"),
+                              bg="#e0dccf", fg="#333333", font=("Segoe UI", 11)
+                              ).pack(side="left")
+        win.protocol("WM_DELETE_WINDOW", lambda: _pick("new"))
+        self._center_on_screen(win)
+        try:
+            win.grab_set()
+            win.focus_force()
+        except Exception:
+            pass
+        self.root.wait_window(win)
+        return result["v"]
+
+    def _startup_continue_prompt(self):
+        """At launch: if there is an earlier garden, ask whether to
+        continue it or start a new one."""
+        info = self._latest_save_info()
+        if not info:
+            return
+        fp, name, when, stats = info
+        choice = self._ask_continue_or_new(name, when, stats)
+        if choice == "choose":
+            # Pick any saved garden from the list (no extra "replace?" question).
+            try:
+                win = self._open_load_garden_dialog(confirm=False)
+                if win is not None:
+                    self._center_on_screen(win)
+                    self.root.wait_window(win)
+            except Exception:
+                logging.error("Load dialog at start-up failed", exc_info=True)
+            return
+        if choice != "continue":
+            return
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._deserialize_garden_state(data)
+            self._toast(f"Garden loaded: {name}", level="info")
+        except Exception as e:
+            logging.error(f"Failed to continue latest garden: {e}", exc_info=True)
+            self._silent_showerror("Load Failed", f"Could not load the latest garden:\n{e}")
+
     def _on_save_garden(self):
         """Save the entire garden state to a JSON file with optional naming."""
         import datetime
@@ -13279,6 +13491,8 @@ class GardenApp:
         if os.path.exists(data_dir):
             for filename in os.listdir(data_dir):
                 if filename.startswith("garden_") and filename.endswith(".json"):
+                    if "auto-save" in filename:
+                        continue      # the tutorial's own saves are not gardens to load
                     filepath = os.path.join(data_dir, filename)
                     mtime = os.path.getmtime(filepath)
                     
@@ -13362,7 +13576,7 @@ class GardenApp:
                     command=lambda fp=filepath: self._load_garden_from_file(fp)
                 )
     
-    def _load_garden_from_file(self, filepath):
+    def _load_garden_from_file(self, filepath, confirm=True):
         """Load garden state from a specific file."""
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -13371,7 +13585,7 @@ class GardenApp:
             # Confirm before loading (this will replace current garden)
             filename = os.path.basename(filepath)
             print(f"[_load_garden_from_file] about to show confirm dialog for {filename!r}")
-            result = self._silent_askyesno(
+            result = True if not confirm else self._silent_askyesno(
                 "Load Garden",
                 "Replace current garden?",
                 icon='warning'
@@ -13990,7 +14204,7 @@ class GardenApp:
             logging.error(f"Failed to exit tutorial: {e}", exc_info=True)
             self._toast("Could not return to the garden.", level="warn")
 
-    def _open_load_garden_dialog(self):
+    def _open_load_garden_dialog(self, confirm=True):
         """Standalone Load Garden popup.
 
         Lists the same save files as the File > Load Garden menu
@@ -14005,6 +14219,8 @@ class GardenApp:
         if os.path.exists(data_dir):
             for filename in os.listdir(data_dir):
                 if filename.startswith("garden_") and filename.endswith(".json"):
+                    if "auto-save" in filename:
+                        continue      # the tutorial's own saves are not gardens to load
                     filepath = os.path.join(data_dir, filename)
                     mtime = os.path.getmtime(filepath)
                     name_part = filename.replace("garden_", "").replace(".json", "")
@@ -14063,7 +14279,7 @@ class GardenApp:
         def _row(label, filepath):
             def _do_load():
                 win.destroy()
-                self._load_garden_from_file(filepath)
+                self._load_garden_from_file(filepath, confirm=confirm)
             btn = _FlatIconButton(list_frame, text=label, command=_do_load, **btn_kwargs)
             btn.pack(fill="x", pady=2)
 
@@ -14105,6 +14321,7 @@ class GardenApp:
                 _row(display_name, filepath)
 
         _FlatIconButton(win, text="Close", command=win.destroy, **btn_kwargs).pack(pady=(0, 10))
+        return win
 
     def _serialize_garden_state(self):
         """Serialize the entire garden state to a dictionary."""
@@ -15258,9 +15475,26 @@ class GardenApp:
             # A bug in the night gate should never block the action entirely
             return True
 
+    def _rain_gate(self):
+        """False (with a message) once Gregor has gone indoors because of
+        rain — shared by sowing, pollinating and emasculating. Not in the
+        tutorial."""
+        try:
+            if (not getattr(self, "_tutorial_active", False)
+                    and self._mendel_portrait._rain_away()):
+                reason = "Gregor spends the rainy day in the library, lost in his books."
+                self._last_night_block_reason = reason
+                self._toast(reason, level="warn")
+                return False
+        except Exception:
+            pass
+        return True
+
     def _night_gate_sowing(self):
-        """Backward-compatible alias — see _night_gate."""
-        return self._night_gate("sowing")
+        """Backward-compatible alias — see _night_gate. Also covers rain."""
+        if not self._night_gate("sowing"):
+            return False
+        return self._rain_gate()
 
     def _season_gate_sowing(self):
         """
@@ -16180,6 +16414,19 @@ def main():
         pass
 
     app = GardenApp(root)
+
+    # Remember what a brand-new garden looks like, for File > New Garden.
+    try:
+        app._fresh_state = app._serialize_garden_state()
+    except Exception:
+        app._fresh_state = None
+
+    # An earlier garden exists? Ask whether to continue it or start anew.
+    try:
+        root.update_idletasks()
+        app._startup_continue_prompt()
+    except Exception:
+        logging.error("Start-up garden prompt failed", exc_info=True)
 
     # Greet the player with the Monastery map on every fresh start —
     # delayed slightly so the main window has a moment to finish laying

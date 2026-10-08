@@ -224,6 +224,21 @@ class MendelianLawWizard(tk.Toplevel):
 
     # ── page helpers ──────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _autowrap(label, container, margin=40, min_w=200):
+        """Lets `label` use the full width available in `container`: its
+        wraplength follows the container's width instead of a fixed
+        number, so text only wraps when it genuinely runs out of room."""
+        def _upd(event=None):
+            try:
+                w = container.winfo_width()
+                if w > 1:
+                    label.configure(wraplength=max(min_w, w - margin))
+            except Exception:
+                pass
+        container.bind("<Configure>", _upd, add="+")
+        label.after(50, _upd)
+
     def _show_page(self, n):
         self._page1.pack_forget()
         self._page2.pack_forget()
@@ -327,6 +342,7 @@ class MendelianLawWizard(tk.Toplevel):
                             fg=self.TEXT_MUTED, wraplength=480,
                             justify="left", anchor="w")
         desc_lbl.pack(fill="x", pady=(4, 0))
+        self._autowrap(desc_lbl, card, margin=40)
 
         # clicking anywhere on card selects the radio
         for w in (card, row, name_lbl, desc_lbl):
@@ -533,6 +549,7 @@ class MendelianLawWizard(tk.Toplevel):
                                      font=self.FONT_BOLD, bg="#EDE0C0",
                                      fg=self.ACCENT, wraplength=480, justify="left")
         self._p2_inst_lbl.pack(anchor="w")
+        self._autowrap(self._p2_inst_lbl, inst_frame, margin=40)
 
         # ── selection slots ──────────────────────────────────────────────────
         slots_outer = tk.Frame(body, bg=self.BG)
@@ -1514,9 +1531,12 @@ class MendelianLawWizard(tk.Toplevel):
         panel.pack(fill="x", padx=0, pady=0,
                    before=self._p2_canvas_frame)
 
-        tk.Label(panel, text=message,
-                 font=self.FONT_BOLD, bg=color, fg=fg,
-                 wraplength=520, justify="left").pack(anchor="w", padx=4)
+        _msg_lbl = tk.Label(panel, text=message,
+                            font=self.FONT_BOLD, bg=color, fg=fg,
+                            wraplength=520, justify="left")
+        _msg_lbl.pack(anchor="w", padx=4)
+        # Use the whole banner width — wrap only if it truly doesn't fit.
+        self._autowrap(_msg_lbl, panel, margin=60)
 
         # ── swap nav button on outcome ────────────────────────────────────
         try:

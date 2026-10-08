@@ -47,7 +47,7 @@ TICK_MS = 1000
 
 
 _KNOWN_MOODS = {"looking", "smiling", "noting", "thinking", "thinking2",
-                "eyes-closed", "watering", "planting"}
+                "eyes-closed", "watering", "planting", "planting2"}
 _ACTION_MOODS = ("watering", "planting")
 _DARK_ENTER = 0.40         # garden brightness (0-1) below which the portrait goes to night
 _DARK_LEAVE = 0.60         # ... and above which it returns to day
@@ -62,7 +62,7 @@ def _scan_scenes():
     anything else (empty, day, away, ...) is an empty daytime scene.
     Returns {"night": {season: [paths]}, "day": {season: [paths]}}.
     """
-    scenes = {"night": {}, "day": {}}
+    scenes = {"night": {}, "day": {}, "rain": {}}
     try:
         names = sorted(os.listdir(MENDEL_DIR))
     except Exception:
@@ -83,7 +83,8 @@ def _scan_scenes():
             mood = mood[len("mendel_"):]
         if mood in _KNOWN_MOODS:
             continue
-        kind = "night" if "night" in mood else "day"
+        kind = ("rain" if "rain" in mood else
+                "night" if "night" in mood else "day")
         scenes[kind].setdefault(season, []).append(os.path.join(MENDEL_DIR, fn))
     return scenes
 
@@ -114,6 +115,78 @@ def _night_image(path, step):
     except Exception:
         photo = None
     _night_cache[key] = photo
+    return photo
+
+
+# ---- Rain: dimmed picture with slanted streaks falling ---------------------
+_RAIN_FRAMES = 10
+_RAIN_LEAVE_DELAY_H = 2         # simulated hours of rain before Gregor goes indoors
+_RAIN_FRAME_MS = 100
+_RAIN_STYLES = {            # name -> (streaks per 158x265 px, dimming 0-1)
+    "rain": (130, 0.85),
+    "storm": (230, 1.0),
+}
+_rain_overlays = {}         # (size, style) -> [RGBA overlay per frame]
+_rain_photos = {}           # (path, style, frame) -> PhotoImage (current picture only)
+_rain_photos_for = [None]
+
+
+def _rain_overlay_frames(size, style):
+    key = (size, style)
+    if key in _rain_overlays:
+        return _rain_overlays[key]
+    from PIL import Image, ImageDraw
+    w, h = size
+    count = int(_RAIN_STYLES[style][0] * (w * h) / (158 * 265.0))
+    rnd = random.Random(7)
+    drops = []
+    for _ in range(count):
+        drops.append((rnd.uniform(-20, w + 20), rnd.uniform(0, h),
+                      rnd.choice((1, 2)),            # speed (whole laps -> seamless loop)
+                      rnd.randint(9, 17), rnd.randint(70, 140)))
+    frames = []
+    slant = 0.32
+    for f in range(_RAIN_FRAMES):
+        layer = Image.new("RGBA", size, (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        for x, y0, sp, ln, a in drops:
+            y = (y0 + (f / float(_RAIN_FRAMES)) * h * sp) % (h + ln) - ln
+            d.line([(x, y), (x - ln * slant, y + ln)], fill=(205, 220, 240, a), width=1)
+        frames.append(layer)
+    _rain_overlays[key] = frames
+    return frames
+
+
+def _rain_image(path, style, frame, step=0):
+    """The picture at `path`, dimmed, with rain streaks (animation frame
+    `frame`). PhotoImages are kept only for the picture currently shown,
+    so memory stays small; the overlays themselves are built once."""
+    if _rain_photos_for[0] != (path, style, step):
+        _rain_photos.clear()
+        _rain_photos_for[0] = (path, style, step)
+    key = (path, style, step, frame)
+    if key in _rain_photos:
+        return _rain_photos[key]
+    try:
+        from PIL import Image, ImageEnhance, ImageTk
+        amt = _RAIN_STYLES[style][1]
+        im = Image.open(path).convert("RGBA")
+        r, g, b, a = im.split()
+        rgb = Image.merge("RGB", (r, g, b))
+        if step > 0:                                  # dusk/night as well
+            dn = step / float(_NIGHT_STEPS)
+            rgb = ImageEnhance.Brightness(rgb).enhance(1.0 - 0.58 * dn)
+            rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (28, 44, 96)), 0.22 * dn)
+        rgb = ImageEnhance.Brightness(rgb).enhance(1 - 0.40 * amt)
+        rgb = ImageEnhance.Color(rgb).enhance(1 - 0.30 * amt)
+        rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (70, 84, 110)), 0.16 * amt)
+        r, g, b = rgb.split()
+        im = Image.merge("RGBA", (r, g, b, a))
+        im = Image.alpha_composite(im, _rain_overlay_frames(im.size, style)[frame % _RAIN_FRAMES])
+        photo = ImageTk.PhotoImage(im)
+    except Exception:
+        photo = None
+    _rain_photos[key] = photo
     return photo
 
 
@@ -150,6 +223,9 @@ class MendelPortrait:
         self._dark_state = None       # follows the garden's day/night level
         self._garden_level = None
         self._night_step = 0          # 0 = day ... _NIGHT_STEPS = full night
+        self._rain_frame = 0
+        self._rain_started = None     # sim hour the current rain began
+        self._rain_job = None
 
     # ------------------------------------------------------------------
     def start(self):
@@ -177,6 +253,13 @@ class MendelPortrait:
         return s if s in _SEASONS else "spring"
 
     def _path(self, mood, season):
+        # Planting has a second picture per season for some variety; the
+        # one for the current planting is chosen in _show_action.
+        if mood == "planting" and getattr(self, "_planting_variant", ""):
+            alt = os.path.join(MENDEL_DIR,
+                               f"mendel_planting{self._planting_variant}_{season}.png")
+            if os.path.isfile(alt):
+                return alt
         return os.path.join(MENDEL_DIR, f"mendel_{mood}_{season}.png")
 
     def _garden_stressed(self):
@@ -198,14 +281,82 @@ class MendelPortrait:
             return _WORRY_MOOD
         return _pick(pool, avoid)
 
+    def _raining(self):
+        try:
+            if getattr(self.app, "_tutorial_active", False):
+                return False          # in the tutorial he stays, rain or not
+            return self.app.garden.weather in ("🌧", "⛈")
+        except Exception:
+            return False
+
     def _mendel_away(self):
         """True during the hours Mendel is at dinner, studying or asleep
-        (same window as GardenApp._night_gate)."""
+        (same window as GardenApp._night_gate) — and whenever it rains,
+        since he stays indoors then."""
         try:
             hour = int(getattr(self.app.garden, "clock_hour", 8)) % 24
         except Exception:
             return False
-        return hour >= 19 or hour < 6
+        # Evaluated every time (not short-circuited) so the rain timer
+        # also runs through the night: rain that began at 3 a.m. has
+        # already lasted long enough when Gregor would appear at 6.
+        rain_away = self._rain_away()
+        return hour >= 19 or hour < 6 or rain_away
+
+    def _sim_hours(self):
+        """The simulated time as a running hour count (None if unknown)."""
+        try:
+            import datetime as dt
+            g = self.app.garden
+            d = dt.date(int(g.year), int(g.month), int(g.day_of_month))
+            return d.toordinal() * 24 + int(g.clock_hour)
+        except Exception:
+            return None
+
+    def _rain_away(self):
+        """True once it has been raining for _RAIN_LEAVE_DELAY_H simulated
+        hours — Gregor doesn't run indoors the instant the first drop
+        falls. Not in the tutorial."""
+        if not self._raining():
+            self._rain_started = None
+            return False
+        now = self._sim_hours()
+        if now is None:
+            return True
+        if self._rain_started is None:
+            self._rain_started = now
+        return now - self._rain_started >= _RAIN_LEAVE_DELAY_H
+
+    def _rain_style(self):
+        """"rain" / "storm" while it rains (never in the tutorial or while
+        fast-forwarding), else None."""
+        try:
+            if (getattr(self.app, "_tutorial_active", False)
+                    or getattr(self.app, "fast_forward", False)):
+                return None
+            w = self.app.garden.weather
+            return "storm" if w == "⛈" else ("rain" if w == "🌧" else None)
+        except Exception:
+            return None
+
+    def _rain_anim_tick(self):
+        self._rain_job = None
+        try:
+            if not (self._shown and "rain" in self._shown):
+                return
+            self._rain_frame = (self._rain_frame + 1) % _RAIN_FRAMES
+            self._apply()
+        except Exception:
+            pass
+
+    def _scene_order(self):
+        """Scene kinds to try, best first: a rainy-day scene while it
+        rains (if there is one), then night or day by the garden's light."""
+        dark = self._is_dark()
+        order = ("night", "day") if dark else ("day", "night")
+        if self._raining() and not dark:
+            order = ("rain",) + order
+        return order
 
     def on_light_changed(self, level):
         """Called by the garden every time it works out its day/night
@@ -265,7 +416,7 @@ class MendelPortrait:
         one when it is dark, else the day one (each falls back to the
         other kind); None if there are no scene images at all."""
         season = self._season()
-        order = ("night", "day") if self._is_dark() else ("day", "night")
+        order = self._scene_order()
         for kind in order:
             files = self._scenes.get(kind, {}).get(season)
             if files:
@@ -280,7 +431,7 @@ class MendelPortrait:
         if not self._mendel_away():
             return None
         season = self._season()
-        order = ("night", "day") if self._is_dark() else ("day", "night")
+        order = self._scene_order()
         for kind in order:
             files = self._scenes.get(kind, {}).get(season)
             if files:
@@ -307,18 +458,30 @@ class MendelPortrait:
         step = 0 if scene else self._night_step
         if not scene and not getattr(self.app, "enable_daynight", True):
             step = 0
-        key = key + (step,)
+        rain = self._rain_style()
+        if rain:
+            key = key + (step, "rain", rain, self._rain_frame)
+        else:
+            key = key + (step,)
         if key == self._shown and not force:
             return
         if not os.path.isfile(path):
             return
         try:
-            img = _night_image(path, step) if step > 0 else None
+            img = None
+            if rain:
+                img = _rain_image(path, rain, self._rain_frame, step)
+            if img is None:
+                img = _night_image(path, step) if step > 0 else None
             if img is None:
                 img = safe_image(path)
             self.label.configure(image=img)
             self.label.image = img
             self._shown = key
+            # Keep the rain falling (about 10 swaps a second between
+            # pictures that are already built — very cheap).
+            if rain and self._rain_job is None:
+                self._rain_job = self.app.root.after(_RAIN_FRAME_MS, self._rain_anim_tick)
         except Exception:
             pass
 
@@ -376,6 +539,9 @@ class MendelPortrait:
             pass
 
     def _show_action(self, mood, secs):
+        if mood == "planting" and not getattr(self, "_tut_action", False) \
+                and self.mood not in _ACTION_MOODS:
+            self._planting_variant = random.choice(("", "2"))
         if self._garden_only():
             return          # no Mendel in "garden view only"
         if self._tut_owns():

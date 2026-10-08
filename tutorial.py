@@ -505,6 +505,20 @@ def _tutorial_force_sun(app):
         pass
 
 
+def _lock_sun_weather(app):
+    """Clear sky for the planting part (part 1 and the wait for the
+    seedlings): only the weather is pinned — the clock and speed are left
+    alone. Released again by _release_sun (end of the watering part, or
+    when the tutorial is left)."""
+    try:
+        g = app.garden
+        if getattr(g, "weather_lock", None) != "☀️":
+            g.weather_lock = "☀️"
+            app.render_all()
+    except Exception:
+        pass
+
+
 def _release_sun(app):
     """Gives the real weather back (end of the watering part / tutorial)."""
     app._tutorial_keep_sun = False
@@ -3070,6 +3084,8 @@ def start_tutorial(app, lecture_index=0, choice=None):
     _reset_button_policy(app)          # everything blocked until explained
     _lock_down_sidebar(app)
     _apply_lecture_to_real_grid(app, lecture)
+    if lecture_index == 0:
+        _lock_sun_weather(app)         # planting day is a sunny day
 
     def _on_finish():
         # Lecture 1 ends by handing control back to the player. Lecture
