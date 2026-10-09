@@ -21,6 +21,7 @@ out of the way; call refresh() when the tutorial hands it back.
 
 import os
 import random
+import sys
 import time
 
 from icon_loader import ICONS_DIR, safe_image
@@ -120,12 +121,23 @@ def _night_image(path, step):
 
 # ---- Rain: dimmed picture with slanted streaks falling ---------------------
 _RAIN_FRAMES = 10
+_WINTER_HOURS = (6, 14, 22)    # winter: Mendel only appears at the weather measurements
 _RAIN_LEAVE_DELAY_H = 2         # simulated hours of rain before Gregor goes indoors
 _RAIN_FRAME_MS = 100
 _RAIN_STYLES = {            # name -> (streaks per 158x265 px, dimming 0-1)
     "rain": (130, 0.85),
     "storm": (230, 1.0),
+    "snow": (70, 0.30),
 }
+_SNOW_FRAMES = 48               # snow falls slowly, so its loop is longer
+
+
+def _frame_ms(style):
+    return _RAIN_FRAME_MS
+
+
+def _nframes(style):
+    return _SNOW_FRAMES if style == "snow" else _RAIN_FRAMES
 _rain_overlays = {}         # (size, style) -> [RGBA overlay per frame]
 _rain_photos = {}           # (path, style, frame) -> PhotoImage (current picture only)
 _rain_photos_for = [None]
@@ -145,6 +157,26 @@ def _rain_overlay_frames(size, style):
                       rnd.choice((1, 2)),            # speed (whole laps -> seamless loop)
                       rnd.randint(9, 17), rnd.randint(70, 140)))
     frames = []
+    if style == "snow":
+        import math
+        flakes = []
+        for _ in range(count):
+            flakes.append((rnd.uniform(0, w), rnd.uniform(0, h),
+                           rnd.choice((1, 1, 2)),         # radius
+                           rnd.uniform(0, 6.283),         # sway phase
+                           rnd.uniform(3, 8),             # sway width
+                           rnd.randint(170, 240)))
+        n = _SNOW_FRAMES
+        for f in range(n):
+            layer = Image.new("RGBA", size, (0, 0, 0, 0))
+            d = ImageDraw.Draw(layer)
+            for x0, y0, rad, ph, sw, a in flakes:
+                y = (y0 + (f / float(n)) * h) % h
+                x = x0 + sw * math.sin(6.283 * f / n + ph)
+                d.ellipse([x - rad, y - rad, x + rad, y + rad], fill=(250, 252, 255, a))
+            frames.append(layer)
+        _rain_overlays[key] = frames
+        return frames
     slant = 0.32
     for f in range(_RAIN_FRAMES):
         layer = Image.new("RGBA", size, (0, 0, 0, 0))
@@ -157,16 +189,25 @@ def _rain_overlay_frames(size, style):
     return frames
 
 
-def _rain_image(path, style, frame, step=0):
+def _rain_image(path, style, frame, step=0, flash=False):
     """The picture at `path`, dimmed, with rain streaks (animation frame
     `frame`). PhotoImages are kept only for the picture currently shown,
     so memory stays small; the overlays themselves are built once."""
     if _rain_photos_for[0] != (path, style, step):
         _rain_photos.clear()
         _rain_photos_for[0] = (path, style, step)
-    key = (path, style, step, frame)
+    key = (path, style, step, frame, flash)
     if key in _rain_photos:
         return _rain_photos[key]
+    if not _rain_photos and not flash:                              # first frame of this picture:
+        for f in range(_nframes(style)):               # build the whole loop now so
+            if f != frame % _nframes(style):              # the animation never stalls
+                _rain_image_build(path, style, f, step, False)
+    return _rain_image_build(path, style, frame, step, flash)
+
+
+def _rain_image_build(path, style, frame, step, flash=False):
+    key = (path, style, step, frame, flash)
     try:
         from PIL import Image, ImageEnhance, ImageTk
         amt = _RAIN_STYLES[style][1]
@@ -181,8 +222,12 @@ def _rain_image(path, style, frame, step=0):
         rgb = ImageEnhance.Color(rgb).enhance(1 - 0.30 * amt)
         rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (70, 84, 110)), 0.16 * amt)
         r, g, b = rgb.split()
+        if flash:                                     # lightning: bright, bluish-white
+            rgb = ImageEnhance.Brightness(Image.merge("RGB", (r, g, b))).enhance(2.3)
+            rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (225, 235, 255)), 0.30)
+            r, g, b = rgb.split()
         im = Image.merge("RGBA", (r, g, b, a))
-        im = Image.alpha_composite(im, _rain_overlay_frames(im.size, style)[frame % _RAIN_FRAMES])
+        im = Image.alpha_composite(im, _rain_overlay_frames(im.size, style)[frame % _nframes(style)])
         photo = ImageTk.PhotoImage(im)
     except Exception:
         photo = None
@@ -224,6 +269,9 @@ class MendelPortrait:
         self._garden_level = None
         self._night_step = 0          # 0 = day ... _NIGHT_STEPS = full night
         self._rain_frame = 0
+        self._lightning = False
+        self._rain_ctx = None       # (path, style, step, key_base) of the picture raining
+        self._rain_ticks = 0
         self._rain_started = None     # sim hour the current rain began
         self._rain_job = None
 
@@ -289,6 +337,14 @@ class MendelPortrait:
         except Exception:
             return False
 
+    def _winter_now(self):
+        try:
+            if getattr(self.app, "_tutorial_active", False):
+                return False
+            return int(self.app.garden.month) in (12, 1, 2)
+        except Exception:
+            return False
+
     def _mendel_away(self):
         """True during the hours Mendel is at dinner, studying or asleep
         (same window as GardenApp._night_gate) — and whenever it rains,
@@ -301,6 +357,9 @@ class MendelPortrait:
         # also runs through the night: rain that began at 3 a.m. has
         # already lasted long enough when Gregor would appear at 6.
         rain_away = self._rain_away()
+        if self._winter_now():
+            # In winter he only comes out for the weather measurements.
+            return hour not in _WINTER_HOURS
         return hour >= 19 or hour < 6 or rain_away
 
     def _sim_hours(self):
@@ -335,16 +394,50 @@ class MendelPortrait:
                     or getattr(self.app, "fast_forward", False)):
                 return None
             w = self.app.garden.weather
+            if "❄" in str(w):
+                return "snow"
             return "storm" if w == "⛈" else ("rain" if w == "🌧" else None)
         except Exception:
             return None
+
+    def set_lightning(self, on):
+        """Lightning flash on/off (only has an effect during a storm)."""
+        on = bool(on) and self._rain_style() == "storm"
+        if on != self._lightning:
+            self._lightning = on
+            if not self._tut_owns():
+                self._apply()
 
     def _rain_anim_tick(self):
         self._rain_job = None
         try:
             if not (self._shown and "rain" in self._shown):
                 return
-            self._rain_frame = (self._rain_frame + 1) % _RAIN_FRAMES
+            style = self._rain_style()
+            # Not on screen (minimised / other tab): don't redraw, just look again later.
+            try:
+                if not self.label.winfo_viewable():
+                    self._rain_job = self.app.root.after(500, self._rain_anim_tick)
+                    return
+            except Exception:
+                pass
+            self._rain_ticks += 1
+            self._rain_frame = (self._rain_frame + 1) % _nframes(style or "rain")
+            ctx = self._rain_ctx
+            locked = time.monotonic() < getattr(self.app, "_portrait_locked_until", 0.0)
+            # Fast path: same picture, same weather -> just swap in the next
+            # prepared frame. A full re-check (_apply) once a second.
+            if (style and ctx and ctx[1] == style and not locked
+                    and not self._tut_owns() and self._rain_ticks % 8):
+                path, _st, step, base = ctx
+                img = _rain_image(path, style, self._rain_frame, step, self._lightning)
+                if img is not None:
+                    self.label.configure(image=img)
+                    self.label.image = img
+                    self._shown = base + (step, "rain", style, self._rain_frame,
+                                          self._lightning and style == "storm")
+                    self._rain_job = self.app.root.after(_frame_ms(style), self._rain_anim_tick)
+                    return
             self._apply()
         except Exception:
             pass
@@ -460,7 +553,8 @@ class MendelPortrait:
             step = 0
         rain = self._rain_style()
         if rain:
-            key = key + (step, "rain", rain, self._rain_frame)
+            self._rain_ctx = (path, rain, step, key)
+            key = key + (step, "rain", rain, self._rain_frame, self._lightning and rain == "storm")
         else:
             key = key + (step,)
         if key == self._shown and not force:
@@ -470,7 +564,7 @@ class MendelPortrait:
         try:
             img = None
             if rain:
-                img = _rain_image(path, rain, self._rain_frame, step)
+                img = _rain_image(path, rain, self._rain_frame, step, self._lightning)
             if img is None:
                 img = _night_image(path, step) if step > 0 else None
             if img is None:
@@ -481,7 +575,7 @@ class MendelPortrait:
             # Keep the rain falling (about 10 swaps a second between
             # pictures that are already built — very cheap).
             if rain and self._rain_job is None:
-                self._rain_job = self.app.root.after(_RAIN_FRAME_MS, self._rain_anim_tick)
+                self._rain_job = self.app.root.after(_frame_ms(rain), self._rain_anim_tick)
         except Exception:
             pass
 

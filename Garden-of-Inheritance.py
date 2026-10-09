@@ -1355,9 +1355,9 @@ class _Tooltip:
         self.widget = widget
         self.text = text
         self.tip = None
-        widget.bind("<Enter>", self._show)
-        widget.bind("<Leave>", self._hide)
-        widget.bind("<ButtonPress>", self._hide)
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
 
     def _show(self, event=None):
         if self.tip:
@@ -4027,6 +4027,29 @@ class GardenApp:
         except Exception:
             return
 
+    def _lightning_flash(self, now):
+        """True while a lightning flash is on. Only during thunderstorms:
+        every 10-30 s of real time a single or double flash (~0.1-0.3 s)."""
+        if self.garden.weather != "⛈" or getattr(self, "fast_forward", False):
+            self._lt_seq = None
+            self._lt_next = None
+            return False
+        if getattr(self, "_lt_next", None) is None:
+            self._lt_next = now + random.uniform(4, 12)
+        seq = getattr(self, "_lt_seq", None)
+        if seq is None:
+            if now < self._lt_next:
+                return False
+            pats = ([(0.0, 0.10)], [(0.0, 0.09), (0.18, 0.34)])
+            self._lt_seq = seq = (now, random.choice(pats))
+        start, pat = seq
+        t = now - start
+        if t > pat[-1][1]:
+            self._lt_seq = None
+            self._lt_next = now + random.uniform(10, 30)
+            return False
+        return any(a <= t < b for a, b in pat)
+
     def _apply_daynight_to_tiles(self):
         # ── Update season cache once per frame ──────────────────────────────
         # Tiles read _bg_current_season directly for speed. Recomputing it here
@@ -4186,8 +4209,18 @@ class GardenApp:
         # night" — while rain arriving at night (already near 0) is
         # left alone, since it's already at or below that midpoint.
         try:
+            _flash = self._lightning_flash(now)
+        except Exception:
+            _flash = False
+        try:
+            self._mendel_portrait.set_lightning(_flash)
+        except Exception:
+            pass
+        try:
             if self.garden.weather in ("🌧", "⛈"):
                 L_display = min(L_display, 0.5)
+                if _flash:                 # lightning lights everything up
+                    L_display = 0.95
         except Exception:
             pass
 
@@ -4249,9 +4282,14 @@ class GardenApp:
             except Exception:
                 pass
             try:
+                if self.wildlife is not None:
+                    self.wildlife.rain_check()
+            except Exception:
+                pass
+            try:
                 # Slow down to 160 ms when nothing is transitioning (saves CPU)
                 is_transitioning = getattr(self, "_daynight_transitioning", False)
-                delay = 40 if is_transitioning else 100
+                delay = 40 if (is_transitioning or getattr(self, "_lt_seq", None) is not None) else 100
                 self.root.after(delay, _tick)
             except Exception:
                 self._daynight_anim_running = False
@@ -5528,6 +5566,9 @@ class GardenApp:
                     except Exception:
                         pass
 
+                    # Winter: offer to skip ahead to spring (once per winter)
+                    self._maybe_offer_skip_winter()
+
                     # Snow cover — gradual, staggered per tile
                     try:
                         self._update_snow_covers()
@@ -6774,6 +6815,7 @@ class GardenApp:
             self.monastery_btn = None
         if self.monastery_btn is None:
             self.monastery_btn = make_icon_button(self.left_actions, "Monastery (Map)", "monastery.png", self._open_monastery_popup)
+        _attach_tooltip(self.monastery_btn, "Tutorial / Settings")
         # Centered rather than left-aligned like the plant-action buttons
         # above it — it's a navigation button, not an action on the
         # currently selected plant, so it reads better set apart.
@@ -8529,7 +8571,9 @@ class GardenApp:
                 # not just a static label.
                 try:
                     btn_how_header.configure(
-                        text=("How it works" if _state[0] else "?"))
+                        text=("Minimize" if _state[0] else "?"),
+                        font=(("Segoe UI", 12, "bold") if _state[0]
+                              else ("Segoe UI", 10, "bold")))
                 except Exception:
                     pass
                 # Re-measure and resize the WINDOW (not just this table)
@@ -12576,6 +12620,11 @@ class GardenApp:
             self._toast("Please enter a positive integer.", level="error")
             return
 
+        self._run_fast_forward(days * 24)
+
+    def _run_fast_forward(self, total_hours):
+        """Simulate `total_hours` hours at fast-forward speed."""
+        days = max(1, (int(total_hours) + 23) // 24)
         was_running = self.running
         self.running = False
         self.fast_forward = True
@@ -12591,7 +12640,6 @@ class GardenApp:
         except Exception:
             pass
 
-        total_hours = days * 24  # simulate N full days
         last_day_key = None
 
         # ---- Temporary profiling instrumentation ----
@@ -12925,6 +12973,7 @@ class GardenApp:
         try:
             import copy
             self._deserialize_garden_state(copy.deepcopy(fresh))
+            self._winter_prompted_key = None
             self._toast("A new garden begins.", level="info")
         except Exception as e:
             logging.error(f"Failed to start new garden: {e}", exc_info=True)
@@ -15453,6 +15502,20 @@ class GardenApp:
         try:
             hour = int(getattr(self.garden, "clock_hour", 8)) % 24
 
+            if self._is_winter_now():
+                # Winter: Gregor only goes out for the weather measurements.
+                hrs = getattr(getattr(self, "temp_tracker", None), "VALID_HOURS", (6, 14, 22))
+                if hour in hrs:
+                    self._last_night_block_reason = None
+                    return True
+                reason = "Gregor stays by the stove in the winter cold."
+                self._last_night_block_reason = reason
+                try:
+                    self._toast(f"No {action_verb} right now — {reason}", level="warn")
+                except Exception:
+                    pass
+                return False
+
             if hour == 19:
                 reason = "Mendel is having dinner."
             elif 20 <= hour <= 22:
@@ -15490,8 +15553,75 @@ class GardenApp:
             pass
         return True
 
+    def _is_winter_now(self):
+        """December-February (not in the tutorial)."""
+        try:
+            return (not getattr(self, "_tutorial_active", False)
+                    and int(self.garden.month) in (12, 1, 2))
+        except Exception:
+            return False
+
+    def _maybe_offer_skip_winter(self):
+        """Once per winter: offer to skip ahead to spring."""
+        try:
+            if (getattr(self, "_tutorial_active", False)
+                    or getattr(self, "fast_forward", False)
+                    or getattr(self, "_winter_offer_pending", False)
+                    or not self._is_winter_now()):
+                return
+            m, y = int(self.garden.month), int(self.garden.year)
+            wkey = y if m == 12 else y - 1
+            if getattr(self, "_winter_prompted_key", None) == wkey:
+                return
+            self._winter_prompted_key = wkey
+            self._winter_offer_pending = True
+            self.root.after(300, self._offer_skip_winter)
+        except Exception:
+            pass
+
+    def _offer_skip_winter(self):
+        was_running = self.running
+        self.running = False
+        try:
+            yes = self._silent_askyesno(
+                "Winter",
+                "Winter has come. Nothing can be sown until spring, and Gregor "
+                "only goes out to read the thermometer.\n\nSkip ahead to spring?")
+        except Exception:
+            yes = False
+        self._winter_offer_pending = False
+        self.running = was_running
+        if yes:
+            self._skip_to_spring()
+        else:
+            try:
+                self._update_pause_button()
+            except Exception:
+                pass
+
+    def _skip_to_spring(self):
+        """Fast-forward to 1 March, 6 a.m."""
+        try:
+            g = self.garden
+            y, m = int(g.year), int(g.month)
+            ty = y + 1 if m == 12 else y
+            now = dt.datetime(y, m, int(g.day_of_month), int(g.clock_hour) % 24)
+            target = dt.datetime(ty, 3, 1, 6)
+            hours = int((target - now).total_seconds() // 3600)
+            if hours > 0:
+                self._run_fast_forward(hours)
+                self._toast("Spring has arrived.", level="info")
+        except Exception:
+            logging.error("Skipping winter failed", exc_info=True)
+
     def _night_gate_sowing(self):
-        """Backward-compatible alias — see _night_gate. Also covers rain."""
+        """Backward-compatible alias — see _night_gate. Also covers rain
+        and winter."""
+        if self._is_winter_now():
+            reason = "The ground is frozen — sowing starts again in spring."
+            self._last_night_block_reason = reason
+            self._toast(reason, level="warn")
+            return False
         if not self._night_gate("sowing"):
             return False
         return self._rain_gate()
@@ -16428,11 +16558,8 @@ def main():
     except Exception:
         logging.error("Start-up garden prompt failed", exc_info=True)
 
-    # Greet the player with the Monastery map on every fresh start —
-    # delayed slightly so the main window has a moment to finish laying
-    # itself out (same pattern as the border-stone bake in __init__)
-    # rather than racing it.
-    root.after(400, app._open_monastery_popup)
+    # The Monastery window no longer opens by itself; the map button
+    # (tooltip "Tutorial / Settings") opens it.
 
     root.mainloop()
 

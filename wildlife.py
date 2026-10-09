@@ -444,6 +444,18 @@ class WildlifeManager:
         except Exception as exc:
             log.error("Wildlife tick() error: %s", exc)
 
+    def _is_wet(self) -> bool:
+        try:
+            return getattr(self.app.garden, "weather", None) in ("🌧", "⛈")
+        except Exception:
+            return False
+
+    def rain_check(self):
+        """Called often by the app: as soon as rain or a storm starts,
+        everything still out in the garden flies off at once."""
+        if self._active and self._is_wet():
+            self.destroy_all()
+
     def destroy_all(self):
         for c in list(self._active):
             c.destroy()
@@ -489,7 +501,7 @@ class WildlifeManager:
             return
         if getattr(self.app, "fast_forward", False):
             return
-        if not self._is_daytime() or not self._is_season():
+        if not self._is_daytime() or not self._is_season() or self._is_wet():
             return
         eligible = self._count_eligible_tiles()
         if len(self._active) >= max(1, min(MAX_ACTIVE, eligible)):
