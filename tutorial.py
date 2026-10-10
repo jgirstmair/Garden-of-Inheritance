@@ -234,14 +234,13 @@ LECTURES = [
              "Come, I will show you around and guide you through your "
              "first duties here."),
             ("Cyril",
-             "I see you already have nine pea seeds left from last year.",
+             "I see you have nine pea seeds left from last year.",
              {"highlight_words": ["nine"], "highlight_target": "seed_count",
               "pause": True}),
             ("Cyril",
-             "Excellent! They are quite ready to be planted."),
+             "Good! They are quite ready to be planted."),
             ("Cyril",
-             "You can choose »Plant«, the button at the top, to plant "
-             "your first seeds.",
+             "Choose »Plant«, the button at your left, to plant your first seeds.",
              # Waits for the player to actually plant via the Plant
              # button (rather than a fixed delay) before moving on —
              # see "wait_for_condition" above and _WAIT_CONDITIONS below.
@@ -301,14 +300,13 @@ LECTURES = [
         "wait_for": "all_seeds_planted",
         "after_wait_dialogue": [
             ("Cyril",
-             "Nicely done, Gregor! You're quite the natural gardener, "
-             "I must say.",
+             "Nicely done! You're quite the natural gardener, I must say.",
              {"mood": 2}),
             ("Cyril",
              "I can hardly wait to see something spring from the soil!",
              {"mood": 2}),
             ("Cyril",
-             "Now, this may take some time, Brother. So let me "
+             "Now, this may take some time. So let me "
              "share with you a true gardener's secret!"),
             ("Cyril",
              ("Hold Command (⌘) and tap the ← or → arrow key to slow "
@@ -327,7 +325,7 @@ LECTURES = [
                                ("<Control-Left>", "<Control-Right>")),
               "wait_for_condition": "key_pressed"}),
             ("Cyril",
-             "Good, now set the pace to 1 sec = one hour.",
+             "Excellent, now set the pace to 1 sec = one hour.",
              # Waits for the player to actually land on — and hold,
              # for a few seconds, not just pass through on the way to
              # some other speed — the "1 second = 1 simulated hour"
@@ -343,31 +341,26 @@ LECTURES = [
              "Splendid! Isn’t it magical how time seems to fly?",
              {"mood": 2}),
             ("Cyril",
-             "But remember, Brother, we all need time to sleep, "
-             "study, pray, and eat."),
+             "But we all need time to sleep, study, pray, and eat."),
             ("Cyril",
              "So you may only tend to the garden at a reasonable hour."),
             ("Cyril",
-             "I shall grant you access from 6 a.m. until 10 p.m.",
-             {"highlight_words": ["6 a.m.", "10 p.m."]}),
+             "I shall grant you access from 6 a.m. until 7 p.m.",
+             {"highlight_words": ["6 a.m.", "7 p.m."]}),
             ("Cyril",
-             "Even the most devoted gardener needs his rest!"),
-            ("Cyril",
-             "Oh, and should you ever feel a little overwhelmed by the "
-             "passing of time,"),
+             "Oh, and should you feel a little overwhelmed by the passing of time,"),
             ("Cyril",
              "simply press Space to pause for a moment.",
              {"highlight_words": ["Space"], "highlight_target": "pause_button"}),
             ("Cyril",
-             "That will be all for today, Brother. I think you "
-             "have learned quite a lot!",
+             "That will be all for now. I think you have learned quite a lot!",
              {"mood": 2}),
             ("Cyril",
              "Now, tend to your plants until you see the first little "
              "seedlings emerge from the soil.",
              {"highlight_words": ["seedlings"]}),
             ("Cyril",
-             "Once they do, come and find me, and I shall teach you more.",
+             "Once they do, I come and find you, and I shall teach you more.",
              # Last line of lecture 1 — no "▶": it ends by itself 5s
              # after it finishes typing, which hands control back
              # (start_tutorial's _on_finish) and puts up franz_0.
@@ -389,8 +382,7 @@ LECTURE_2_DIALOGUE = [
      {"pause": True}),
     ("Cyril", "Look, a few of them are already thirsty!",
      {"highlight_words": ["thirsty"]}),
-    ("Cyril", "You’ve probably noticed the little water drop icon beside "
-     "each plant.",
+    ("Cyril", "You’ve probably already noticed the little water drop icon beside each plant.",
      {"highlight_words": ["water drop icon"], "auto_advance_ms": 4500}),
     ("Cyril", "Its color tells you whether a plant is thirsty...",
      {"highlight_words": ["color", "thirsty"], "auto_advance_ms": 4000}),
@@ -404,9 +396,9 @@ LECTURE_2_DIALOGUE = [
       "unlock_buttons": ["water_btn"], "live_readout": "water_progress",
       "wait_for_condition": "targets_watered"}),
     # Now every plant dries out to 35 %.
-    ("Cyril", "Oh, what a glorious sunny day!",
+    ("Cyril", "What a glorious sunny day!",
      {"set_water": 35, "auto_advance_ms": 3000, "mood": 2}),
-    ("Cyril", "Well, I suppose most of them could use some watering right now.",
+    ("Cyril", "Well, I suppose most seedlings could use some watering right now.",
      {"auto_advance_ms": 4000}),
     # Waits for Water All; then time goes back to 1 sec = 1 hour.
     ("Cyril", "Go on, then, tend to them all at once.",
@@ -416,7 +408,7 @@ LECTURE_2_DIALOGUE = [
       "portrait": "mendel", "pause": True, "no_skip": True,
       "live_readout": "water_progress",
       "wait_for_condition": "plants_watered"}),
-    ("Cyril", "Good! Keep the soil moist, but never soaking wet!",
+    ("Cyril", "Very good! Keep the soil moist, but never soaking wet!",
      {"highlight_words": ["moist", "never soaking wet"], "pause": True}),
     ("Cyril", "Naturally, you’ll want to inspect your plants from time to "
      "time...",
@@ -424,19 +416,91 @@ LECTURE_2_DIALOGUE = [
     ("Cyril", "...see how they’re doing and what traits they might have "
      "revealed already!"),
     # Waits until the player has actually inspected a plant.
-    ("Cyril", "You can inspect each plant with the button, or press I.",
+    ("Cyril", "You can inspect each plant with the button above, or press I.",
      {"highlight_words": ["button", "I"], "highlight_target": "inspect_button",
       "portrait": "mendel", "pause": True, "no_skip": True,
       "unlock_buttons": ["inspect_btn"],
       "wait_for_condition": "plant_inspected"}),
-    ("Cyril", "Didn’t you mention at supper that you were particularly "
-     "interested in seven traits?",
+    ("Cyril", "Didn’t you mention last supper that you were particularly interested in seven traits?",
      {"highlight_words": ["seven traits"], "auto_advance_ms": 4000}),
     ("Cyril", "Anyway, we can talk about that later!",
      {"auto_advance_ms": 4000}),
-    ("Cyril", "I am sure you will take good care of them, Gregor."),
-    ("Cyril", "I’ll be back once they’ve grown a little taller.",
+    ("Cyril", "I’ll be back when your peas have grown a little taller.",
      {"auto_advance_ms": 5000}),
+]
+
+
+# Part 3 — Cyril returns once the first 3 plants are budding (see
+# _watch_for_budding / _play_lecture_3). Placeholder lines for now; Fast
+# Forward is handed back at the end of this part.
+LECTURE_3_DIALOGUE = [
+    ("Cyril", "Look at that, Gregor! The first buds are showing.",
+     {"mood": 2, "highlight_words": ["buds"]}),
+    ("Cyril", "Before long, these will open into beautiful flowers.",
+     {"highlight_words": ["flowers"]}),
+    ("Cyril", "Waiting for a garden to grow takes patience...",
+     {"auto_advance_ms": 4000}),
+    ("Cyril", "...so you may hurry the days along even faster with Fast Forward.",
+     {"highlight_words": ["Fast Forward"], "highlight_target": "fast_button",
+      "unlock_buttons": ["fast_btn"]}),
+    ("Cyril", "Try it. I’ll be back when the first flowers open.",
+     {"auto_advance_ms": 5000}),
+]
+
+
+# Part 4 — the first 3 plants are flowering. Placeholder lines.
+LECTURE_4_DIALOGUE = [
+    ("Cyril", "Gregor, come and see — the first flowers have opened!",
+     {"mood": 2, "highlight_words": ["flowers"]}),
+    ("Cyril", "Remember, a pea flower usually pollinates itself before it even opens.",
+     {"highlight_words": ["pollinates itself"]}),
+    ("Cyril", "Soon the petals will fall and little pods will form.",
+     {"highlight_words": ["pods"]}),
+    ("Cyril", "I’ll look in again when the first pods appear.",
+     {"auto_advance_ms": 5000}),
+]
+
+# Part 5 — the first 3 plants are forming pods (not ripe yet).
+LECTURE_5_DIALOGUE = [
+    ("Cyril", "Look, the first pods are growing!",
+     {"mood": 2, "highlight_words": ["pods"]}),
+    ("Cyril", "They are still green and soft — the peas inside are not ripe yet.",
+     {"highlight_words": ["not ripe yet"]}),
+    # Waits until the player has inspected a plant.
+    ("Cyril", "Go on, take a closer look: inspect one of the plants with pods.",
+     {"highlight_words": ["inspect"], "highlight_target": "inspect_button",
+      "portrait": "mendel", "pause": True, "no_skip": True,
+      "unlock_buttons": ["inspect_btn"],
+      "wait_for_condition": "plant_inspected"}),
+    ("Cyril", "You can see the pods in there, but they can’t be harvested yet.",
+     {"highlight_words": ["can’t be harvested yet"], "pause": True}),
+    ("Cyril", "Be patient until the pods have dried and matured.",
+     {"highlight_words": ["dried and matured"]}),
+    ("Cyril", "I’ll come back when they are ready to harvest.",
+     {"auto_advance_ms": 5000}),
+]
+
+# Part 6 — the first 3 plants carry mature pods.
+LECTURE_6_DIALOGUE = [
+    ("Cyril", "Splendid, Gregor! The first pods are ripe, though some plants need a little more time.",
+     {"mood": 2, "highlight_words": ["ripe"]}),
+    ("Cyril", "Select a plant with ripe pods and press Harvest to gather its seeds.",
+     {"highlight_words": ["Harvest"], "highlight_target": "harvest_button",
+      "unlock_buttons": ["harvest_btn"], "pause": True}),
+    # Waits until another plant has been inspected...
+    ("Cyril", "You can also harvest right in the inspection window. Try it!",
+     {"highlight_words": ["inspection window"], "highlight_target": "inspect_button",
+      "portrait": "mendel", "pause": True, "no_skip": True,
+      "unlock_buttons": ["inspect_btn"],
+      "wait_for_condition": "plant_inspected"}),
+    # ...and until at least one pod has been harvested there.
+    ("Cyril", "Now harvest its pods: click a single pod, or Harvest All.",
+     {"highlight_words": ["Harvest All"], "highlight_target": "inspector_harvest_button",
+      "highlight_late": True,
+      "portrait": "mendel", "pause": True, "no_skip": True,
+      "wait_for_condition": "pod_harvested"}),
+    ("Cyril", "Every seed you gather can be sown again next spring.",
+     {"highlight_words": ["sown again"], "auto_advance_ms": 5000}),
 ]
 
 
@@ -454,7 +518,20 @@ _HIGHLIGHT_TARGETS = {
     "water_all_button": lambda app: getattr(app, "water_all_btn", None),
     "inspect_button": lambda app: getattr(app, "inspect_btn", None),
     "pause_button": lambda app: getattr(app, "pause_btn", None),
+    "fast_button": lambda app: getattr(app, "fast_btn", None),
+    "harvest_button": lambda app: getattr(app, "harvest_btn", None),
+    # "Harvest All" inside the plant inspector window (only while open).
+    "inspector_harvest_button": lambda app: _live_widget(getattr(app, "_inspector_harvest_btn", None)),
 }
+
+
+def _live_widget(w):
+    try:
+        if w is not None and w.winfo_exists() and w.winfo_ismapped():
+            return w
+    except Exception:
+        pass
+    return None
 
 
 # Targets whose arrow sits to the right of the widget and points left;
@@ -519,6 +596,32 @@ def _lock_sun_weather(app):
         pass
 
 
+def _tutorial_autowater(app, on):
+    """Part 1 (no rain, nothing for the player to water yet): the game
+    waters the plants itself (the "Auto-water" setting). Part 2 turns it
+    off so the player can do the watering. The player's own setting is
+    remembered and put back when the tutorial is left."""
+    try:
+        var = getattr(app, "auto_water_normal", None)
+        if var is None:
+            return
+        if getattr(app, "_tutorial_autowater_prev", None) is None:
+            app._tutorial_autowater_prev = bool(var.get())
+        var.set(bool(on))
+    except Exception:
+        pass
+
+
+def _tutorial_autowater_restore(app):
+    try:
+        prev = getattr(app, "_tutorial_autowater_prev", None)
+        if prev is not None:
+            app.auto_water_normal.set(bool(prev))
+        app._tutorial_autowater_prev = None
+    except Exception:
+        pass
+
+
 def _release_sun(app):
     """Gives the real weather back (end of the watering part / tutorial)."""
     app._tutorial_keep_sun = False
@@ -567,6 +670,7 @@ def _tutorial_dry_out_plants(app, level, count=None):
     """Sets living plants' water to `level` (and clears the sky): all of
     them, or `count` randomly chosen ones. The affected plants are kept
     in app._tutorial_dry_targets for the 'x/n watered' check."""
+    _tutorial_autowater(app, False)    # the player waters these himself
     app._tutorial_water_speed = None   # re-arm the slow-down for this step
     targets = []
     try:
@@ -648,6 +752,9 @@ _WAIT_CONDITIONS = {
     "targets_watered": _targets_watered,
     # Set by GardenApp._on_inspect_unified when a plant was inspected.
     "plant_inspected": lambda app, baseline: bool(getattr(app, "_tutorial_inspected", False)),
+    # At least one pod harvested since the line appeared (the seed bag
+    # grew; baseline = its size then).
+    "pod_harvested": lambda app, baseline: len(getattr(app, "harvest_inventory", []) or []) > int(baseline or 0),
     "first_seed_planted": lambda app, baseline: getattr(app, "available_seeds", baseline) < baseline,
     "all_seeds_planted": lambda app, baseline: getattr(app, "available_seeds", 0) <= 0,
     # Set by the key watcher (see _ensure_key_watch) when the line's
@@ -1591,6 +1698,8 @@ class _StatusBarDialogue:
         # lecture started with, not whatever it is when this line appears —
         # otherwise a player who plants everything early (before this
         # line shows) leaves the baseline at 0 and the wait never fires.
+        if self._wait_condition_name == "pod_harvested":
+            self._wait_baseline = len(getattr(self.app, "harvest_inventory", []) or [])
         if self._wait_condition_name == "first_seed_planted":
             start = getattr(self.app, "_tutorial_start_seeds", None)
             if start is not None:
@@ -1709,10 +1818,55 @@ class _StatusBarDialogue:
                         pass
             self._arrow_click_cleanup = _cleanup_all
 
+        if extra.get("highlight_late"):
+            for name in (target_names or []):
+                if _HIGHLIGHT_TARGETS.get(name, lambda app: None)(self.app) is None:
+                    self._poll_late_highlight(name, idx)
+                    break
+
         self._set_status(self._prefix)
         self._type_started = time.monotonic()
         self._type_next_char()
         self._start_live_readout()
+
+    def _poll_late_highlight(self, name, idx):
+        """For a target that only exists once the player opens something
+        (e.g. Harvest All inside the inspector): keeps looking for it while
+        this line shows, puts the arrow on it as soon as it appears, and
+        takes the arrow away again if that window is closed."""
+        state = {"arrow": None}
+
+        def _poll():
+            if (getattr(self.app, "_tutorial_dialogue", None) is not self
+                    or self._line_idx != idx):
+                return
+            w = _HIGHLIGHT_TARGETS.get(name, lambda app: None)(self.app)
+            arrow = state["arrow"]
+            if arrow is not None and self._active_arrow is not arrow:
+                state["arrow"] = arrow = None       # cleared elsewhere
+            if w is not None and arrow is None:
+                try:
+                    arrow = _ArrowHighlight(self.app, w, _ARROW_SIDES.get(name, "bottom"))
+                    state["arrow"] = arrow
+                    self._active_arrow = arrow
+                except Exception:
+                    pass
+            elif w is None and arrow is not None:
+                try:
+                    arrow.destroy()
+                except Exception:
+                    pass
+                state["arrow"] = None
+                if self._active_arrow is arrow:
+                    self._active_arrow = None
+            if state["arrow"] is not None:
+                try:
+                    state["arrow"].win.lift()       # above the inspector window
+                except Exception:
+                    pass
+            self.app.root.after(300, _poll)
+
+        self.app.root.after(300, _poll)
 
     def _bind_arrow_dismiss_on_click(self, widget):
         def _on_click(event=None):
@@ -2572,7 +2726,11 @@ def _wait_for_all_seeds_planted(app, lecture, on_done):
 
 def _save_tutorial_progress(app, part_done, path=None):
     """Silently saves the tutorial garden plus how far the player got
-    (part_done: 1 = lecture 1 finished, 2 = lecture 2 finished)."""
+    (part_done: 1 = lecture 1 finished, 2 = lecture 2 finished). Skipped
+    when the plants are gone (see _tutorial_plants_lost), so a good save
+    is never replaced by a garden the tutorial can't go on from."""
+    if _tutorial_plants_lost(app, int(part_done)):
+        return
     try:
         try:
             app._eager_seed_and_backfill()
@@ -2588,6 +2746,121 @@ def _save_tutorial_progress(app, part_done, path=None):
             json.dump(payload, f, indent=2, ensure_ascii=False)
         if path is None:
             app._tutorial_part_done = int(part_done)
+    except Exception:
+        pass
+
+
+def _checkpoint_path():
+    """The tutorial's latest checkpoint (end of a part, or just before
+    part 2) — what "restart from the last save" goes back to."""
+    return os.path.join(_data_dir(), f"garden_{_PROGRESS_NAME}-checkpoint.json")
+
+
+def _part2_start_path():
+    """Saved just before part 2 starts, with the seedlings already grown."""
+    return os.path.join(_data_dir(), f"garden_{_PROGRESS_NAME}-part2start.json")
+
+
+def _part_start_path(n):
+    """Saved the moment part n (2-6) is about to start — what that part's
+    "Restart" on the tutorial map goes back to."""
+    if n == 2:
+        return _part2_start_path()
+    return os.path.join(_data_dir(), f"garden_{_PROGRESS_NAME}-part{n}start.json")
+
+
+def _load_part_start(n):
+    if n == 2:
+        return _load_tutorial_progress(_part2_start_path()) or _load_part1_snapshot()
+    return _load_tutorial_progress(_part_start_path(n))
+
+
+def _save_checkpoint(app, part_done, also=None):
+    _save_tutorial_progress(app, part_done, path=_checkpoint_path())
+    if also:
+        _save_tutorial_progress(app, part_done, path=also)
+
+
+def _living_plants(app):
+    try:
+        return sum(1 for t in app._all_plot_tiles()
+                   if t.plant is not None and getattr(t.plant, "alive", True))
+    except Exception:
+        return 0
+
+
+def _tutorial_plants_lost(app, part_done=None):
+    """True when the tutorial can't go on with this garden: after part 1
+    every plant has died or been removed, or later on fewer plants are
+    left than the next part needs."""
+    if not getattr(app, "_tutorial_active", False):
+        return False
+    pd = int(getattr(app, "_tutorial_part_done", 0) if part_done is None else part_done)
+    n = _living_plants(app)
+    if pd == 1:
+        return n == 0
+    if 2 <= pd <= 5:
+        return n < _PLANTS_FOR_NEXT_PART
+    return False
+
+
+def _start_loss_watch(app):
+    """Every 2 s (between Cyril's lines): if the plants are gone, offer to
+    go back to the last tutorial save. Asked once; asked again only after
+    the garden has recovered and been lost again."""
+    if getattr(app, "_tutorial_loss_job", None) is not None:
+        return
+
+    def _check():
+        app._tutorial_loss_job = None
+        if not getattr(app, "_tutorial_active", False):
+            return
+        try:
+            if (getattr(app, "_tutorial_dialogue", None) is None
+                    and not getattr(app, "fast_forward", False)):
+                if _tutorial_plants_lost(app):
+                    if not getattr(app, "_tutorial_loss_asked", False):
+                        app._tutorial_loss_asked = True
+                        _offer_restart_after_loss(app)
+                else:
+                    app._tutorial_loss_asked = False
+        except Exception:
+            pass
+        app._tutorial_loss_job = app.root.after(2000, _check)
+
+    app._tutorial_loss_job = app.root.after(2000, _check)
+
+
+def _offer_restart_after_loss(app):
+    was_running = bool(getattr(app, "running", True))
+    app.running = False
+    try:
+        yes = app._silent_askyesno(
+            "Tutorial",
+            "Oh dear — your plants didn't make it, so the tutorial can't go on "
+            "with this garden.\n\nGo back to the last tutorial save?")
+    except Exception:
+        yes = False
+    app.running = was_running
+    if not yes:
+        return
+    data = (_load_tutorial_progress(_checkpoint_path())
+            or _load_tutorial_progress(_part2_start_path())
+            or _load_part1_snapshot())
+    if data is None:
+        try:
+            app._toast("No tutorial save found — starting part 1 again.", level="info")
+        except Exception:
+            pass
+        start_tutorial(app, 0, choice="part1")
+        return
+    app._tutorial_loss_asked = False
+    _resume_tutorial(app, data, was_active=True)
+
+
+def _remember_realm(app, realm):
+    try:
+        app._remember_realm(realm)
     except Exception:
         pass
 
@@ -2641,6 +2914,7 @@ def _delete_tutorial_progress():
 
 
 def _cancel_seedling_watch(app):
+    app._ff_stop_check = None
     job = getattr(app, "_tutorial_seedling_job", None)
     if job is not None:
         try:
@@ -2680,6 +2954,7 @@ def _watch_for_seedlings(app):
         if (getattr(app, "_tutorial_dialogue", None) is None
                 and not getattr(app, "fast_forward", False)):
             if _all_plants_seedlings(app):
+                _save_checkpoint(app, 1, also=_part2_start_path())
                 _play_lecture_2(app)
                 return
             state["ticks"] += 1
@@ -2753,13 +3028,116 @@ def _play_lecture_2(app):
     _swap_portrait_for_tutorial(app)
     _lock_down_sidebar(app)
     _force_water_drops(app)
+    _tutorial_autowater(app, False)      # from here the player waters
+    _tutorial_set_speed(app, _TUTORIAL_DAY_LENGTH_S)   # real time while Cyril talks
 
     def _done():
+        _tutorial_set_speed(app, 1.0)    # back to 1 sec = 1 hour
         _unlock_sidebar(app)
         _cyril_leaves(app)
         _save_tutorial_progress(app, 2)
+        _save_checkpoint(app, 2)
+        _watch_for_budding(app)
 
     _StatusBarDialogue(app, LECTURE_2_DIALOGUE, on_finish=_done)
+
+
+_PLANTS_FOR_NEXT_PART = 3     # this many plants at a stage bring Cyril back
+
+# After part N is done: (growth stage the plants must reach, next part).
+# 4 budding, 5 flowering, 6 pods forming, 7 mature pods (see plant.STAGE_NAMES).
+_STAGE_PARTS = {
+    2: (4, 3),
+    3: (5, 4),
+    4: (6, 5),
+    5: (7, 6),
+}
+
+
+def _enough_at_stage(app, stage):
+    """True once at least _PLANTS_FOR_NEXT_PART living plants have reached
+    `stage` (or further)."""
+    try:
+        n = sum(1 for t in app._all_plot_tiles()
+                if t.plant is not None and getattr(t.plant, "alive", True)
+                and int(t.plant.stage) >= stage)
+        return n >= _PLANTS_FOR_NEXT_PART
+    except Exception:
+        return False
+
+
+def _watch_for_next_part(app, part_done):
+    """After part `part_done` (2-5): polls once a second for the growth
+    stage that brings Cyril back (see _STAGE_PARTS), then plays the next
+    part. Also refreshes the progress save every couple of minutes. Shares
+    the seedling watch's job slot, so the same cancel stops it."""
+    _cancel_seedling_watch(app)
+    if part_done not in _STAGE_PARTS:
+        return
+    stage, nxt = _STAGE_PARTS[part_done]
+    state = {"ticks": 0}
+
+    def _ready():
+        # Cyril only comes by in the morning (7:00-11:59), even if the
+        # plants got there earlier.
+        try:
+            hour = int(app.garden.clock_hour) % 24
+        except Exception:
+            hour = 9
+        return 7 <= hour < 12 and _enough_at_stage(app, stage)
+
+    # A long Fast Forward stops right when the plants get there.
+    app._ff_stop_check = _ready
+
+    def _check():
+        app._tutorial_seedling_job = None
+        if not getattr(app, "_tutorial_active", False):
+            return
+        if (getattr(app, "_tutorial_dialogue", None) is None
+                and not getattr(app, "fast_forward", False)):
+            if _ready():
+                app._ff_stop_check = None
+                _save_tutorial_progress(app, part_done, path=_part_start_path(nxt))
+                _play_stage_lecture(app, nxt)
+                return
+            state["ticks"] += 1
+            if state["ticks"] % 120 == 0:
+                _save_tutorial_progress(app, part_done)
+        app._tutorial_seedling_job = app.root.after(1000, _check)
+
+    app._tutorial_seedling_job = app.root.after(1000, _check)
+
+
+def _watch_for_budding(app):
+    _watch_for_next_part(app, 2)
+
+
+def _play_stage_lecture(app, part):
+    """Plays part 3-6 (Cyril comes back, says his lines, leaves again)."""
+    dialogue = {3: LECTURE_3_DIALOGUE, 4: LECTURE_4_DIALOGUE,
+                5: LECTURE_5_DIALOGUE, 6: LECTURE_6_DIALOGUE}[part]
+    app._tutorial_portrait_free = False      # Cyril is back
+    _swap_portrait_for_tutorial(app)
+    _lock_down_sidebar(app)
+    if part >= 3:
+        _set_ff_locked(app, False)           # Fast Forward is offered in part 3
+    _tutorial_set_speed(app, _TUTORIAL_DAY_LENGTH_S)   # real time while Cyril talks
+    _lock_sun_weather(app)                   # no rain or storm while he is here
+
+    def _done():
+        _tutorial_set_speed(app, 1.0)        # back to 1 sec = 1 hour
+        _release_sun(app)                    # the weather is free again
+        _unlock_sidebar(app)
+        _cyril_leaves(app)
+        _save_tutorial_progress(app, part)
+        _save_checkpoint(app, part)
+        _watch_for_next_part(app, part)
+
+    _StatusBarDialogue(app, dialogue, on_finish=_done)
+
+
+def _play_lecture_3(app):
+    _play_stage_lecture(app, 3)
 
 
 def _resume_tutorial(app, progress, was_active=False):
@@ -2770,6 +3148,7 @@ def _resume_tutorial(app, progress, was_active=False):
     _teardown_active_dialogue(app)
     app._tutorial_session = getattr(app, "_tutorial_session", 0) + 1
     app._tutorial_active = True
+    _remember_realm(app, "tutorial")
     if not was_active:
         _save_pre_tutorial_state(app)
     _cyril_leaves(app)
@@ -2795,6 +3174,9 @@ def _resume_tutorial(app, progress, was_active=False):
     except Exception:
         pass
     _done = int(progress.get("tutorial_part_done", 1))
+    # Still waiting for the seedlings: the game keeps watering; once the
+    # watering lesson (part 2) has been reached, the player does it.
+    _tutorial_autowater(app, _done < 2)
     _reset_button_policy(
         app,
         ("plant_seeds_btn",) if _done < 2 else
@@ -2824,8 +3206,13 @@ def _resume_tutorial(app, progress, was_active=False):
         app._toast("Tutorial progress restored.", level="info")
     except Exception:
         pass
+    _start_loss_watch(app)
     if app._tutorial_part_done == 1:
         _watch_for_seedlings(app)
+    elif app._tutorial_part_done >= 2:
+        if app._tutorial_part_done >= 3:
+            _set_ff_locked(app, False)
+        _watch_for_next_part(app, app._tutorial_part_done)
 
 
 def exit_tutorial(app):
@@ -2839,9 +3226,9 @@ def exit_tutorial(app):
     # Leaving between parts 1 and 2: keep the tutorial garden's progress
     # so it can be resumed from the Friar's quarters.
     if (getattr(app, "_tutorial_active", False)
-            and getattr(app, "_tutorial_part_done", 0) == 1
+            and 1 <= getattr(app, "_tutorial_part_done", 0) <= 6
             and getattr(app, "_tutorial_dialogue", None) is None):
-        _save_tutorial_progress(app, 1)
+        _save_tutorial_progress(app, int(app._tutorial_part_done))
     _cancel_seedling_watch(app)
     app._tutorial_policy_off = True     # all buttons come back
     app._tutorial_portrait_free = False
@@ -2853,6 +3240,8 @@ def exit_tutorial(app):
     except Exception:
         restored = False
     app._tutorial_active = False
+    _remember_realm(app, "garden")
+    _tutorial_autowater_restore(app)
     try:
         if restored:
             app._toast("Back in the garden.", level="info")
@@ -2874,12 +3263,17 @@ def exit_tutorial(app):
 # to right — the path follows the life of a pea plant, from seedling to a
 # mature plant. Add parts by replacing the "Coming soon" entries.
 _TUTORIAL_PARTS = [
-    ("Part 1", "The First Seeds", 2),     # seedling
-    ("Part 2", "The Seedlings", 3),       # leafy young plant
-    ("Part 3", "Coming soon", 4),         # budding
-    ("Part 4", "Coming soon", 5),         # flowering
-    ("Part 5", "Coming soon", 6),         # mature
+    ("Part 1", "The First Seeds", 2),          # seedling
+    ("Part 2", "The Seedlings", 3),            # leafy young plant
+    ("Part 3", "Buds, Flowers & Pods", "budding_terminal_purple"),  # budding, purple, terminal
+    ("Part 4", "Coming soon", 6),
+    ("Part 5", "Coming soon", 7),
 ]
+
+# Map part -> (first, last) internal step it covers. Part 3 on the map is
+# Cyril's four visits (buds, flowers, pods, harvest = steps 3-6); each
+# visit still saves its own point, so "Continue" picks up where you were.
+_MAP_PART_STEPS = {1: (1, 1), 2: (2, 2), 3: (3, 6)}
 
 
 def _stage_node_image(stage, size, locked):
@@ -2887,8 +3281,16 @@ def _stage_node_image(stage, size, locked):
     faded when the part is still locked. None if the icon is unavailable."""
     try:
         from PIL import Image, ImageTk
-        from icon_loader import stage_icon_path
-        path = stage_icon_path(stage)
+        from icon_loader import stage_icon_path, budding_icon_path_hi, ICONS_DIR as _ID
+        if isinstance(stage, str) and stage.startswith("budding_"):
+            # A specific budding plant, e.g. "budding_terminal_purple".
+            _, pos, col = stage.split("_", 2)
+            path = budding_icon_path_hi(pos, col)
+            if not path:
+                p2 = os.path.join(_ID, f"budding_{pos}_{col}.png")
+                path = p2 if os.path.isfile(p2) else stage_icon_path(4)
+        else:
+            path = stage_icon_path(stage)
         if not path:
             return None
         im = Image.open(path).convert("RGBA")
@@ -2947,7 +3349,16 @@ def show_tutorial_map(app):
     has_progress = _load_tutorial_progress() is not None
     progress = _load_tutorial_progress() if has_progress else None
     part_done = int(progress.get("tutorial_part_done", 0)) if progress else 0
-    unlocked = 2 if (has_snapshot or part_done >= 1) else 1  # parts available
+    def _map_done(n):
+        first, last = _MAP_PART_STEPS.get(n, (99, 99))
+        return part_done >= last or (n == 1 and has_snapshot)
+
+    # Parts available: every finished one plus the one being worked on.
+    unlocked = 1
+    for _n in sorted(_MAP_PART_STEPS):
+        if _map_done(_n):
+            unlocked = min(len(_TUTORIAL_PARTS), _n + 1)
+    unlocked = min(unlocked, max(_MAP_PART_STEPS))
 
     # The path: a line through one plant-stage icon per part, growing from
     # seedling (left) to a mature plant (right).
@@ -2990,7 +3401,7 @@ def show_tutorial_map(app):
 
     for i, (title, sub, _stage) in enumerate(_TUTORIAL_PARTS):
         ok = (i < unlocked)
-        col = tk.Frame(cards, bg=(PANEL if ok else BG), width=col_w - 10, height=140,
+        col = tk.Frame(cards, bg=(PANEL if ok else BG), width=col_w - 10, height=168,
                        highlightbackground="#d9cdb4", highlightthickness=1)
         col.grid(row=0, column=i, padx=5, sticky="n")
         col.grid_propagate(False)
@@ -3000,14 +3411,22 @@ def show_tutorial_map(app):
         tk.Label(col, text=sub, font=("Segoe UI", 10, "italic"),
                  bg=(PANEL if ok else BG), fg=("#7a6a55" if ok else "#b5ab95"),
                  wraplength=col_w - 30).pack(pady=(0, 8))
-        if i == 0:
-            _map_button(col, "Replay", lambda: _pick("part1")).pack(pady=3)
-        elif i == 1 and ok:
-            if has_snapshot:
-                _map_button(col, "Restart", lambda: _pick("restart2")).pack(pady=3)
-            if has_progress:
-                _map_button(col, "Continue", lambda: _pick("continue"),
-                            bg="#7A9A3C", hover="#5f7a2e").pack(pady=3)
+        n = i + 1
+        done = _map_done(n)
+        first = _MAP_PART_STEPS.get(n, (n, n))[0]
+        can_restart = (n == 1) or (_load_part_start(first) is not None)
+        if ok and done:
+            # Finished: ticked, and can be played again from its start.
+            tk.Label(col, text="✓", font=("Segoe UI", 14, "bold"),
+                     bg=PANEL, fg="#7A9A3C").pack(pady=(0, 2))
+            if can_restart:
+                _map_button(col, "Restart", lambda f=first: _pick(f"restart:{f}")).pack(pady=2)
+        elif ok:
+            # The part the saved garden is heading for.
+            _map_button(col, "Continue", lambda: _pick("continue"),
+                        bg="#7A9A3C", hover="#5f7a2e").pack(pady=(4, 2))
+            if n >= 2 and can_restart:
+                _map_button(col, "Restart", lambda f=first: _pick(f"restart:{f}")).pack(pady=2)
         else:
             tk.Label(col, text="🔒", font=("Segoe UI", 14), bg=BG,
                      fg="#aaa090").pack(pady=4)
@@ -3058,9 +3477,22 @@ def start_tutorial(app, lecture_index=0, choice=None):
     lecture = LECTURES[lecture_index]
 
     if lecture_index == 0:
+        if isinstance(choice, str) and choice.startswith("restart:"):
+            try:
+                n = int(choice.split(":", 1)[1])
+            except Exception:
+                n = 1
+            if n <= 1:
+                choice = "part1"
+            else:
+                data = _load_part_start(n)
+                if data is not None:
+                    _resume_tutorial(app, data, was_active)
+                    return
+                choice = "continue"
         if choice in ("restart2", "continue"):
-            data = (_load_part1_snapshot() if choice == "restart2"
-                    else _load_tutorial_progress())
+            data = (((_load_tutorial_progress(_part2_start_path()) or _load_part1_snapshot())
+                     if choice == "restart2" else _load_tutorial_progress()))
             if data is not None:
                 _resume_tutorial(app, data, was_active)
                 return
@@ -3071,6 +3503,7 @@ def start_tutorial(app, lecture_index=0, choice=None):
         app._tutorial_session = getattr(app, "_tutorial_session", 0) + 1
         app._tutorial_part_done = 0
         app._tutorial_active = True
+        _remember_realm(app, "tutorial")
         if not was_active:
             _save_pre_tutorial_state(app)
 
@@ -3086,6 +3519,9 @@ def start_tutorial(app, lecture_index=0, choice=None):
     _apply_lecture_to_real_grid(app, lecture)
     if lecture_index == 0:
         _lock_sun_weather(app)         # planting day is a sunny day
+        _tutorial_autowater(app, True)     # the plants water themselves in part 1
+    else:
+        _tutorial_autowater(app, False)    # from part 2 on the player waters
 
     def _on_finish():
         # Lecture 1 ends by handing control back to the player. Lecture
@@ -3101,7 +3537,9 @@ def start_tutorial(app, lecture_index=0, choice=None):
         # seedlings that trigger part 2.
         _save_tutorial_progress(app, 1, path=_part1_snapshot_path())
         _save_tutorial_progress(app, 1)
+        _save_checkpoint(app, 1)
         _watch_for_seedlings(app)
+        _start_loss_watch(app)
 
     def _on_dialogue_dismissed():
         wait_for = lecture.get("wait_for")

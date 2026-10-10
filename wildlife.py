@@ -79,6 +79,16 @@ def _matches(rgb, targets, tol):
 # ---------------------------------------------------------------------------
 # Creature definitions: (name, icon_prefix, weight, pods_only, active_months)
 # ---------------------------------------------------------------------------
+# TEST SWITCH: True = every visitor is a pea weevil (Bruchus pisi), in any
+# month, on any flowering or growing plant, and much more often — to try
+# out catching it. Set back to False for normal wildlife.
+DEBUG_ALL_BRUCHUS = False
+
+# At game speeds of SLOW_SPEED_SECS real seconds per game hour or slower
+# (Real Time = 3600), wildlife also gets a spawn check every SLOW_CHECK_MS.
+SLOW_SPEED_SECS = 300.0
+SLOW_CHECK_MS = 3 * 60 * 1000
+
 CREATURE_DEFS = [
     ("butterfly", "butterfly",    8, False, (3,4,5,6,7,8,9,10)),
     ("bee",       "bee",          8, False, (3,4,5,6,7,8,9)),
@@ -101,10 +111,62 @@ FRAME_MS    = 900
 WANDER_MS   = 1400
 MIN_STAY_MS = 4000
 MAX_STAY_MS = 14000
+
+# Flight (bees and top-view butterflies glide from flower to flower)
+FLY_STEP_MS   = 40          # ~25 fps, only while actually flying
+FLAP_STEPS    = 3           # swap wing frame every 3 flight steps
+HOP_MIN_MS    = 2500        # pause on a flower before maybe flying on
+HOP_MAX_MS    = 5500
+HOP_OTHER_PLANT = 0.5       # chance a hop goes to a nearby flowering plant
+HOP_RANGE_TILES = 2.5       # how far (in plot widths) such a hop may go
 REVISIT_MIN = 18000   # default: low frequency
 REVISIT_MAX = 55000
 MAX_ACTIVE  = 2
 SPAWN_CHANCE = 0.18
+
+def _visible_aspect(pil):
+    """Width / height of the drawn part of a picture (transparent margins
+    ignored) — open wings seen from above are wide, folded wings tall."""
+    try:
+        box = pil.convert("RGBA").getchannel("A").point(lambda a: 255 if a > 40 else 0).getbbox()
+        if box:
+            w, h = box[2] - box[0], box[3] - box[1]
+            return w / max(1, h)
+        return pil.width / max(1, pil.height)
+    except Exception:
+        return 1.0
+
+# The butterfly pictures by file name: species and whether the picture
+# shows open wings from above (True) or folded wings from the side (False).
+BUTTERFLY_FILES = {
+    "butterfly1": ("white",      True),    # Small white (Pieris rapae)
+    "butterfly2": ("orangetip",  True),    # Orange-tip (Anthocharis cardamines)
+    "butterfly3": ("commonblue", True),    # Common blue (Polyommatus icarus)
+    "butterfly4": ("fritillary", True),    # Queen of Spain fritillary (Issoria lathonia)
+    "butterfly5": ("peacock",    True),    # Peacock (Aglais io)
+    "butterfly6": ("peacock",    False),   # Peacock, wings folded
+    "butterfly7": ("fritillary", False),   # Queen of Spain fritillary, wings folded
+}
+
+def butterfly_species(variant):
+    entry = BUTTERFLY_FILES.get(str(getattr(variant, "label", "")).lower())
+    return entry[0] if entry else None
+
+def _is_top_view(variant):
+    """Open wings seen from above — by the file-name table first, then by
+    words in the name ('side'/'closed'/'folded' vs 'top'/'open'), else by
+    the picture's shape."""
+    name = str(getattr(variant, "label", "")).lower()
+    if name in BUTTERFLY_FILES:
+        return BUTTERFLY_FILES[name][1]
+    if any(w in name for w in ("side", "closed", "folded", "sitting")):
+        return False
+    if any(w in name for w in ("top", "open", "spread")):
+        return True
+    try:
+        return _visible_aspect(variant._refs[0]) >= 1.1
+    except Exception:
+        return True
 
 # ---------------------------------------------------------------------------
 # Variant (one numbered icon set, e.g. butterfly3 with frame1 + frame2)
@@ -246,7 +308,39 @@ class _Creature:
         self._item       = None
         self._alive      = True
         self._jobs       = []
+        self._flying     = False
+        self._rest_variant = variant
+        self._fly_variant  = variant
+        self.flier       = self._is_flier()
         self._appear()
+
+    def _is_flier(self):
+        """Bees and butterflies seen from above fly; folded-wing side views
+        and the weevil stay put."""
+        if self.type_name == "bee":
+            return True
+        if self.type_name != "butterfly":
+            return False
+        if _is_top_view(self.variant):
+            return True
+        # Seen from the side (wings folded): it rests like that, and opens
+        # its wings — switches to the same species' top view — to fly.
+        top = self.mgr._top_view_partner(self.variant)
+        if top is None:
+            return False
+        self._fly_variant = top
+        return True
+
+    def _set_view(self, flying):
+        """Side-view butterflies show their open-wing picture in flight."""
+        v = self._fly_variant if flying else self._rest_variant
+        if v is self.variant or self._item is None:
+            return
+        self.variant = v
+        try:
+            self.tile.itemconfig(self._item, image=v.frame(0))
+        except Exception:
+            pass
 
     def _appear(self):
         img = self.variant.frame(0)
@@ -256,7 +350,13 @@ class _Creature:
         try:
             self._item = self.tile.create_image(
                 self.cx, self.cy, image=img,
-                anchor="center", tags="wildlife")
+                anchor="center", tags=("wildlife", self.type_name))
+            if self.type_name == "bruchus":
+                # The pea weevil can be caught: a hand over it hints so.
+                self.tile.tag_bind(self._item, "<Enter>",
+                                   lambda e: self.tile.configure(cursor="hand2"))
+                self.tile.tag_bind(self._item, "<Leave>",
+                                   lambda e: self.tile.configure(cursor=""))
             self.tile.tag_raise("wildlife")
         except Exception as exc:
             log.debug("Wildlife appear error: %s", exc)
@@ -266,16 +366,205 @@ class _Creature:
         stay = random.randint(MIN_STAY_MS, MAX_STAY_MS)
         self._later(FRAME_MS,  self._tick_anim)
         self._later(WANDER_MS, self._wander)
-        self._later(stay,      self._depart)
+        if self.flier:
+            # Appears on its flower, then hops around from there.
+            self._schedule_hop()
+            self._later(stay, self._leave)
+        else:
+            self._later(stay, self._depart)
+
+    # ── Flight ────────────────────────────────────────────────────────────────
+    def _ts(self):
+        try:
+            return int(getattr(self.tile, "w", 0) or self.tile.winfo_width() or 85)
+        except Exception:
+            return 85
+
+    def _edge_point(self):
+        ts = self._ts()
+        m = 14
+        side = random.randint(0, 3)
+        r = random.randint(0, ts)
+        return [(-m, r), (ts + m, r), (r, -m), (r, ts + m)][side]
+
+    def _fly_to(self, tx, ty, then=None, dest=None):
+        """Glide to (tx, ty) on `dest` (a plot canvas; default: the current
+        one) on a gently curved, slightly wobbly path. Every plot is its own
+        canvas, so the flight is planned in screen coordinates and the
+        picture is handed over to whichever plot it is flying over."""
+        if not self._alive or self._item is None:
+            return
+        dest = dest or self.tile
+        self._set_view(True)
+        try:
+            ox, oy = self.tile.winfo_rootx(), self.tile.winfo_rooty()
+            dx0, dy0 = dest.winfo_rootx(), dest.winfo_rooty()
+        except Exception:
+            ox = oy = dx0 = dy0 = 0
+            dest = self.tile
+        self._flying = True
+        x0, y0 = float(ox + self.cx), float(oy + self.cy)        # screen coords
+        X1, Y1 = float(dx0 + tx), float(dy0 + ty)
+        dx, dy = X1 - x0, Y1 - y0
+        dist = max(1.0, math.hypot(dx, dy))
+        butterfly = self.type_name == "butterfly"
+        speed = random.uniform(55, 85) if butterfly else random.uniform(80, 120)  # px/s
+        steps = max(6, int(dist / speed * 1000 / FLY_STEP_MS))
+        arc = random.uniform(-0.35, 0.35) * dist if butterfly else random.uniform(-0.15, 0.15) * dist
+        arc = max(-60.0, min(60.0, arc))
+        wob = 1.6 if butterfly else 0.7
+        nx, ny = -dy / dist, dx / dist           # perpendicular
+        state = {"i": 0, "f": 0}
+
+        # Plots the path may cross (screen rectangles), measured once.
+        rects = []
+        if dest is not self.tile:
+            pad = abs(arc) + 20
+            bx0, bx1 = min(x0, X1) - pad, max(x0, X1) + pad
+            by0, by1 = min(y0, Y1) - pad, max(y0, Y1) + pad
+            for t in self.mgr._visible_tiles():
+                try:
+                    rx, ry = t.winfo_rootx(), t.winfo_rooty()
+                    rw, rh = t.winfo_width(), t.winfo_height()
+                except Exception:
+                    continue
+                if rx < bx1 and rx + rw > bx0 and ry < by1 and ry + rh > by0:
+                    rects.append((t, rx, ry, rw, rh))
+
+        def host_at(X, Y):
+            for t, rx, ry, rw, rh in rects:
+                if rx <= X < rx + rw and ry <= Y < ry + rh:
+                    return t, rx, ry
+            return None
+
+        def step():
+            if not self._alive or self._item is None:
+                return
+            if getattr(self.mgr.app, "fast_forward", False):
+                self.destroy()
+                return
+            state["i"] += 1
+            t = state["i"] / steps
+            e = t * t * (3 - 2 * t)              # ease in/out
+            bend = math.sin(math.pi * t) * arc
+            X = x0 + dx * e + nx * bend + random.uniform(-wob, wob)
+            Y = y0 + dy * e + ny * bend + random.uniform(-wob, wob)
+            if state["i"] >= steps:
+                X, Y = X1, Y1
+            try:
+                if rects:
+                    h = host_at(X, Y)
+                    if state["i"] >= steps:
+                        h = (dest, dx0, dy0)
+                    if h is not None and h[0] is not self.tile:
+                        self._move_to_canvas(h[0])
+                    rx, ry = (h[1], h[2]) if (h is not None and h[0] is self.tile) else \
+                        (self.tile.winfo_rootx(), self.tile.winfo_rooty())
+                else:
+                    rx, ry = ox, oy
+                self.cx, self.cy = int(round(X - rx)), int(round(Y - ry))
+                self.tile.coords(self._item, self.cx, self.cy)
+                if state["i"] % FLAP_STEPS == 0 and len(self.variant.frames) > 1:
+                    state["f"] ^= 1
+                    self.tile.itemconfig(self._item, image=self.variant.frame(state["f"]))
+                self.tile.tag_raise("wildlife")
+            except Exception:
+                return
+            if state["i"] < steps:
+                self._later(FLY_STEP_MS, step)
+            else:
+                self._flying = False
+                if then is not self._depart:
+                    self._set_view(False)        # wings folded again on the flower
+                if then:
+                    then()
+
+        self._later(FLY_STEP_MS, step)
+
+    def _move_to_canvas(self, new_tile):
+        """Hand the picture over to the plot canvas it is now flying over."""
+        img = None
+        try:
+            img = self.tile.itemcget(self._item, "image")
+            self.tile.delete(self._item)
+        except Exception:
+            pass
+        self.tile = new_tile
+        try:
+            self._item = new_tile.create_image(
+                self.cx, self.cy, image=img or self.variant.frame(0),
+                anchor="center", tags=("wildlife", self.type_name))
+        except Exception:
+            self._item = None
+
+    def _schedule_hop(self):
+        if self._alive:
+            self._later(random.randint(HOP_MIN_MS, HOP_MAX_MS), self._hop)
+
+    def _hop(self):
+        """Fly on to another free flower — on this plant or a nearby one."""
+        if not self._alive or self._flying:
+            return
+        dest, res = self.tile, None
+        try:
+            if random.random() < HOP_OTHER_PLANT:
+                other = self.mgr._pick_nearby_tile(self.tile, self.pods_only)
+                if other is not None:
+                    r = self.mgr._pick_pixel(other, self.pods_only)
+                    if r is not None:
+                        dest, res = other, r
+            if res is None:
+                res = self.mgr._pick_pixel(self.tile, self.pods_only)
+                dest = self.tile
+        except Exception:
+            res = None
+        if res is None:
+            self._schedule_hop()
+            return
+        nx_, ny_, key = res
+        try:
+            self.mgr._occupied.discard(self.cluster_key)
+            self.mgr._occupied.add(key)
+        except Exception:
+            pass
+        self.cluster_key = key
+        if dest is not self.tile:
+            def _landed(d=dest):
+                # A new plant got a visit.
+                try:
+                    rec = getattr(self.mgr.app, "_record_wildlife_visit", None)
+                    if rec:
+                        rec(getattr(d, "plant", None), self.type_name,
+                            getattr(self.variant, "label", ""))
+                except Exception:
+                    pass
+                self._schedule_hop()
+            self._fly_to(nx_, ny_, then=_landed, dest=dest)
+        else:
+            self._fly_to(nx_, ny_, then=self._schedule_hop)
+
+    def _leave(self):
+        """End of the visit: disappears from the flower it sits on."""
+        if not self._alive:
+            return
+        if self._flying:                      # land first, then vanish
+            self._later(300, self._leave)
+            return
+        self._depart()
 
     def _later(self, ms, fn):
         try:
             self._jobs.append(self.tile.after(ms, fn))
+            if len(self._jobs) > 80:          # flights add many short jobs;
+                self._jobs = self._jobs[-40:]  # every callback checks _alive
         except Exception:
             pass
 
     def _tick_anim(self):
         if not self._alive:
+            return
+        if self._flying:                      # flight drives its own frames
+            self._later(FRAME_MS, self._tick_anim)
             return
         self._fi = (self._fi + 1) % max(1, len(self.variant.frames))
         img = self.variant.frame(self._fi)
@@ -289,6 +578,9 @@ class _Creature:
 
     def _wander(self):
         if not self._alive:
+            return
+        if self._flying:
+            self._later(WANDER_MS, self._wander)
             return
         ts = getattr(self.tile, 'w', 85)
         try:
@@ -324,6 +616,11 @@ class _Creature:
         self.mgr._departed(self)
 
     def destroy(self):
+        if self.type_name == "bruchus":
+            try:
+                self.tile.configure(cursor="")
+            except Exception:
+                pass
         self._depart()
 
 # ---------------------------------------------------------------------------
@@ -347,6 +644,25 @@ class WildlifeManager:
         self._enabled         = True
         self._frequency       = "low"   # default
         self._init_pools()
+        # Slow speeds (Real Time etc.): tick() runs only once per game hour,
+        # i.e. once per real hour in Real Time — far too rare. An extra
+        # spawn check every few real minutes keeps visitors coming.
+        try:
+            self.root.after(SLOW_CHECK_MS, self._slow_speed_check)
+        except Exception:
+            pass
+
+    def _slow_speed_check(self):
+        try:
+            secs = float(getattr(self.app, "day_length_s", 1.0) or 1.0)
+            if secs >= SLOW_SPEED_SECS and getattr(self.app, "running", True):
+                self.tick()
+        except Exception as exc:
+            log.debug("Wildlife slow-speed check error: %s", exc)
+        try:
+            self.root.after(SLOW_CHECK_MS, self._slow_speed_check)
+        except Exception:
+            pass
 
     def set_frequency(self, level: str):
         """Set spawn frequency: 'low', 'medium', or 'high'."""
@@ -422,13 +738,16 @@ class WildlifeManager:
                     self._occupied.clear()
                 return
 
-            if not self._is_season():
+            if not self._is_season() and not DEBUG_ALL_BRUCHUS:
                 return
 
             eligible = self._count_eligible_tiles()
-            dynamic_cap = max(1, min(MAX_ACTIVE, eligible))
+            dynamic_cap = max(1, min(6 if DEBUG_ALL_BRUCHUS else MAX_ACTIVE, eligible))
 
-            for cdef in CREATURE_DEFS:
+            defs = CREATURE_DEFS
+            if DEBUG_ALL_BRUCHUS:
+                defs = [("bruchus", "bruchus_pisi", 8, False, tuple(range(1, 13)))]
+            for cdef in defs:
                 type_name, _, weight, pods_only, months = cdef
                 if len(self._active) >= dynamic_cap:
                     break
@@ -439,7 +758,8 @@ class WildlifeManager:
                     continue
                 if pods_only and not self._any_pods():
                     continue
-                if random.random() < SPAWN_CHANCE * (weight / 8.0):
+                chance = 0.9 if DEBUG_ALL_BRUCHUS else SPAWN_CHANCE * (weight / 8.0)
+                if random.random() < chance:
                     self._spawn(type_name, pods_only, random.choice(pool))
         except Exception as exc:
             log.error("Wildlife tick() error: %s", exc)
@@ -455,6 +775,18 @@ class WildlifeManager:
         everything still out in the garden flies off at once."""
         if self._active and self._is_wet():
             self.destroy_all()
+
+    def creature_at(self, tile, x, y, type_name=None):
+        """The creature drawn on `tile` at canvas point (x, y), or None."""
+        try:
+            hits = set(tile.find_overlapping(x - 3, y - 3, x + 3, y + 3))
+        except Exception:
+            return None
+        for c in self._active:
+            if (c.tile is tile and c._item in hits
+                    and (type_name is None or c.type_name == type_name)):
+                return c
+        return None
 
     def destroy_all(self):
         for c in list(self._active):
@@ -479,6 +811,14 @@ class WildlifeManager:
                           cluster_key)
             if c._alive:
                 self._active.append(c)
+                # Tell the game which plant got a visitor (visit counts).
+                try:
+                    rec = getattr(self.app, "_record_wildlife_visit", None)
+                    if rec:
+                        rec(getattr(tile, "plant", None), type_name,
+                            getattr(variant, "label", ""))
+                except Exception:
+                    pass
             else:
                 # Creation failed — free the slot immediately
                 self._occupied.discard(cluster_key)
@@ -511,6 +851,67 @@ class WildlifeManager:
             self._spawn(type_name, pods_only, random.choice(pool))
 
     # ── Tile picking ──────────────────────────────────────────────────────────
+
+    def _top_view_partner(self, variant):
+        """The open-wing picture of the same species as `variant`."""
+        sp_of = getattr(self.app, "_species_for_variant", None)
+        if sp_of is None:
+            return None
+        try:
+            want = sp_of("butterfly", variant)
+        except Exception:
+            return None
+        if not want:
+            return None
+        for v in self._pools.get("butterfly", []) or []:
+            if v is variant or not _is_top_view(v):
+                continue
+            try:
+                if sp_of("butterfly", v) == want:
+                    return v
+            except Exception:
+                pass
+        return None
+
+    def _visible_tiles(self):
+        out = []
+        try:
+            for t in list(self.app.tiles):
+                try:
+                    if t.winfo_ismapped():
+                        out.append(t)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return out
+
+    def _pick_nearby_tile(self, tile, pods_only: bool):
+        """Another visible flowering plant near `tile` (nearer = likelier)."""
+        try:
+            x0, y0 = tile.winfo_rootx(), tile.winfo_rooty()
+            ts = max(1, tile.winfo_width())
+        except Exception:
+            return None
+        cands, weights = [], []
+        for t in self._visible_tiles():
+            if t is tile:
+                continue
+            plant = getattr(t, "plant", None)
+            if not plant or not getattr(plant, "alive", False):
+                continue
+            if int(getattr(plant, "stage", 0)) < 5:
+                continue
+            try:
+                d = math.hypot(t.winfo_rootx() - x0, t.winfo_rooty() - y0) / ts
+            except Exception:
+                continue
+            if d <= HOP_RANGE_TILES:
+                cands.append(t)
+                weights.append(1.0 / (0.5 + d))
+        if not cands:
+            return None
+        return random.choices(cands, weights=weights, k=1)[0]
 
     def _pick_tile(self, pods_only: bool):
         try:

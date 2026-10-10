@@ -1202,7 +1202,15 @@ class TileCanvas(tk.Canvas):
                     pass
                 show_bang = False
             
-            self.itemconfig("bang_badge", state="normal" if show_bang else "hidden")
+            # Pollen ready is shown as a "!" after the plant's number
+            # (e.g. "#89!") rather than a corner badge, so it never clashes
+            # with other corner markers.
+            self.itemconfig("bang_badge", state="hidden")
+            try:
+                pid = getattr(self.plant, "id", "")
+                self.itemconfig(self.label_item, text=(f"#{pid}!" if show_bang else f"#{pid}"))
+            except Exception:
+                pass
         except Exception:
             try:
                 self.itemconfig("bang_badge", state="hidden")

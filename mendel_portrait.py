@@ -331,8 +331,9 @@ class MendelPortrait:
 
     def _raining(self):
         try:
-            if getattr(self.app, "_tutorial_active", False):
-                return False          # in the tutorial he stays, rain or not
+            # Also in the tutorial: his pictures go indoors in the rain
+            # (planting etc. there is still allowed — those rules check
+            # the tutorial themselves).
             return self.app.garden.weather in ("🌧", "⛈")
         except Exception:
             return False
@@ -360,6 +361,7 @@ class MendelPortrait:
         if self._winter_now():
             # In winter he only comes out for the weather measurements.
             return hour not in _WINTER_HOURS
+        # Garden hours 6:00-19:00.
         return hour >= 19 or hour < 6 or rain_away
 
     def _sim_hours(self):
@@ -390,8 +392,9 @@ class MendelPortrait:
         """"rain" / "storm" while it rains (never in the tutorial or while
         fast-forwarding), else None."""
         try:
-            if (getattr(self.app, "_tutorial_active", False)
-                    or getattr(self.app, "fast_forward", False)):
+            # In the tutorial only while Cyril has the portrait — Mendel's
+            # own pictures between the lectures do show the rain.
+            if self._tut_owns() or getattr(self.app, "fast_forward", False):
                 return None
             w = self.app.garden.weather
             if "❄" in str(w):
@@ -535,6 +538,10 @@ class MendelPortrait:
         return None
 
     def _apply(self, force=False):
+        # The tutorial's own picture (Cyril...) is never to be overwritten.
+        # (refresh() clears the tutorial flag first, so it still works.)
+        if self._tut_owns():
+            return
         # While an action image (watering / planting) has priority, only it
         # may be shown.
         if (time.monotonic() < getattr(self.app, "_portrait_locked_until", 0.0)
@@ -581,6 +588,8 @@ class MendelPortrait:
 
     def refresh(self):
         """Re-apply the current expression (e.g. after the tutorial ended)."""
+        if self._tut_owns():
+            return
         self._tutorial_owned = False
         self._apply(force=True)
 

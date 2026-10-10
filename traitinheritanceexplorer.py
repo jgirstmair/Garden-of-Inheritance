@@ -1318,7 +1318,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
     def __init__(self, parent_window, app, default_pid=None):
         tk.Toplevel.__init__(self, parent_window)
         self.app = app
-        self.title("Trait Inheritance Explorer")
+        self.title("Trait Inheritance Explorer (TIE)")
         self.configure(bg=self.BG)
         self.minsize(1024, 600)
 
