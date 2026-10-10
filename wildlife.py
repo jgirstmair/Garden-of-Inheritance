@@ -109,8 +109,8 @@ _FREQ_PRESETS = {
 
 FRAME_MS    = 900
 WANDER_MS   = 1400
-MIN_STAY_MS = 4000
-MAX_STAY_MS = 14000
+MIN_STAY_MS = 12000         # one visit lasts 12–42 s (real time)
+MAX_STAY_MS = 42000
 
 # Flight (bees and top-view butterflies glide from flower to flower)
 FLY_STEP_MS   = 40          # ~25 fps, only while actually flying

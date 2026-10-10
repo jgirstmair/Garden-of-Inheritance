@@ -2603,15 +2603,20 @@ class GardenApp:
         per = visits.setdefault(pid, {})
         key = f"{kind}:{label}"
         per[key] = int(per.get(key, 0)) + 1
-        # Achievement: every species has visited this one plant.
+
+    def _check_popular_plant(self, plant):
+        """'Popular Plant' — awarded when the player looks at a plant's
+        wildlife table and every species has visited that plant."""
         try:
+            per = self._plant_visits(plant)
             present = self._all_visitor_species()
             seen = {self._visit_key_species(k) for k in per}
             if present and present.issubset(seen) and self._award_achievement("all_on_one"):
+                pid = getattr(plant, "id", "?")
                 self.root.after(300, lambda: self._show_cyril_congrats(
                     "Popular Plant",
                     f"Every kind of visitor has now been to plant #{pid}! "
-                    "Your peas are clearly the talk of the garden."))
+                    "This pea is clearly the talk of the garden."))
         except Exception:
             pass
 
@@ -3814,6 +3819,7 @@ class GardenApp:
                 return
             if self._inspector_wildlife_open:
                 panel.pack(fill="x", padx=16, pady=(0, 12))
+                self._check_popular_plant(plant)
             else:
                 panel.pack_forget()
             try:
@@ -4190,6 +4196,7 @@ class GardenApp:
             _wl_state["panel"] = _wl_panel
             if getattr(self, "_inspector_wildlife_open", False):
                 _wl_panel.pack(fill="x", padx=16, pady=(0, 12))
+                self._check_popular_plant(plant)
         except Exception as e:
             logging.debug(f"Wildlife panel failed: {e}")
 
