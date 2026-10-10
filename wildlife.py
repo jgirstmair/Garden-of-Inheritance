@@ -452,21 +452,22 @@ class _Creature:
             if state["i"] >= steps:
                 X, Y = X1, Y1
             try:
+                if state["i"] % FLAP_STEPS == 0 and len(self.variant.frames) > 1:
+                    state["f"] ^= 1
+                img = self.variant.frame(state["f"])
                 if rects:
                     h = host_at(X, Y)
                     if state["i"] >= steps:
                         h = (dest, dx0, dy0)
                     if h is not None and h[0] is not self.tile:
                         self._move_to_canvas(h[0])
-                    rx, ry = (h[1], h[2]) if (h is not None and h[0] is self.tile) else \
-                        (self.tile.winfo_rootx(), self.tile.winfo_rooty())
+                    self._sync_ghosts(X, Y, img, rects, final=state["i"] >= steps)
+                    rx, ry = self._root_of(self.tile, rects)
                 else:
                     rx, ry = ox, oy
                 self.cx, self.cy = int(round(X - rx)), int(round(Y - ry))
                 self.tile.coords(self._item, self.cx, self.cy)
-                if state["i"] % FLAP_STEPS == 0 and len(self.variant.frames) > 1:
-                    state["f"] ^= 1
-                    self.tile.itemconfig(self._item, image=self.variant.frame(state["f"]))
+                self.tile.itemconfig(self._item, image=img)
                 self.tile.tag_raise("wildlife")
             except Exception:
                 return
@@ -481,21 +482,73 @@ class _Creature:
 
         self._later(FLY_STEP_MS, step)
 
+    @staticmethod
+    def _root_of(tile, rects):
+        for t, rx, ry, _w, _h in rects:
+            if t is tile:
+                return rx, ry
+        return tile.winfo_rootx(), tile.winfo_rooty()
+
     def _move_to_canvas(self, new_tile):
-        """Hand the picture over to the plot canvas it is now flying over."""
-        img = None
+        """The plot under the creature's centre becomes its home canvas. If
+        that plot already shows a mirror copy of it, the copy takes over."""
+        ghosts = self.__dict__.setdefault("_ghosts", {})
+        old_tile, old_item = self.tile, self._item
+        new_item = ghosts.pop(new_tile, None)
+        if new_item is None:
+            try:
+                new_item = new_tile.create_image(
+                    -100, -100, image=self.variant.frame(0),
+                    anchor="center", tags=("wildlife", self.type_name))
+            except Exception:
+                new_item = None
+        if old_item is not None:
+            ghosts[old_tile] = old_item          # kept as a mirror; sync may drop it
+        self.tile, self._item = new_tile, new_item
+
+    def _sync_ghosts(self, X, Y, img, rects, final=False):
+        """While crossing between plots, draw the creature on every plot its
+        picture overlaps, so it moves across the border in one piece instead
+        of being cut off and popping over."""
+        ghosts = self.__dict__.setdefault("_ghosts", {})
         try:
-            img = self.tile.itemcget(self._item, "image")
-            self.tile.delete(self._item)
+            hw, hh = img.width() // 2 + 1, img.height() // 2 + 1
         except Exception:
-            pass
-        self.tile = new_tile
-        try:
-            self._item = new_tile.create_image(
-                self.cx, self.cy, image=img or self.variant.frame(0),
-                anchor="center", tags=("wildlife", self.type_name))
-        except Exception:
-            self._item = None
+            hw = hh = 17
+        keep = set()
+        if not final:
+            for t, rx, ry, rw, rh in rects:
+                if t is self.tile:
+                    continue
+                if X + hw > rx and X - hw < rx + rw and Y + hh > ry and Y - hh < ry + rh:
+                    keep.add(t)
+                    item = ghosts.get(t)
+                    try:
+                        if item is None:
+                            item = t.create_image(X - rx, Y - ry, image=img, anchor="center",
+                                                  tags=("wildlife", self.type_name))
+                            ghosts[t] = item
+                        else:
+                            t.coords(item, X - rx, Y - ry)
+                            t.itemconfig(item, image=img)
+                        t.tag_raise("wildlife")
+                    except Exception:
+                        pass
+        for t in list(ghosts):
+            if t not in keep:
+                try:
+                    t.delete(ghosts[t])
+                except Exception:
+                    pass
+                ghosts.pop(t, None)
+
+    def _clear_ghosts(self):
+        for t, item in list(getattr(self, "_ghosts", {}).items()):
+            try:
+                t.delete(item)
+            except Exception:
+                pass
+        self._ghosts = {}
 
     def _schedule_hop(self):
         if self._alive:
@@ -607,6 +660,7 @@ class _Creature:
                 pass
         self._jobs  = []
         self._alive = False
+        self._clear_ghosts()
         if self._item:
             try:
                 self.tile.delete(self._item)
