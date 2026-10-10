@@ -846,6 +846,21 @@ class WildlifeManager:
         eligible = self._count_eligible_tiles()
         if len(self._active) >= max(1, min(MAX_ACTIVE, eligible)):
             return
+        # The next visitor is drawn afresh by the usual weights — otherwise a
+        # weevil, once it came, would keep returning as a weevil all day.
+        if not DEBUG_ALL_BRUCHUS:
+            choices, weights = [], []
+            month = self._current_month()
+            for t, _pre, w, po, months in CREATURE_DEFS:
+                if month not in months or not self._pools.get(t):
+                    continue
+                if po and not self._any_pods():
+                    continue
+                choices.append((t, po))
+                weights.append(w)
+            if not choices:
+                return
+            type_name, pods_only = random.choices(choices, weights=weights, k=1)[0]
         pool = self._pools.get(type_name, [])
         if pool:
             self._spawn(type_name, pods_only, random.choice(pool))
