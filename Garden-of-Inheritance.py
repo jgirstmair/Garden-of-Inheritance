@@ -3111,6 +3111,104 @@ class GardenApp:
         except Exception:
             self._note_tip = None
 
+    def _sim_when(self):
+        """The garden's current date and hour, e.g. '14 May 1856, 10:00'."""
+        try:
+            g = self.garden
+            return (f"{int(g.day_of_month)} {self._MONTH_ABBR[int(g.month) - 1]} "
+                    f"{int(g.year)}, {int(g.clock_hour) % 24:02d}:00")
+        except Exception:
+            return ""
+
+    def _show_cross_tip(self, tile, event, kind):
+        """Hovering the P (pollinated) or E (emasculated) badge: when it
+        happened and, for P, with whose pollen. Pollen donors that still
+        grow in this garden get a pink outline meanwhile."""
+        self._hide_cross_tip()
+        pl = getattr(tile, "plant", None)
+        if pl is None:
+            return
+        pid = str(getattr(pl, "id", ""))
+        title, lines, donors = "", [], []
+        if kind == "E":
+            when = ((getattr(self, "cross_dates", None) or {}).get(pid) or {}).get("emasc")
+            title = f"\u2702  #{pid} emasculated"
+            lines.append(when or "date not recorded")
+        else:
+            pc = getattr(pl, "pending_cross", None) or {}
+            entries = list(pc.get("donors") or [])
+            if not entries and pc.get("donor_id") is not None:
+                entries = [{"donor_id": pc.get("donor_id")}]
+            if not entries:
+                return
+            title = f"\u2640 #{pid} pollinated"
+            here = {str(getattr(t.plant, "id", "")): t for t in self.tiles
+                    if getattr(t, "plant", None) is not None and getattr(t.plant, "alive", True)}
+            elsewhere = set()
+            try:
+                for t in self._all_plot_tiles():
+                    p2 = getattr(t, "plant", None)
+                    if p2 is not None and getattr(p2, "alive", True):
+                        elsewhere.add(str(getattr(p2, "id", "")))
+            except Exception:
+                pass
+            for d in entries:
+                did = str(d.get("donor_id", "?"))
+                when = d.get("when") or "date not recorded"
+                if did in here:
+                    where = ""
+                    donors.append(here[did])
+                elif did in elsewhere:
+                    where = "  (on the other plot)"
+                else:
+                    where = "  (no longer in the garden)"
+                lines.append(f"with pollen of #{did} \u2014 {when}{where}")
+        try:
+            tip = tk.Toplevel(self.root)
+            tip.overrideredirect(True)
+            try:
+                tip.attributes("-topmost", True)
+            except Exception:
+                pass
+            frame = tk.Frame(tip, bg="#FBF3D9", highlightbackground="#D9A520",
+                             highlightthickness=1, padx=8, pady=5)
+            frame.pack()
+            tk.Label(frame, text=title, font=("Segoe UI", 10, "bold"),
+                     bg="#FBF3D9", fg="#5a4a20").pack(anchor="w")
+            tk.Label(frame, text="\n".join(lines), font=("Segoe UI", 10),
+                     bg="#FBF3D9", fg="#5a4a20", justify="left").pack(anchor="w")
+            tip.geometry(f"+{event.x_root + 14}+{event.y_root + 12}")
+            self._cross_tip = tip
+        except Exception:
+            self._cross_tip = None
+        # Outline the pollen donor(s) growing in this garden.
+        drawn = []
+        for t in donors:
+            try:
+                w, h = t.winfo_width(), t.winfo_height()
+                t.create_rectangle(3, 3, w - 3, h - 3, outline="#FF7FC8", width=3,
+                                   tags="donorpreview")
+                t.tag_raise("donorpreview")
+                drawn.append(t)
+            except Exception:
+                pass
+        self._donor_outline_tiles = drawn
+
+    def _hide_cross_tip(self):
+        tip = getattr(self, "_cross_tip", None)
+        if tip is not None:
+            try:
+                tip.destroy()
+            except Exception:
+                pass
+        self._cross_tip = None
+        for t in getattr(self, "_donor_outline_tiles", None) or []:
+            try:
+                t.delete("donorpreview")
+            except Exception:
+                pass
+        self._donor_outline_tiles = []
+
     def _hide_note_tip(self):
         tip = getattr(self, "_note_tip", None)
         if tip is not None:
@@ -3125,6 +3223,15 @@ class GardenApp:
         plant has a note."""
         notes = getattr(self, "plant_notes", None) or {}
         for tile in self._all_plot_tiles():
+            if not getattr(tile, "_cross_tip_bound", False):
+                try:
+                    for _tag, _kind in (("p_badge", "P"), ("e_badge", "E")):
+                        tile.tag_bind(_tag, "<Enter>",
+                                      lambda e, t=tile, k=_kind: self._show_cross_tip(t, e, k))
+                        tile.tag_bind(_tag, "<Leave>", lambda e: self._hide_cross_tip())
+                    tile._cross_tip_bound = True
+                except Exception:
+                    pass
             try:
                 pl = getattr(tile, "plant", None)
                 want = pl is not None and str(getattr(pl, "id", "")) in notes
@@ -5933,6 +6040,13 @@ class GardenApp:
                     plant.selfing_frac_before_emasc = float(frac)
                 plant.emasculated = True
                 plant.emasc_day = int(getattr(self.garden, "day", 0))
+                try:
+                    cd = getattr(self, "cross_dates", None)
+                    if cd is None:
+                        cd = self.cross_dates = {}
+                    cd.setdefault(str(getattr(plant, "id", "")), {})["emasc"] = self._sim_when()
+                except Exception:
+                    pass
                 plant.emasc_phase = getattr(self.garden, "phase", "morning")
 
                 # Emasculation removes anthers -> clear any pollen/anther state immediately
@@ -9316,6 +9430,7 @@ class GardenApp:
                 "donor_id": packet.get("source_id", "?"),
                 "donor_genotype": dict(donor_geno),
                 "day": getattr(self.garden, "day", None),
+                "when": self._sim_when(),
             })
             plant.pending_cross = pc
             plant.pollinated = True
@@ -16692,6 +16807,8 @@ class GardenApp:
             'temperature_tracker': temp_tracker_data,
             'ui_settings': ui_settings,
             'plant_notes': dict(getattr(self, "plant_notes", {}) or {}),
+            'cross_dates': {k: dict(v) for k, v in
+                            (getattr(self, "cross_dates", {}) or {}).items()},
             'wildlife_visits': {k: dict(v) for k, v in
                                 (getattr(self, "wildlife_visits", {}) or {}).items()},
         }
@@ -16730,6 +16847,11 @@ class GardenApp:
                                 (save_data.get("plant_notes") or {}).items() if str(v).strip()}
         except Exception:
             self.plant_notes = {}
+        try:
+            self.cross_dates = {str(k): dict(v) for k, v in
+                                (save_data.get("cross_dates") or {}).items()}
+        except Exception:
+            self.cross_dates = {}
         try:
             self.wildlife_visits = {str(k): {str(a): int(b) for a, b in (v or {}).items()}
                                     for k, v in (save_data.get("wildlife_visits") or {}).items()}

@@ -184,7 +184,7 @@ class MendelianLawWizard(tk.Toplevel):
             notice.pack(fill="x", side="top")
             tk.Label(
                 notice,
-                text=("Genotype already revealed this session — Mendelian "
+                text=("Genotype already revealed — Mendelian "
                       "laws can no longer be unlocked."),
                 font=self.FONT_BOLD, bg="#D04040", fg="white",
                 wraplength=760, justify="center",
@@ -225,18 +225,24 @@ class MendelianLawWizard(tk.Toplevel):
     # ── page helpers ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _autowrap(label, container, margin=40, min_w=200):
+    def _autowrap(label, container, margin=40, min_w=200, use_window=False):
         """Lets `label` use the full width available in `container`: its
         wraplength follows the container's width instead of a fixed
-        number, so text only wraps when it genuinely runs out of room."""
+        number, so text only wraps when it genuinely runs out of room.
+        use_window=True measures the whole window instead — needed when the
+        container's own width comes from the label (the result banner):
+        otherwise every narrower wrap made the container narrower, which
+        wrapped the text narrower again, until it was squeezed to min_w."""
+        src = label.winfo_toplevel() if use_window else container
+
         def _upd(event=None):
             try:
-                w = container.winfo_width()
+                w = src.winfo_width()
                 if w > 1:
                     label.configure(wraplength=max(min_w, w - margin))
             except Exception:
                 pass
-        container.bind("<Configure>", _upd, add="+")
+        src.bind("<Configure>", _upd, add="+")
         label.after(50, _upd)
 
     def _show_page(self, n):
@@ -390,6 +396,11 @@ class MendelianLawWizard(tk.Toplevel):
     # Page 2 – Trait selection
     # =========================================================================
 
+    def _p1size(self, font):
+        """Page 2 (and the result banner) use the same, larger text size as
+        the law-choice page (1.35x the base fonts)."""
+        return (font[0], int(round(font[1] * 1.35))) + tuple(font[2:])
+
     def _build_page2(self):
         """Build the static skeleton of page 2 (dynamic parts rebuilt in _refresh_page2)."""
         p = self._page2
@@ -398,7 +409,7 @@ class MendelianLawWizard(tk.Toplevel):
         self._p2_hdr = tk.Frame(p, bg=self.ACCENT, pady=10)
         self._p2_hdr.pack(fill="x")
         self._p2_title = tk.Label(self._p2_hdr, text="",
-                                  font=self.FONT_TITLE, bg=self.ACCENT, fg="white")
+                                  font=self._p1size(self.FONT_TITLE), bg=self.ACCENT, fg="white")
         self._p2_title.pack()
 
         # nav bar (static at bottom, packed before canvas so it stays fixed)
@@ -423,19 +434,19 @@ class MendelianLawWizard(tk.Toplevel):
                 pass
         else:
             self._p2_back_btn = tk.Button(nav, text="\u2190  Back",
-                      font=self.FONT_BOLD, bg=self.BTN_BG,
+                      font=self._p1size(self.FONT_BOLD), bg=self.BTN_BG,
                       activebackground=self.BTN_ACTIVE,
                       relief="flat", bd=0, padx=14, pady=6,
                       command=self._go_back)
             self._p2_back_btn.pack(side="left")
             tk.Button(nav, text="Cancel",
-                      font=self.FONT_BOLD, bg=self.BTN_BG,
+                      font=self._p1size(self.FONT_BOLD), bg=self.BTN_BG,
                       activebackground=self.BTN_ACTIVE,
                       relief="flat", bd=0, padx=14, pady=6,
                       command=self.destroy).pack(side="right", padx=(8, 0))
             self._p2_unlock_btn = tk.Button(
                 nav, text="Unlock",
-                font=self.FONT_BOLD,
+                font=self._p1size(self.FONT_BOLD),
                 bg=self.BTN_PRIMARY, fg=self.BTN_PRIMARY_FG,
                 activebackground="#5C2810", activeforeground=self.BTN_PRIMARY_FG,
                 relief="flat", bd=0, padx=14, pady=6,
@@ -546,7 +557,7 @@ class MendelianLawWizard(tk.Toplevel):
                               highlightbackground="#B89B72", highlightthickness=1)
         inst_frame.pack(fill="x", padx=20, pady=(12, 0))
         self._p2_inst_lbl = tk.Label(inst_frame, text="",
-                                     font=self.FONT_BOLD, bg="#EDE0C0",
+                                     font=self._p1size(self.FONT_BOLD), bg="#EDE0C0",
                                      fg=self.ACCENT, wraplength=480, justify="left")
         self._p2_inst_lbl.pack(anchor="w")
         self._autowrap(self._p2_inst_lbl, inst_frame, margin=40)
@@ -581,7 +592,7 @@ class MendelianLawWizard(tk.Toplevel):
 
                 # Number label above box
                 tk.Label(col, text=f"{num_txt}  ({pct_txt})",
-                         font=self.FONT_TINY, bg=self.BG,
+                         font=self._p1size(self.FONT_TINY), bg=self.BG,
                          fg=bd_c).pack()
 
                 # The card – contents rebuilt dynamically in _refresh_slots.
@@ -609,7 +620,7 @@ class MendelianLawWizard(tk.Toplevel):
 
                 # Value text below card
                 ab_val_lbl = tk.Label(col, text="— / —",
-                                      font=self.FONT_TINY, bg=self.BG,
+                                      font=self._p1size(self.FONT_TINY), bg=self.BG,
                                       fg=self.TEXT_MUTED)
                 ab_val_lbl.pack()
 
@@ -620,6 +631,9 @@ class MendelianLawWizard(tk.Toplevel):
                     "ab_val": ab_val_lbl,
                     "card":  card,
                 })
+
+            # No room beside the four boxes: Clear sits under them, on the right.
+            self._clear_button(slots_outer, None).pack(anchor="e", pady=(4, 0))
 
         else:
             # ── Law 1 / Law 2: original pair-row layout ───────────────────────
@@ -642,7 +656,7 @@ class MendelianLawWizard(tk.Toplevel):
                 # dominant slot
                 dom_outer = tk.Frame(pair_row, bg=self.BG)
                 dom_outer.pack(side="left", padx=(0, 4))
-                tk.Label(dom_outer, text=dom_label_text, font=self.FONT_TINY,
+                tk.Label(dom_outer, text=dom_label_text, font=self._p1size(self.FONT_TINY),
                          bg=self.BG, fg=dom_label_fg).pack()
                 dom_card = tk.Frame(dom_outer, bg=self.GOLD_LIGHT,
                                     highlightbackground=self.GOLD if not is_law2 else self.ACCENT,
@@ -654,7 +668,7 @@ class MendelianLawWizard(tk.Toplevel):
                                        fg="#C8A830")
                 dom_img_lbl.pack(expand=True)
                 dom_val_lbl = tk.Label(dom_outer, text="-",
-                                       font=self.FONT_TINY, bg=self.BG, fg=self.TEXT_MUTED)
+                                       font=self._p1size(self.FONT_TINY), bg=self.BG, fg=self.TEXT_MUTED)
                 dom_val_lbl.pack()
 
                 # separator
@@ -668,7 +682,7 @@ class MendelianLawWizard(tk.Toplevel):
                 # recessive slot
                 rec_outer = tk.Frame(pair_row, bg=self.BG)
                 rec_outer.pack(side="left", padx=(4, 8))
-                tk.Label(rec_outer, text=rec_label_text, font=self.FONT_TINY,
+                tk.Label(rec_outer, text=rec_label_text, font=self._p1size(self.FONT_TINY),
                          bg=self.BG, fg=rec_label_fg).pack()
                 rec_card = tk.Frame(rec_outer, bg=self.SILVER_LIGHT,
                                     highlightbackground=self.SILVER,
@@ -680,19 +694,21 @@ class MendelianLawWizard(tk.Toplevel):
                                        fg="#999999")
                 rec_img_lbl.pack(expand=True)
                 rec_val_lbl = tk.Label(rec_outer, text="-",
-                                       font=self.FONT_TINY, bg=self.BG, fg=self.TEXT_MUTED)
+                                       font=self._p1size(self.FONT_TINY), bg=self.BG, fg=self.TEXT_MUTED)
                 rec_val_lbl.pack()
 
                 self._slot_frames.append(
                     (dom_card, rec_card, dom_val_lbl, rec_val_lbl,
                      dom_img_lbl, rec_img_lbl))
 
+                self._clear_button(pair_row, i).pack(side="left", padx=(6, 0))
+
         # ── separator ────────────────────────────────────────────────────────
         tk.Frame(body, height=1, bg=self.BORDER_LIGHT).pack(
             fill="x", padx=20, pady=(8, 6))
 
         tk.Label(body, text="Click a trait icon to assign it:",
-                 font=self.FONT_BOLD, bg=self.BG, fg=self.TEXT_DARK
+                 font=self._p1size(self.FONT_BOLD), bg=self.BG, fg=self.TEXT_DARK
                  ).pack(padx=20, anchor="w")
 
         # ── trait icon grid ──────────────────────────────────────────────────
@@ -705,7 +721,7 @@ class MendelianLawWizard(tk.Toplevel):
             col_frame.grid(row=0, column=col_i, padx=4)
 
             tk.Label(col_frame, text=tlabel,
-                     font=self.FONT_TINY, bg=self.BG,
+                     font=self._p1size(self.FONT_TINY), bg=self.BG,
                      fg=self.TEXT_MUTED, wraplength=80,
                      justify="center").pack(pady=(0, 2))
 
@@ -725,7 +741,7 @@ class MendelianLawWizard(tk.Toplevel):
 
                 val_lbl = tk.Label(btn_outer,
                                    text=self.VALUE_LABELS.get(val, val),
-                                   font=self.FONT_TINY, bg=self.BG,
+                                   font=self._p1size(self.FONT_TINY), bg=self.BG,
                                    fg=self.TEXT_DARK, cursor="hand2")
                 val_lbl.pack()
 
@@ -826,9 +842,9 @@ class MendelianLawWizard(tk.Toplevel):
 
         if pairs_n == 1:
             if self._mode == "dominant":
-                txt = "Step 1: Choose the DOMINANT trait (present in all parent plants)."
+                txt = "Step 1: Choose the DOMINANT trait."
             else:
-                txt = "Step 2: Select RECESSIVE trait (disappeared in parent plants)."
+                txt = "Step 2: Select RECESSIVE trait."
         else:
             # Law 3: just 2 steps – clicking any icon of a trait fills both slots
             if self._mode == "done":
@@ -900,6 +916,41 @@ class MendelianLawWizard(tk.Toplevel):
                 else:
                     self._mode = "done"
 
+        self._refresh_slots()
+        self._highlight_used_traits()
+        self._update_instruction()
+        self._update_unlock_btn()
+
+    def _clear_button(self, parent, pair_idx):
+        """A small "Clear" button next to the chosen traits, to pick them
+        again before pressing Unlock (pair_idx None = all pairs)."""
+        b = tk.Label(parent, text="\u21ba  Clear", font=self._p1size(self.FONT_TINY),
+                     bg="#EDE0C0", fg=self.TEXT_DARK, padx=10, pady=4,
+                     cursor="hand2", highlightbackground=self.BORDER_LIGHT,
+                     highlightthickness=1)
+        b.bind("<Button-1>", lambda e: self._clear_selection(pair_idx))
+        b.bind("<Enter>", lambda e: b.configure(bg="#E2D2AC"))
+        b.bind("<Leave>", lambda e: b.configure(bg="#EDE0C0"))
+        return b
+
+    def _clear_selection(self, pair_idx=None):
+        """Empties the chosen traits (one pair, or all) so they can be
+        picked again; the next pick goes into the first empty slot."""
+        law_num = self._law_var.get()
+        pairs_n = self.LAWS[law_num - 1]["pairs_needed"]
+        targets = range(len(self._sels)) if pair_idx is None else [pair_idx]
+        for i in targets:
+            if 0 <= i < len(self._sels):
+                self._sels[i]["dominant"] = None
+                self._sels[i]["recessive"] = None
+        self._pair_idx, self._mode = 0, "done"
+        for i in range(pairs_n):
+            if not self._sels[i]["dominant"]:
+                self._pair_idx, self._mode = i, "dominant"
+                break
+            if not self._sels[i]["recessive"]:
+                self._pair_idx, self._mode = i, "recessive"
+                break
         self._refresh_slots()
         self._highlight_used_traits()
         self._update_instruction()
@@ -1109,7 +1160,7 @@ class MendelianLawWizard(tk.Toplevel):
 
         if not plant:
             self._show_result(False,
-                "No plant selected.\n\nSelect a plant in the garden first, then try again.")
+                "No plant selected.\n\nSelect a plant in the garden first.")
             return
 
         pid = getattr(plant, "id", None)
@@ -1134,13 +1185,9 @@ class MendelianLawWizard(tk.Toplevel):
         # presenting it as "you don't have enough evidence yet."
         if getattr(app, "_genotype_revealed", False):
             self._show_result(False,
-                "Genotype has already been revealed this session.\n\n"
+                "Genotype has already been revealed.\n\n"
                 "Once you've peeked at a plant's true genotype, Mendelian "
-                "laws can no longer be unlocked — seeing the actual alleles "
-                "in advance would make inferring them from breeding ratios "
-                "trivial. This isn't about your selection or the evidence "
-                "gathered; law discovery is simply disabled for the rest of "
-                "this session.")
+                "laws can no longer be unlocked.")
             return
 
         # ── run the law test ──────────────────────────────────────────────────
@@ -1271,18 +1318,16 @@ class MendelianLawWizard(tk.Toplevel):
             msgs = {
                 1: (
                     "No evidence for the Law of Dominance found.\n\n"
-                    "Make sure you have selected a plant whose parents were "
-                    "both true-breeding with contrasting traits, and that "
-                    "> 15 sibling plants show the same (dominant) phenotype."
+                    "Make sure 15 sibling plants show the same (dominant) phenotype."
                 ),
                 2: (
                     "The Law of Segregation hasn't been demonstrated yet.\n\n"
-                    "You need at least 65 offspring showing approximately a 3:1 ratio of "
-                    "a 3:1 ratio of dominant to recessive phenotype."
+                    "You need 65 offspring showing a ~3:1 ratio of "
+                    "dominant to recessive phenotype."
                 ),
                 3: (
-                    "The Law of Independent Assortment hasn't been confirmed yet.\n\n"
-                    "You need at least 80 offsprings showing a ~9:3:3:1 "
+                    "No evidence for the Law of Independent Assortment found.\n\n"
+                    "You need 80 offspring showing a ~9:3:3:1 "
                     "ratio for two independent traits."
                 ),
             }
@@ -1307,7 +1352,7 @@ class MendelianLawWizard(tk.Toplevel):
                 mismatch_msg = (
                     "Your two selections belong to different traits.\n"
                     "Both values must come from the same trait "
-                    "(e.g. purple AND white Flower Color)."
+                    "(e.g. purple and white Flower Color)."
                 )
 
             elif law_num == 1:
@@ -1331,18 +1376,17 @@ class MendelianLawWizard(tk.Toplevel):
                         if not trait_match:
                             trait_mismatch = True
                             mismatch_msg = (
-                                "The evidence points to a different trait.\n\n"
-                                "Hint: look for a trait where both parents were "
-                                "true-breeding (homozygous) with contrasting values "
-                                "and all offsprings showed only one phenotype (trait).\n\n"
+                                "Evidence points to a different trait.\n\n"
+                                "Hint: look for homozygous parents with contrasting "
+                                "traits and all offspring showed only one phenotype (trait).\n\n"
                                 "Try again!"
                             )
                         else:
                             trait_mismatch = True
                             mismatch_msg = (
-                                "You have the right trait, but dominant and recessive "
-                                "traits are swapped.\n\n"
-                                "Try swapping the two icons!"
+                                "You have the right trait, but check if dominant and "
+                                "recessive traits are swapped!\n\n"
+                                "Try again!"
                             )
 
             elif law_num == 2:
@@ -1364,17 +1408,14 @@ class MendelianLawWizard(tk.Toplevel):
                             trait_mismatch = True
                             mismatch_msg = (
                                 "The 3:1 ratio was not observed for this trait.\n\n"
-                                "Hint: look at which trait shows roughly 75% of one "
-                                "value and 25% of the other in your F2 plants.\n\n"
+                                "Hint: look where roughly 75% of one trait and 25% of "
+                                "the other are present in your F2 plants.\n\n"
                                 "Try again!"
                             )
                         else:
                             trait_mismatch = True
                             mismatch_msg = (
-                                "You are close, but not quite correct.\n\n"
-                                "Hint: The value in the '3 (75%)' slot should be the one "
-                                "that appears in most offspring.\n\n"
-                                "Try swapping the two icons!"
+                                "You are close, but not quite correct."
                             )
 
         elif law_num == 3:
@@ -1399,8 +1440,6 @@ class MendelianLawWizard(tk.Toplevel):
                     trait_mismatch = True
                     mismatch_msg = (
                         "The 9:3:3:1 ratio was not observed for this trait pair.\n\n"
-                        "Look for two traits that both show 4 phenotype classes "
-                        "in your offspring in roughly a 9:3:3:1 ratio.\n\n"
                         "Try again!"
                     )
 
@@ -1532,11 +1571,11 @@ class MendelianLawWizard(tk.Toplevel):
                    before=self._p2_canvas_frame)
 
         _msg_lbl = tk.Label(panel, text=message,
-                            font=self.FONT_BOLD, bg=color, fg=fg,
+                            font=self._p1size(self.FONT_BOLD), bg=color, fg=fg,
                             wraplength=520, justify="left")
         _msg_lbl.pack(anchor="w", padx=4)
         # Use the whole banner width — wrap only if it truly doesn't fit.
-        self._autowrap(_msg_lbl, panel, margin=60)
+        self._autowrap(_msg_lbl, panel, margin=90, use_window=True)
 
         # ── swap nav button on outcome ────────────────────────────────────
         try:

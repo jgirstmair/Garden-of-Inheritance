@@ -117,7 +117,9 @@ FLY_STEP_MS   = 40          # ~25 fps, only while actually flying
 FLAP_STEPS    = 3           # swap wing frame every 3 flight steps
 HOP_MIN_MS    = 2500        # pause on a flower before maybe flying on
 HOP_MAX_MS    = 5500
-HOP_OTHER_PLANT = 0.5       # chance a hop goes to a nearby flowering plant
+HOP_OTHER_PLANT = 0.5
+HIVE_BEE_SHARE  = 0.6       # share of bees that start (and end) at the beehive
+MAX_FLIGHT_S    = 3.5       # long flights speed up so none takes longer       # chance a hop goes to a nearby flowering plant
 HOP_RANGE_TILES = 2.5       # how far (in plot widths) such a hop may go
 REVISIT_MIN = 18000   # default: low frequency
 REVISIT_MAX = 55000
@@ -295,8 +297,9 @@ def _centroid(cluster):
 class _Creature:
     def __init__(self, mgr, type_name: str, pods_only: bool,
                  tile, cx: int, cy: int, variant: _Variant,
-                 cluster_key: tuple):
+                 cluster_key: tuple, home=None):
         self.mgr         = mgr
+        self._home       = home    # (hive tile, x, y): flies out from / back to it
         self.type_name   = type_name
         self.pods_only   = pods_only
         self.tile        = tile
@@ -347,6 +350,11 @@ class _Creature:
         if img is None:
             self._alive = False
             return
+        target = None
+        if self._home is not None:
+            # A bee from the hive: starts at the hive and flies to its flower.
+            target = (self.tile, self.cx, self.cy)
+            self.tile, self.cx, self.cy = self._home
         try:
             self._item = self.tile.create_image(
                 self.cx, self.cy, image=img,
@@ -367,8 +375,12 @@ class _Creature:
         self._later(FRAME_MS,  self._tick_anim)
         self._later(WANDER_MS, self._wander)
         if self.flier:
-            # Appears on its flower, then hops around from there.
-            self._schedule_hop()
+            if target is not None:
+                t_tile, tx, ty = target
+                self._fly_to(tx, ty, then=self._schedule_hop, dest=t_tile)
+            else:
+                # Appears on its flower, then hops around from there.
+                self._schedule_hop()
             self._later(stay, self._leave)
         else:
             self._later(stay, self._depart)
@@ -409,6 +421,7 @@ class _Creature:
         dist = max(1.0, math.hypot(dx, dy))
         butterfly = self.type_name == "butterfly"
         speed = random.uniform(55, 85) if butterfly else random.uniform(80, 120)  # px/s
+        speed = max(speed, dist / MAX_FLIGHT_S)      # far flights go faster
         steps = max(6, int(dist / speed * 1000 / FLY_STEP_MS))
         arc = random.uniform(-0.35, 0.35) * dist if butterfly else random.uniform(-0.15, 0.15) * dist
         arc = max(-60.0, min(60.0, arc))
@@ -603,6 +616,14 @@ class _Creature:
         if self._flying:                      # land first, then vanish
             self._later(300, self._leave)
             return
+        home = self._home
+        if home is not None and self._item is not None:
+            try:
+                if home[0].winfo_ismapped():
+                    self._fly_to(home[1], home[2], then=self._depart, dest=home[0])
+                    return
+            except Exception:
+                pass
         self._depart()
 
     def _later(self, ms, fn):
@@ -861,8 +882,11 @@ class WildlifeManager:
             cx, cy, cluster_key = result
             # Mark cluster as occupied before creating creature
             self._occupied.add(cluster_key)
+            home = None
+            if type_name == "bee" and random.random() < HIVE_BEE_SHARE:
+                home = self._hive_spot()
             c = _Creature(self, type_name, pods_only, tile, cx, cy, variant,
-                          cluster_key)
+                          cluster_key, home=home)
             if c._alive:
                 self._active.append(c)
                 # Tell the game which plant got a visitor (visit counts).
@@ -940,6 +964,19 @@ class WildlifeManager:
                     return v
             except Exception:
                 pass
+        return None
+
+    def _hive_spot(self):
+        """(tile, x, y) at the entrance of the beehive on the plot on
+        screen, or None if there is no visible hive."""
+        for t in self._visible_tiles():
+            if getattr(t, "special_object", None) == "beehive":
+                try:
+                    w = t.winfo_width() or 85
+                    h = t.winfo_height() or 85
+                except Exception:
+                    w = h = 85
+                return (t, w // 2 + random.randint(-4, 4), int(h * 0.62))
         return None
 
     def _visible_tiles(self):

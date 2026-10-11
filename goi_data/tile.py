@@ -538,6 +538,7 @@ class TileCanvas(tk.Canvas):
         e_x = plot_x0 - self.e_overhang_left
         e_y = self.badge_y
         self._draw_badge(e_x, e_y, "E", bg="#BBDEFB", fg="#0D47A1", tag="e_badge")
+        self._e_badge_x = e_x
     
     def _draw_badge(self, x, y, char, bg, fg, tag):
         """
@@ -1122,6 +1123,15 @@ class TileCanvas(tk.Canvas):
             self.itemconfig(self.wb_bg,   state=("hidden" if water_as_drop else "normal"))
             self.itemconfig(self.wb_fill, state=("hidden" if water_as_drop else "normal"))
             self.itemconfig(self.water_drop_item, state=("normal" if water_as_drop else "hidden"))
+            # With the drop icon there is no water bar on the left, so the
+            # E badge sits at the plot's left edge — mirroring the P badge
+            # on the right.
+            e_x = (self.p_inset_right if water_as_drop
+                   else self.water_thick - self.e_overhang_left)
+            cur = getattr(self, "_e_badge_x", self.water_thick - self.e_overhang_left)
+            if e_x != cur:
+                self.move("e_badge", e_x - cur, 0)
+                self._e_badge_x = e_x
 
             # Health is either the fill bar or a row of heart icons, never
             # both — same live-toggle pattern as the water bar/drop above,

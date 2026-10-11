@@ -94,6 +94,68 @@ _NIGHT_STEPS = 8
 _night_cache = {}
 
 
+_TWILIGHT_PEAK = 0.35    # how far into dusk (0..1) the golden light is strongest
+_TWILIGHT_END = 0.75     # past this it is plain night blue
+
+
+def _twilight_amount(d):
+    """0..1 strength of the sunset/sunrise colouring at darkness d (0..1)."""
+    if d <= 0 or d >= _TWILIGHT_END:
+        return 0.0
+    if d <= _TWILIGHT_PEAK:
+        return d / _TWILIGHT_PEAK
+    return (_TWILIGHT_END - d) / (_TWILIGHT_END - _TWILIGHT_PEAK)
+
+
+def _twilight_grade(rgb, amount):
+    """Dawn / dusk look for any garden picture (with or without Mendel):
+    sky in violet-rose-orange, warm light on bright parts, violet shadows
+    and a low golden sun from the right. `amount` 0..1 blends it in."""
+    from PIL import Image, ImageChops, ImageFilter
+    W, H = rgb.size
+    r, g, b = rgb.split()
+    lum = rgb.convert("L")
+    # --- sky: bright, bluish pixels in the upper half
+    blueish = ImageChops.subtract(b, r).point(lambda v: 255 if v > 12 else 0)
+    bright = lum.point(lambda v: 255 if v > 135 else 0)
+    upper = Image.linear_gradient("L").resize((W, H)).point(
+        lambda v: 255 if v < 115 else max(0, 255 - (v - 115) * 6))
+    sky = ImageChops.multiply(ImageChops.multiply(blueish, bright), upper)
+    sky = sky.filter(ImageFilter.GaussianBlur(1.2))
+
+    def grad(stops):
+        col = Image.new("RGB", (1, H))
+        px = col.load()
+        for y in range(H):
+            t = y / max(1, H - 1)
+            for i in range(len(stops) - 1):
+                (t0, c0), (t1, c1) = stops[i], stops[i + 1]
+                if t0 <= t <= t1:
+                    k = (t - t0) / max(1e-6, t1 - t0)
+                    px[0, y] = tuple(int(c0[j] + (c1[j] - c0[j]) * k) for j in range(3))
+                    break
+            else:
+                px[0, y] = stops[-1][1]
+        return col.resize((W, H))
+
+    sky_grad = grad([(0.0, (97, 77, 140)), (0.28, (219, 133, 140)), (0.5, (255, 178, 107)), (1.0, (255, 178, 107))])
+    texture = Image.merge("RGB", [lum.point(lambda v: min(255, int(175 + v * 0.38)))] * 3)
+    sky_col = ImageChops.multiply(sky_grad, texture)
+    # --- land: dimmer, warm highlights, violet shadows, low sun from the right
+    warm = ImageChops.multiply(rgb, Image.new("RGB", (W, H), (255, 214, 178)))
+    warm = Image.eval(warm, lambda v: int(v * 0.80))
+    shade = lum.point(lambda v: max(0, min(255, int((150 - v) * 2.2))))
+    land = Image.composite(Image.blend(warm, Image.new("RGB", (W, H), (58, 50, 112)), 0.35), warm, shade)
+    sun = Image.linear_gradient("L").rotate(90, expand=True).resize((W, H)).point(
+        lambda v: int(max(0, 255 - v) * 0.55))         # strongest at the right edge
+    sun = ImageChops.multiply(sun, lum)
+    land = ImageChops.add(land, Image.merge("RGB", (sun.point(lambda v: int(v * 0.32)),
+                                                    sun.point(lambda v: int(v * 0.14)),
+                                                    sun.point(lambda v: 0))))
+    graded = Image.composite(sky_col, land, sky)
+    return Image.blend(rgb, graded, max(0.0, min(1.0, amount)))
+
+
 def _night_image(path, step):
     """Mendel's daylight portrait darkened and tinted blue by `step`
     (1.._NIGHT_STEPS; _NIGHT_STEPS = full night), so he can stand in the
@@ -108,6 +170,12 @@ def _night_image(path, step):
         im = Image.open(path).convert("RGBA")
         r, g, b, a = im.split()
         rgb = Image.merge("RGB", (r, g, b))
+        tw = _twilight_amount(d)
+        if tw > 0:
+            try:
+                rgb = _twilight_grade(rgb, tw)
+            except Exception:
+                pass
         rgb = ImageEnhance.Brightness(rgb).enhance(1.0 - 0.58 * d)
         tint = Image.new("RGB", rgb.size, (28, 44, 96))
         rgb = Image.blend(rgb, tint, 0.22 * d)
@@ -555,8 +623,10 @@ class MendelPortrait:
         else:
             key = (self.mood, season)
             path = self._path(self.mood, season)
-        step = 0 if scene else self._night_step
-        if not scene and not getattr(self.app, "enable_daynight", True):
+        is_night_scene = bool(scene) and any(
+            scene in files for files in self._scenes.get("night", {}).values())
+        step = 0 if is_night_scene else self._night_step
+        if not getattr(self.app, "enable_daynight", True):
             step = 0
         rain = self._rain_style()
         if rain:
