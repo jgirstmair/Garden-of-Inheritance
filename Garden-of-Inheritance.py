@@ -72,6 +72,25 @@ from collections import defaultdict
 from pathlib import Path
 from typing import List, Set
 
+# Only this file sits in the game's main folder; every other module and all
+# resources (icons, sounds, climate, data, ...) live in "goi_data" next to it.
+# (Falls back to this file's own folder for the old, flat layout.)
+def _find_sim_dir():
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        here = os.getcwd()
+    sub = os.path.join(here, "goi_data")
+    return sub if os.path.isdir(sub) else here
+
+_SIM_DIR = _find_sim_dir()
+if _SIM_DIR not in sys.path:
+    sys.path.insert(0, _SIM_DIR)
+try:
+    os.chdir(_SIM_DIR)          # relative paths (climate/, data/, icons/) resolve here
+except Exception:
+    pass
+
 # --- Third-Party / Installed Modules ---
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
 import tkinter as tk
@@ -1019,7 +1038,7 @@ from mendelian_law_wizard import MendelianLawWizard
 def _pg_base_dir():
     """Get base directory for the application."""
     try:
-        return os.path.dirname(os.path.abspath(__file__))
+        return _SIM_DIR
     except Exception:
         return os.getcwd()
 
@@ -1051,7 +1070,7 @@ def __pg_script_dir():
     try:
         if getattr(sys, "frozen", False):
             return Path(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)))
-        return Path(os.path.dirname(os.path.abspath(__file__)))
+        return Path(_SIM_DIR)
     except Exception:
         return Path(os.getcwd())
 
@@ -1463,7 +1482,7 @@ WATER_BAR_H = TILE_SIZE
 WATER_BAR_MAX = int(TILE_SIZE * 0.80)
 BORDER_THICKNESS = max(2, TILE_SIZE // 21)
 
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = _SIM_DIR
 EXPORT_DIR = os.path.join(ROOT_DIR, "export")
 os.makedirs(EXPORT_DIR, exist_ok=True)
 SEEDS_CSV = os.path.join(ICONS_DIR, "seeds.csv")  # keep next to icons for convenience
@@ -5096,6 +5115,11 @@ class GardenApp:
                 return False
             pats = ([(0.0, 0.10)], [(0.0, 0.09), (0.18, 0.34)])
             self._lt_seq = seq = (now, random.choice(pats))
+            # Thunder follows the flash 1-2 s later (sounds/thunder_*.ogg).
+            try:
+                self.root.after(int(random.uniform(1000, 2000)), self._play_thunder)
+            except Exception:
+                pass
         start, pat = seq
         t = now - start
         if t > pat[-1][1]:
@@ -5103,6 +5127,13 @@ class GardenApp:
             self._lt_next = now + random.uniform(10, 30)
             return False
         return any(a <= t < b for a, b in pat)
+
+    def _play_thunder(self):
+        """One random thunder clap — only while the storm and normal time
+        are still going (not after it cleared up or during Fast Forward)."""
+        if getattr(self.garden, "weather", None) != "\u26c8" or getattr(self, "fast_forward", False):
+            return
+        _play_sound_variant("thunder_*.ogg")
 
     def _apply_daynight_to_tiles(self):
         # ── Update season cache once per frame ──────────────────────────────
@@ -8638,7 +8669,20 @@ class GardenApp:
         except Exception:
             pass
 
+    def _ui_gone(self):
+        """True once the game is closing or its main window is destroyed —
+        late events (e.g. the release of the click that closed the game)
+        must not touch widgets that no longer exist."""
+        if getattr(self, "_closing", False):
+            return True
+        try:
+            return not bool(self.root.winfo_exists())
+        except Exception:
+            return True
+
     def render_all(self):
+        if self._ui_gone():
+            return
         self._sync_tile_selected_from_indices()
         self._update_water_all_state()
 
@@ -8798,6 +8842,8 @@ class GardenApp:
         return container
 
     def _render_selection_panel(self):
+        if self._ui_gone():
+            return
         idx = getattr(self, "selected_index", None)
 
         # fall back to multi-select if needed
@@ -12117,6 +12163,8 @@ class GardenApp:
 # ============================================================================
     def _on_tile_left_release(self, event, index: int):
         """Finish click / drag. If it was just a click, behave like old _on_tile_click."""
+        if self._ui_gone():
+            return
         if getattr(self, "_swallow_tile_release", False):
             self._swallow_tile_release = False     # that click caught a beetle
             return
@@ -14989,6 +15037,9 @@ class GardenApp:
         first — Mendel's garden as "Autosave", or the tutorial's progress —
         then quits."""
         if getattr(self, "_closing", False):
+            # Asked again while closing (e.g. the first attempt got stuck):
+            # the save already ran, so end the program for sure.
+            self._force_exit()
             return
         self._closing = True
         try:
@@ -15003,9 +15054,29 @@ class GardenApp:
         except Exception:
             logging.error("Saving on close failed", exc_info=True)
         try:
-            self.root.destroy()
+            if _mixer_ready:
+                pygame.mixer.stop()
         except Exception:
             pass
+        try:
+            self.root.destroy()
+        except Exception:
+            # A widget that failed to close used to leave a half-closed
+            # window behind that could no longer be quit. Log it and end
+            # the program anyway (the garden is already saved).
+            logging.error("Closing the window failed", exc_info=True)
+            self._force_exit()
+
+    def _force_exit(self):
+        try:
+            self.root.quit()
+        except Exception:
+            pass
+        try:
+            logging.shutdown()
+        except Exception:
+            pass
+        os._exit(0)
 
     def _startup_continue_prompt(self):
         """At launch: if there is an earlier garden, ask whether to
@@ -18176,7 +18247,7 @@ def _texture_blur_radius_for_pct(pct):
 
 def _display_settings_path():
     try:
-        base = os.path.dirname(os.path.abspath(__file__))
+        base = _SIM_DIR
     except NameError:
         base = os.getcwd()
     return os.path.join(base, "mendel_garden_display_settings.json")
@@ -18354,7 +18425,7 @@ def _save_health_hearts_enabled(enabled):
 
 def _grid_config_path():
     try:
-        base = os.path.dirname(os.path.abspath(__file__))
+        base = _SIM_DIR
     except NameError:
         base = os.getcwd()
     return os.path.join(base, "mendel_garden_config.json")
