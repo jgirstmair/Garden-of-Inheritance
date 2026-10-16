@@ -66,6 +66,32 @@ def get_lifecycle_settings(difficulty="off"):
     return LIFECYCLE_SETTINGS.get(difficulty, LIFECYCLE_SETTINGS["off"])
 
 
+# Re-flowering: when a pod has ripened, a new flower bud may form in its
+# place (1 in 5). A plant never carries more than 12 buds/flowers and 12
+# pods at the same time. Timing of such late flowers in game days:
+REFLOWER_CHANCE = 0.2
+MAX_FLOWERS_AT_ONCE = 12
+MAX_PODS_AT_ONCE = 12
+# Growth speed: every plant gets its own pace (about ±6 %, at most ±12 %),
+# so plants sown together don't all change stage on the same day. Weak
+# plants grow this much slower on top.
+GROWTH_PACE_SD = 0.06
+GROWTH_PACE_RANGE = (0.88, 1.12)
+WEAK_GROWTH_SLOWDOWN = 1.2
+# Seeds (ovules) per pod. Mendel: well-developed pods held "6-9 seeds on
+# average"; the game uses 5-8. Each pod gets its own number (see pod_ovules).
+SEEDS_PER_POD = (5, 8)
+# Realistic difficulty only — Mendel's own sowing results: of sown seeds,
+# 89-94 % gave plants that bore fruit ("einige Samen nicht keimten";
+# e.g. 102 of 108, 96 of 108, 639 of 687). Split into seeds that never
+# come up and plants that grow and flower but set no pods.
+SPROUT_FAIL_CHANCE = 0.07
+FRUIT_FAIL_CHANCE = 0.03
+LATE_BUD_DAYS = 3      # bud
+LATE_OPEN_DAYS = 4     # open flower (can be emasculated / pollinated)
+LATE_POD_DAYS = 5      # pod growing, then ripe
+
+
 @dataclass
 class Plant:
     """
@@ -108,6 +134,13 @@ class Plant:
     emasc_day: Optional[int] = None
     emasc_phase: Optional[str] = None
     selfing_frac_before_emasc: float = 0.0
+    # One entry per flower (= per possible pod), in the order they open:
+    #   {"i": 1.., "emasc": None | {"self_frac", "selfed_before", "when", "day"},
+    #    "pollen": [donor dicts], "harvested": bool, "anthers_removed": 0..10}
+    # The plant-level fields above (emasculated, pollinated, pending_cross,
+    # pods_remaining) are summaries kept in sync by sync_reproduction().
+    flowers: list = field(default_factory=list)
+    n_emasculated: int = 0
     
     # Reproductive capacity (realistic pod/ovule counts)
     pods_total: int = 0
@@ -131,6 +164,12 @@ class Plant:
     # If True the plant is constitutionally unable to reach flowering (stage 5+).
     # ~70% of weak plants are blocked; the other 30% flower but bear very few pods.
     weak_blocks_flowering: bool = False
+    # Own growth speed (1.0 = normal, >1 = slower); rolled once at planting.
+    growth_pace: float = 0.0
+    # Sowing losses (Realistic difficulty, see roll_sowing_losses)
+    sprout_fails: bool = False         # the seed never comes up
+    fruit_fails: bool = False          # grows and flowers, but sets no pods
+    failed_to_sprout: bool = False     # it happened: the seed didn't come up
 
     # Late-season stress flag (enforce/realistic mode only).
     # Set externally by _season_daily_update when the calendar enters autumn.
@@ -185,6 +224,11 @@ class Plant:
                 # 70% blocked from flowering entirely; 30% flower but low fertility
                 self.weak_blocks_flowering = (random.random() < 0.70)
 
+        # Each plant's own growth speed (see GROWTH_PACE_SD).
+        if not getattr(self, "growth_pace", 0.0):
+            lo, hi = GROWTH_PACE_RANGE
+            self.growth_pace = max(lo, min(hi, random.gauss(1.0, GROWTH_PACE_SD)))
+
         # Set up F0 lineage
         try:
             gen = str(getattr(self, "generation", "F0") or "F0")
@@ -227,7 +271,11 @@ class Plant:
                     self.pods_total = random.randint(1, 3)
                 else:
                     # Mendel-era average ~10 pods per plant (±2), clamped 5-20
-                    self.pods_total = max(5, min(20, int(round(random.gauss(10, 2)))))
+                    self.pods_total = max(5, min(MAX_PODS_AT_ONCE, int(round(random.gauss(10, 2)))))
+                    # Dwarf plants carry about half as many flowers (and pods)
+                    _h = str((self.traits or {}).get("plant_height", "tall")).lower()
+                    if _h in ("dwarf", "short"):
+                        self.pods_total = max(2, int(round(self.pods_total / 2.0)))
             
             # Pods exist by default ONLY for non-emasculated plants (selfing possible)
             if not self.emasculated:
@@ -236,8 +284,8 @@ class Plant:
                 self.pods_remaining = 0
             
             if not getattr(self, "ovules_per_pod", 0):
-                # Typical peas ~7±2 ovules per flower (clamped 5-12)
-                self.ovules_per_pod = max(5, min(12, int(round(random.gauss(7, 2)))))
+                # The plant's typical pod (its pods vary by one around it)
+                self.ovules_per_pod = random.randint(*SEEDS_PER_POD)
             
             if not getattr(self, "ovules_left", 0):
                 self.ovules_left = int(self.ovules_per_pod)
@@ -247,6 +295,204 @@ class Plant:
         except Exception:
             pass
     
+    # ------------------------------------------------------------------
+    # Per-flower reproduction
+    # ------------------------------------------------------------------
+    def ensure_flowers(self):
+        """Makes sure there is one record per flower (pods_total). Old
+        saves (plant-level emasculation / pollination) are converted: every
+        flower gets the plant's old state."""
+        n = int(getattr(self, "pods_total", 0) or 0)
+        fl = getattr(self, "flowers", None)
+        if not isinstance(fl, list):
+            fl = []
+        if len(fl) == n and all(isinstance(f, dict) for f in fl):
+            self.flowers = fl
+            if getattr(self, "fruit_fails", False):
+                for f in fl:
+                    f["no_fruit"] = True
+            return fl
+        legacy = not fl
+        fl = [f for f in fl if isinstance(f, dict)][:n]
+        while len(fl) < n:
+            fl.append({"i": len(fl) + 1, "emasc": None, "pollen": [],
+                       "harvested": False, "anthers_removed": 0})
+        for k, f in enumerate(fl):
+            f["i"] = k + 1
+            f.setdefault("emasc", None)
+            f.setdefault("pollen", [])
+            f.setdefault("harvested", False)
+            f.setdefault("anthers_removed", 0)
+        if legacy:
+            pc = getattr(self, "pending_cross", None) or {}
+            donors = list(pc.get("donors") or [])
+            if not donors and pc.get("donor_id") is not None:
+                donors = [{"donor_id": pc.get("donor_id"), "donor_genotype": {}}]
+            if getattr(self, "emasculated", False):
+                frac = float(getattr(self, "selfing_frac_before_emasc", 0.0) or 0.0)
+                n_self = self.selfed_pods_after_emasculation()
+                for k, f in enumerate(fl):
+                    f["emasc"] = {"self_frac": frac, "selfed_before": k < n_self,
+                                  "when": None, "day": getattr(self, "emasc_day", None)}
+            if donors:
+                for f in fl:
+                    f["pollen"] = [dict(d) for d in donors]
+            # pods already harvested from an old save
+            podf = [f for f in fl if self.flower_sets_pod(f)]
+            done = max(0, len(podf) - int(getattr(self, "pods_remaining", len(podf)) or 0))
+            if int(getattr(self, "stage", 0) or 0) >= 7:
+                for f in podf[:done]:
+                    f["harvested"] = True
+        self.flowers = fl
+        return fl
+
+    def pod_ovules(self, f):
+        """Seeds (ovules) in this flower's pod: the plant's typical number,
+        give or take one, within SEEDS_PER_POD. Decided once per pod."""
+        lo, hi = SEEDS_PER_POD
+        n = f.get("ovules") if isinstance(f, dict) else None
+        if not isinstance(n, int):
+            base = int(getattr(self, "ovules_per_pod", 0) or 0) or random.randint(lo, hi)
+            base = max(lo, min(hi, base))           # older saves could have up to 12
+            n = max(lo, min(hi, base + random.choice((-1, 0, 0, 1))))
+            if isinstance(f, dict):
+                f["ovules"] = n
+        return n
+
+    @staticmethod
+    def flower_sets_pod(f):
+        """A flower becomes a pod unless it was emasculated, got no pollen
+        and had not already pollinated itself before."""
+        if f.get("no_fruit"):
+            return False                  # plant that sets no fruit (Realistic)
+        e = f.get("emasc")
+        if not e:
+            return True
+        return bool(f.get("pollen")) or bool(e.get("selfed_before"))
+
+    def next_pod_flower(self, ripe_only=True):
+        """The next flower whose (ripe) pod can still be harvested, or None."""
+        for f in self.ensure_flowers():
+            if self.flower_sets_pod(f) and not f.get("harvested"):
+                if not ripe_only or self.pod_is_ripe(f):
+                    return f
+        return None
+
+    # --- re-flowering: a ripe pod may be followed by a new bud (1 in 5) ---
+    def late_flower_age(self, f):
+        """Game days since a re-flowering bud appeared (None for the plant's
+        first flowers, which follow its growth stages)."""
+        born = f.get("born")
+        if born is None:
+            return None
+        return int(getattr(self, "days_since_planting", 0) or 0) - int(born)
+
+    def late_flower_phase(self, f):
+        """'bud' / 'open' / 'pod' (growing) / 'ripe' for a re-flowering bud."""
+        a = self.late_flower_age(f)
+        if a is None:
+            return None
+        if a < LATE_BUD_DAYS:
+            return "bud"
+        if a < LATE_BUD_DAYS + LATE_OPEN_DAYS:
+            return "open"
+        if a < LATE_BUD_DAYS + LATE_OPEN_DAYS + LATE_POD_DAYS:
+            return "pod"
+        return "ripe"
+
+    def pod_is_ripe(self, f):
+        if f.get("born") is not None:
+            return self.late_flower_phase(f) == "ripe"
+        return int(getattr(self, "stage", 0) or 0) >= 7
+
+    def ripe_pods(self):
+        return sum(1 for f in self.ensure_flowers()
+                   if self.flower_sets_pod(f) and not f.get("harvested") and self.pod_is_ripe(f))
+
+    def _flowers_in_bloom(self):
+        """Buds and open flowers right now."""
+        n = 0
+        st = int(getattr(self, "stage", 0) or 0)
+        for f in self.ensure_flowers():
+            ph = self.late_flower_phase(f)
+            if ph in ("bud", "open"):
+                n += 1
+            elif ph is None and st in (4, 5):
+                n += 1
+        return n
+
+    def daily_reflower(self):
+        """Once a day: every pod that has just ripened gets one 1-in-5
+        chance to be followed by a new flower bud — never more than
+        MAX_FLOWERS_AT_ONCE buds/flowers and MAX_PODS_AT_ONCE pods at once.
+        Not on weak, ageing (senescent) or late-season plants."""
+        try:
+            if (not self.alive or int(getattr(self, "stage", 0) or 0) < 7
+                    or getattr(self, "is_weak", False) or getattr(self, "senescent", False)
+                    or getattr(self, "late_season_stress", False)):
+                return 0
+            fl = self.ensure_flowers()
+            added = 0
+            for f in list(fl):
+                if f.get("rerolled") or not self.flower_sets_pod(f) or not self.pod_is_ripe(f):
+                    continue
+                f["rerolled"] = True
+                if random.random() >= REFLOWER_CHANCE:
+                    continue
+                pods_now = sum(1 for g in fl if self.flower_sets_pod(g) and not g.get("harvested"))
+                if self._flowers_in_bloom() >= MAX_FLOWERS_AT_ONCE or pods_now >= MAX_PODS_AT_ONCE:
+                    continue
+                fl.append({"i": len(fl) + 1, "emasc": None, "pollen": [], "harvested": False,
+                           "anthers_removed": 0,
+                           "born": int(getattr(self, "days_since_planting", 0) or 0)})
+                self.pods_total = len(fl)
+                added += 1
+            if added:
+                self.fully_harvested = False
+                self.sync_reproduction()
+            return added
+        except Exception:
+            return 0
+
+    def sync_reproduction(self):
+        """Recomputes the plant-level summaries from the flowers."""
+        try:
+            fl = self.ensure_flowers()
+            emasc = [f for f in fl if f.get("emasc")]
+            self.n_emasculated = len(emasc)
+            self.emasculated = bool(fl) and len(emasc) == len(fl)   # no anthers left at all
+            if emasc:
+                self.selfing_frac_before_emasc = sum(
+                    float(f["emasc"].get("self_frac", 0) or 0) for f in emasc) / len(emasc)
+            donors = [d for f in fl for d in (f.get("pollen") or [])]
+            self.pollinated = bool(donors)
+            if donors:
+                pc = self.pending_cross if isinstance(self.pending_cross, dict) else {}
+                pc = dict(pc)
+                pc["donors"] = donors
+                pc.pop("donor_id", None)
+                self.pending_cross = pc
+            else:
+                self.pending_cross = None
+            self.pods_remaining = sum(1 for f in fl
+                                      if self.flower_sets_pod(f) and not f.get("harvested"))
+        except Exception:
+            pass
+
+    def selfed_pods_after_emasculation(self):
+        """Pods an emasculated, unpollinated plant still sets because some
+        flowers had already pollinated themselves: the selfing share of
+        all pods (at least one when the share is noticeable)."""
+        try:
+            frac = max(0.0, min(1.0, float(getattr(self, "selfing_frac_before_emasc", 0.0) or 0.0)))
+            total = int(getattr(self, "pods_total", 0) or 0)
+            n = int(round(total * frac))
+            if n == 0 and frac >= 0.05 and total > 0:
+                n = 1
+            return n
+        except Exception:
+            return 0
+
     def __hash__(self):
         """Make plants hashable by ID."""
         return self.id
@@ -255,6 +501,35 @@ class Plant:
     # Growth & Trait Revelation
     # ========================================================================
     
+    def roll_sowing_losses(self):
+        """Called once when a seed is sown. Realistic difficulty only."""
+        self.sprout_fails = False
+        self.fruit_fails = False
+        if str(getattr(self, "difficulty", "off")).lower() != "enforce":
+            return
+        r = random.random()
+        if r < SPROUT_FAIL_CHANCE:
+            self.sprout_fails = True
+        elif r < SPROUT_FAIL_CHANCE + FRUIT_FAIL_CHANCE:
+            self.fruit_fails = True
+
+    def growth_factor(self):
+        """How much longer than normal this plant takes per stage."""
+        try:
+            f = float(getattr(self, "growth_pace", 1.0) or 1.0)
+        except Exception:
+            f = 1.0
+        if getattr(self, "is_weak", False):
+            f *= WEAK_GROWTH_SLOWDOWN
+        return f
+
+    def stage_thresholds(self):
+        """Days (after germination) at which this plant reaches each
+        stage: the difficulty's thresholds stretched by its own pace."""
+        base = get_lifecycle_settings(getattr(self, "difficulty", "off"))["base_thresholds"]
+        f = self.growth_factor()
+        return [round(t * f, 2) for t in base]
+
     def advance_growth(self):
         """
         Advance plant growth stage based on age and health.
@@ -266,18 +541,17 @@ class Plant:
             return
 
         # ------------------------------------------------------------
-        # Safety invariant:
-        # Emasculated plants without pollination must not have pods
+        # Emasculated plants without pollination only keep the pods of
+        # the flowers that had already selfed before the anthers came
+        # off (emasculated too late) — fewer pods the earlier it was
+        # done; none at all for a clean, early emasculation.
+        # (Pods are only harvested at stage 7, so nothing is lost here.)
         # ------------------------------------------------------------
-        if self.emasculated and not self.pollinated:
-            self.pods_remaining = 0
-        elif self.pollinated and self.pods_remaining <= 0:
-            # Pollination restores pod development
-            self.pods_remaining = int(self.pods_total)
+        # Per flower now: pods = flowers that set seed (see sync_reproduction).
+        self.sync_reproduction()
 
         # Get difficulty-appropriate thresholds
-        settings = get_lifecycle_settings(getattr(self, 'difficulty', 'off'))
-        base_thresholds = settings["base_thresholds"]
+        base_thresholds = self.stage_thresholds()     # own pace, weak = slower
         
         # Handle germination delay for seeds
         delay = getattr(self, "germination_delay", 0)
@@ -285,6 +559,15 @@ class Plant:
         
         if self.stage == 1 and effective_age < 0:
             return  # Still underground, not germinated
+
+        # A seed that never comes up: once it should have sprouted, it's
+        # gone (the plot is cleared and the player told — see
+        # GardenApp._cleanup_old_dead_plants).
+        if (self.stage == 1 and getattr(self, "sprout_fails", False)
+                and effective_age >= base_thresholds[2]):
+            self.alive = False
+            self.failed_to_sprout = True
+            return
         
         # Weak plants that block flowering cannot advance past stage 4 (budding).
         # This mirrors Mendel's observation that weak specimens "entweder gar nicht
@@ -597,11 +880,11 @@ class Plant:
         if not self.alive:
             return (False, "Plant not alive")
         
-        if self.stage not in (4, 5):
-            return (False, "Emasculate during bud/early flowering (Stages 4–5)")
+        if self.stage < 4:
+            return (False, "No flowers yet — emasculate buds or open flowers")
         
         if self.emasculated:
-            return (False, "Already emasculated")
+            return (False, "All flowers are emasculated")
         
         return (True, "")
     
@@ -616,7 +899,7 @@ class Plant:
             return False, "Weak plant — pollen from weak specimens gives unreliable results."
 
         if self.emasculated:
-            return False, "This flower was emasculated: it cannot produce pollen anymore."
+            return False, "All flowers were emasculated: no anthers left for pollen."
         
         if not self.alive:
             return False, "Plant not alive!"

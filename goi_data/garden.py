@@ -275,6 +275,12 @@ class GardenEnvironment:
                             break  # No advancement or reached maturity
                 except Exception:
                     pass
+                # Ripe pods may be followed by new flower buds (plant.py)
+                try:
+                    if hasattr(plant, "daily_reflower"):
+                        plant.daily_reflower()
+                except Exception:
+                    pass
             else:
                 self.unregister_plant(plant)
     

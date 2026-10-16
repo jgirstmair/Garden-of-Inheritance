@@ -19,7 +19,8 @@ class EmasculationDialog(tk.Toplevel):
     Only when all 5 anthers are removed does the emasculation complete.
     """
     
-    def __init__(self, parent, flower_color="purple", callback=None, starting_removed=0):
+    def __init__(self, parent, flower_color="purple", callback=None, starting_removed=0,
+                 title=None, heading=None, cancel_text=None):
         """
         Initialize the emasculation dialog.
         
@@ -39,6 +40,11 @@ class EmasculationDialog(tk.Toplevel):
         """
         super().__init__(parent)
         
+        # Also used to collect pollen (take one or more anthers): then the
+        # window has its own title/heading and "Done" instead of "Cancel".
+        self._title_text = title or "Emasculation..."
+        self._heading_text = heading or "Remove Anthers!"
+        self._cancel_text = cancel_text or ("Done" if title else "Cancel")
         self.callback = callback
         self.flower_color = flower_color
         self.starting_removed = max(0, min(10, int(starting_removed or 0)))
@@ -60,7 +66,7 @@ class EmasculationDialog(tk.Toplevel):
         
         # Configure window
         self.withdraw()   # hidden until fully built and positioned — see below
-        self.title("Emasculation...")
+        self.title(self._title_text)
         self.transient(parent)
         self.resizable(False, False)
         
@@ -94,7 +100,7 @@ class EmasculationDialog(tk.Toplevel):
         
         title_label = tk.Label(
             instruction_frame,
-            text="Remove Anthers!",
+            text=self._heading_text,
             font=("Segoe UI", 14, "bold"),
             bg="#f0f0f0"
         )
@@ -222,7 +228,7 @@ class EmasculationDialog(tk.Toplevel):
         
         self.cancel_btn = tk.Button(
             button_frame,
-            text="Cancel",
+            text=self._cancel_text,
             command=self._on_cancel,
             font=("Segoe UI", 10),
             width=10

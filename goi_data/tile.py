@@ -174,6 +174,35 @@ def _teardrop_points(cx, bulb_cy, r, point_height, gap_half=35, steps=16):
 SELECTION_BORDER_COLOR = "#4FC3F7"
 
 
+
+_SIGN_COLOR = {}
+
+
+def _sign_color(widget):
+    """The colour of a plain window (as the Genotype Viewer has it) as
+    #rrggbb, worked out once."""
+    if "c" in _SIGN_COLOR:
+        return _SIGN_COLOR["c"]
+    col = "#f0f0f0"
+    try:
+        import tkinter as _tk
+        fr = _tk.Frame(widget)
+        name = fr.cget("background")
+        fr.destroy()
+        r, g, b = widget.winfo_rgb(name)
+        col = "#%02x%02x%02x" % (r // 256, g // 256, b // 256)
+    except Exception:
+        pass
+    _SIGN_COLOR["c"] = col
+    return col
+
+# Tags whose items are all made when the tile is built (never later), so
+# their item ids can be looked up once and remembered.
+_STATIC_TAGS = frozenset({"plant_img", "badge_group", "p_badge", "e_badge",
+                          "bang_badge", "sel_border", "water_items",
+                          "health_items", "tile_label", "bg"})
+
+
 class TileCanvas(tk.Canvas):
     """
     Visual representation of a single garden plot.
@@ -464,13 +493,43 @@ class TileCanvas(tk.Canvas):
         icon_lift = max(6, self.w // 14)
         icon_drop = int(self.configs.get("ICON_DROP", 3))
         
+        self._icon_default_xy = (self.w // 2 + self.water_thick // 2,
+                                 self.w // 2 - (self.health_thick // 2) - icon_lift + icon_drop)
         self.img_item = self.create_image(
-            self.w // 2 + self.water_thick // 2,
-            self.w // 2 - (self.health_thick // 2) - icon_lift + icon_drop,
+            *self._icon_default_xy,
             image=None,
             tags="plant_img"
         )
     
+    def _place_plant_icon(self):
+        """Drawn ("Grown") plants stand on the health bar / hearts: their
+        picture is anchored at the bottom, so tall plants never grow out of
+        the top of the plot. Classic pictures keep their centred spot."""
+        try:
+            key = getattr(self.plant, "_icon_key", None) if self.plant is not None else None
+            grown = isinstance(key, tuple) and bool(key) and key[0] == "grown"
+            x0, y0 = self._icon_default_xy
+            if grown:
+                hearts = bool(getattr(self.app, "_health_hearts_enabled", False))
+                top = getattr(self, "_hearts_top_y", None) if hearts else None
+                base_y = (top if top is not None else self.hb_y_start) + 3
+                if hearts and top is not None:
+                    base_y = top + 3
+                self.itemconfig(self.img_item, anchor="s")
+                self.coords(self.img_item, x0, base_y)
+                try:
+                    ph = int(self.itemcget(self.img_item, "image") and
+                             self.tk.call("image", "height", self.itemcget(self.img_item, "image")))
+                except Exception:
+                    ph = 64
+                self._icon_topleft = (x0 - ph // 2, base_y - ph)
+            else:
+                self.itemconfig(self.img_item, anchor="center")
+                self.coords(self.img_item, x0, y0)
+                self._icon_topleft = None
+        except Exception:
+            pass
+
     def _create_label(self):
         """Create the status label (plant ID or dead)."""
         label_gap = max(6, self.health_thick // 2)
@@ -506,12 +565,19 @@ class TileCanvas(tk.Canvas):
         self._label_y_hearts = label_y_hearts
         self._label_y = label_y_normal
 
+        # Plant number: a small sign in the plot's top-right corner, in
+        # the Genotype Viewer's window colour with black text (see
+        # _id_sign_sync, which sizes the sign to the text).
+        self.label_bg = self.create_rectangle(
+            0, 0, 1, 1, fill=_sign_color(self), outline="#6f6a60", width=1,
+            state="hidden", tags=("tile_label",))
         self.label_item = self.create_text(
-            self.w // 2 + self.water_thick // 2,
-            label_y_normal,
+            self.w - 5, 2,
+            anchor="ne",
             text="",
-            font=("Segoe UI", 9, "bold"),
-            fill="#ffffff",
+            font=("Segoe UI", 10, "bold"),
+            fill="#000000",
+            state="hidden",
             tags=("tile_label",)
         )
 
@@ -765,6 +831,19 @@ class TileCanvas(tk.Canvas):
 
         self.bind("<Enter>", _show_hover_tip, add="+")
         self.bind("<Leave>", _hide_hover_tip, add="+")
+
+        # The plant's number shows only while the mouse is over the plot
+        # (or when its pollen is ready: "#89!").
+        def _hover_on(event=None):
+            self._mouse_over = True
+            self._sync_label_visibility()
+
+        def _hover_off(event=None):
+            self._mouse_over = False
+            self._sync_label_visibility()
+
+        self.bind("<Enter>", _hover_on, add="+")
+        self.bind("<Leave>", _hover_off, add="+")
         self.bind("<ButtonPress>", _hide_hover_tip, add="+")
     
     # ========================================================================
@@ -789,7 +868,7 @@ class TileCanvas(tk.Canvas):
             p.__dict__.get('water',  0)  // 5,
             id(p.__dict__.get('img_obj', None)),   # icon object identity
             bool(p.__dict__.get('pending_cross', False)),
-            bool(p.__dict__.get('emasculated',   False)),
+            int(p.__dict__.get('n_emasculated', 0) or 0) > 0 or bool(p.__dict__.get('emasculated', False)),
             bool(p.__dict__.get('anthers_available_today', False)),
             self.selected,
         )
@@ -947,6 +1026,188 @@ class TileCanvas(tk.Canvas):
         except Exception:
             pass
 
+    # ------------------------------------------------------------------
+    # Skip canvas calls that change nothing. Every Tk call costs time, and
+    # a tile re-sets its bars, badges and picture on each refresh even when
+    # they look the same. The tile remembers what it last set per item and
+    # only talks to Tk when a value really changes.
+    # ------------------------------------------------------------------
+    def _ids_of(self, tag):
+        if isinstance(tag, int):
+            return (tag,)
+        if isinstance(tag, str):
+            if tag.isdigit():
+                return (int(tag),)
+            if tag in _STATIC_TAGS:
+                m = self.__dict__.get("_tag_ids")
+                if m is None:
+                    m = self.__dict__["_tag_ids"] = {}
+                ids = m.get(tag)
+                if ids is None:
+                    ids = m[tag] = tuple(tk.Canvas.find_withtag(self, tag))
+                return ids
+        return None
+
+    def _cfg_cache(self):
+        c = self.__dict__.get("_icfg")
+        if c is None:
+            c = self.__dict__["_icfg"] = {}
+        return c
+
+    def itemconfigure(self, tagOrId, cnf=None, **kw):
+        if cnf is not None:
+            if not isinstance(cnf, dict):            # option query
+                return tk.Canvas.itemconfigure(self, tagOrId, cnf, **kw)
+            kw = dict(cnf, **kw)
+        if not kw:
+            return tk.Canvas.itemconfigure(self, tagOrId)
+        cache = self._cfg_cache()
+        ids = self._ids_of(tagOrId)
+        batch = self.__dict__.get("_batch")
+        if not ids:
+            if batch:
+                self._batch_flush(keep=True)
+            cache.clear()                            # unknown tag: forget all
+            return tk.Canvas.itemconfigure(self, tagOrId, **kw)
+        if batch is not None:
+            # inside render(): only the last value per item counts
+            for k, v in kw.items():
+                for i in ids:
+                    batch[(i, k)] = v
+            return None
+        changed = {}
+        for k, v in kw.items():
+            for i in ids:
+                old = cache.get((i, k), cache)       # cache itself = "not known"
+                if old is not v and (old is cache or old != v):
+                    changed[k] = v
+                    break
+        if not changed:
+            return None
+        tk.Canvas.itemconfigure(self, tagOrId, **changed)
+        for k, v in changed.items():
+            for i in ids:
+                cache[(i, k)] = v
+        if len(cache) > 4000:
+            cache.clear()
+        return None
+
+    itemconfig = itemconfigure
+
+    def _batch_flush(self, keep=False):
+        """Sends the collected changes to Tk — one call per item, and only
+        for values that differ from what the item already shows."""
+        b = self.__dict__.pop("_batch", None)
+        if keep:
+            self.__dict__["_batch"] = {}
+        if not b:
+            return
+        cache = self._cfg_cache()
+        per_id = {}
+        for (i, k), v in b.items():
+            old = cache.get((i, k), cache)
+            if old is v or (old is not cache and old == v):
+                continue
+            per_id.setdefault(i, {})[k] = v
+        for i, kw in per_id.items():
+            try:
+                tk.Canvas.itemconfigure(self, i, **kw)
+            except Exception:
+                continue
+            for k, v in kw.items():
+                cache[(i, k)] = v
+        if len(cache) > 4000:
+            cache.clear()
+
+    def bbox(self, *args):
+        if self.__dict__.get("_batch"):
+            self._batch_flush(keep=True)
+        return tk.Canvas.bbox(self, *args)
+
+    def itemcget(self, tagOrId, option):
+        b = self.__dict__.get("_batch")
+        if b and option in ("text", "state") and isinstance(tagOrId, int):
+            v = b.get((tagOrId, option), self)
+            if v is not self:
+                return "" if v is None else str(v)
+        if b and option not in ("text", "state"):
+            self._batch_flush(keep=True)
+        if option in ("text", "state") and isinstance(tagOrId, int):
+            v = self._cfg_cache().get((tagOrId, option), self)
+            if v is not self:
+                return "" if v is None else str(v)
+        return tk.Canvas.itemcget(self, tagOrId, option)
+
+    def coords(self, tagOrId, *args):
+        if not args:
+            return tk.Canvas.coords(self, tagOrId)
+        cc = self.__dict__.get("_ccache")
+        if cc is None:
+            cc = self.__dict__["_ccache"] = {}
+        ids = self._ids_of(tagOrId)
+        try:
+            flat = args[0] if (len(args) == 1 and isinstance(args[0], (list, tuple))) else args
+            key = tuple(round(float(x), 2) for x in flat)
+        except Exception:
+            key = None
+        if not ids or key is None:
+            cc.clear()
+            return tk.Canvas.coords(self, tagOrId, *args)
+        if all(cc.get(i) == key for i in ids):
+            return None
+        r = tk.Canvas.coords(self, tagOrId, *args)
+        for i in ids:
+            cc[i] = key
+        if len(cc) > 2000:
+            cc.clear()
+        return r
+
+    def move(self, *args):
+        cc = self.__dict__.get("_ccache")
+        if cc:
+            ids = self._ids_of(args[0]) if args else None
+            if ids:
+                for i in ids:
+                    cc.pop(i, None)
+            else:
+                cc.clear()
+        return tk.Canvas.move(self, *args)
+
+    def scale(self, *args):
+        self.__dict__.pop("_ccache", None)
+        return tk.Canvas.scale(self, *args)
+
+    @staticmethod
+    def _touches_static(tags):
+        if tags is None:
+            return False
+        if isinstance(tags, str):
+            tags = (tags,)
+        try:
+            return any(str(t) in _STATIC_TAGS or str(t) == "all" for t in tags)
+        except Exception:
+            return True
+
+    def _create(self, itemType, args, kw):
+        # Only items with one of the tile's fixed tags change those lookups
+        # (note flags, previews, insects... have their own tags).
+        if self._touches_static(kw.get("tags") if kw else None):
+            self.__dict__.pop("_tag_ids", None)
+        return tk.Canvas._create(self, itemType, args, kw)
+
+    def delete(self, *args):
+        if any(isinstance(a, int) or str(a).isdigit() or self._touches_static(a) for a in args):
+            self.__dict__.pop("_tag_ids", None)
+        return tk.Canvas.delete(self, *args)
+
+    def addtag(self, *args):
+        self.__dict__.pop("_tag_ids", None)
+        return tk.Canvas.addtag(self, *args)
+
+    def dtag(self, *args):
+        self.__dict__.pop("_tag_ids", None)
+        return tk.Canvas.dtag(self, *args)
+
     def render(self):
         """
         Render the tile based on current plant state.
@@ -955,6 +1216,15 @@ class TileCanvas(tk.Canvas):
         Skips all tkinter calls when nothing has changed — eliminates the
         majority of render work during stable simulation.
         """
+        if self.__dict__.get("_batch") is not None:
+            return self._render_inner()
+        self.__dict__["_batch"] = {}
+        try:
+            return self._render_inner()
+        finally:
+            self._batch_flush()
+
+    def _render_inner(self):
         # Cheap and self-contained (depends only on this tile's own
         # state, not a neighbor's) — left unconditional here rather than
         # moved into the dirty-flag-gated section below, since it's
@@ -1058,6 +1328,7 @@ class TileCanvas(tk.Canvas):
         set_special_object), so its true vertical center isn't self.w."""
         try:
             self.itemconfig(self.label_item, text="", state="hidden")
+            self._id_sign_sync()
         except Exception:
             pass
         img = getattr(self, '_special_object_img', None)
@@ -1078,6 +1349,7 @@ class TileCanvas(tk.Canvas):
         """Render an empty plot — label only, no icon (seedling is the first stage)."""
         try:
             self.itemconfig(self.label_item, text="", state="hidden")
+            self._id_sign_sync()
         except Exception:
             pass
         try:
@@ -1089,13 +1361,23 @@ class TileCanvas(tk.Canvas):
         """Render a dead plant."""
         try:
             self.itemconfig(self.label_item, text="dead", state="normal")
+            self._id_sign_sync()
         except Exception:
             pass
         
-        if self.dead_img is not None:
+        # No cross (dead.png) any more: drawn plant styles show the plant's
+        # dry remains lying on the ground; the classic pictures show nothing.
+        img = None
+        try:
+            fn = getattr(self.app, "_dead_plant_photo", None)
+            img = fn(self.plant) if fn is not None else None
+        except Exception:
+            img = None
+        if img is not None:
             try:
                 self.itemconfig("plant_img", state="normal")
-                self.itemconfig(self.img_item, image=self.dead_img)
+                self.itemconfig(self.img_item, image=img)
+                self._place_plant_icon()          # stands where the plant stood
             except Exception:
                 pass
         else:
@@ -1104,6 +1386,49 @@ class TileCanvas(tk.Canvas):
             except Exception:
                 pass
     
+    def _sync_label_visibility(self):
+        """Plant number: only on hover, unless it carries the pollen "!"
+        (or the game wants all numbers shown)."""
+        try:
+            if self.plant is None or not getattr(self.plant, "alive", True):
+                self._id_sign_sync()
+                return
+            text = str(self.itemcget(self.label_item, "text"))
+            always = bool(getattr(self.app, "_always_show_plant_ids", False))
+            show = always or getattr(self, "_mouse_over", False) or text.endswith("!")
+            self.itemconfig(self.label_item, state=("normal" if show else "hidden"))
+        except Exception:
+            pass
+        self._id_sign_sync()
+
+    def _id_sign_sync(self):
+        """Sizes the corner sign to the plant number and shows / hides it
+        with the number. While it shows, the P / ! badge moves just left
+        of it so both stay readable."""
+        try:
+            text = str(self.itemcget(self.label_item, "text"))
+            shown = (self.itemcget(self.label_item, "state") != "hidden") and bool(text)
+            self.coords(self.label_item, self.w - 5, 2)
+            p_target = self.w - getattr(self, "p_inset_right", 2) - getattr(self, "badge_size", 18)
+            if shown:
+                x1, y1, x2, y2 = self.bbox(self.label_item)
+                left = x1 - 3
+                self.coords(self.label_bg, left, -1, self.w + 1, y2 + 1)
+                self.itemconfig(self.label_bg, state="normal")
+                self.tag_raise("tile_label")
+                p_target = min(p_target, left - 2 - getattr(self, "badge_size", 18))
+            else:
+                self.itemconfig(self.label_bg, state="hidden")
+            cur = getattr(self, "_p_badge_x", None)
+            if cur is None:
+                cur = self.w - getattr(self, "p_inset_right", 2) - getattr(self, "badge_size", 18)
+            if p_target != cur:
+                self.move("p_badge", p_target - cur, 0)
+                self.move("bang_badge", p_target - cur, 0)
+            self._p_badge_x = p_target
+        except Exception:
+            pass
+
     def _render_alive(self):
         """Render a living plant with all UI elements."""
         # Label
@@ -1145,13 +1470,7 @@ class TileCanvas(tk.Canvas):
             # Plant-ID label rides along: raised only while hearts are the
             # active display (so it clears their top edge), otherwise at
             # its normal, lower spot.
-            try:
-                label_x = self.w // 2 + self.water_thick // 2
-                label_y = self._label_y_hearts if health_as_hearts else self._label_y_normal
-                self.coords(self.label_item, label_x, label_y)
-                self._label_y = label_y
-            except Exception:
-                pass
+            # (the plant number now sits on its corner sign — _id_sign_sync)
 
             self.itemconfig("plant_img",   state="normal")
         except Exception:
@@ -1180,6 +1499,7 @@ class TileCanvas(tk.Canvas):
                 self.itemconfig(self.img_item, image="")
         except Exception:
             pass
+        self._place_plant_icon()
     
     def _update_badges(self):
         """Update visibility of status badges."""
@@ -1221,6 +1541,7 @@ class TileCanvas(tk.Canvas):
                 self.itemconfig(self.label_item, text=(f"#{pid}!" if show_bang else f"#{pid}"))
             except Exception:
                 pass
+            self._sync_label_visibility()
         except Exception:
             try:
                 self.itemconfig("bang_badge", state="hidden")
@@ -1229,7 +1550,9 @@ class TileCanvas(tk.Canvas):
         
         # E badge: emasculated
         try:
-            is_emasculated = getattr(self.plant, "emasculated", False)
+            # shown as soon as any flower of the plant is emasculated
+            is_emasculated = (int(getattr(self.plant, "n_emasculated", 0) or 0) > 0
+                              or bool(getattr(self.plant, "emasculated", False)))
             self.itemconfig("e_badge", state="normal" if is_emasculated else "hidden")
         except Exception:
             pass

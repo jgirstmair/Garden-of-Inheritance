@@ -1085,6 +1085,9 @@ class WildlifeManager:
             pw, ph = pil.size
             icon_x0 = icx - pw // 2
             icon_y0 = icy - ph // 2
+            tl = getattr(tile, "_icon_topleft", None)     # bottom-anchored drawn plants
+            if tl:
+                icon_x0, icon_y0 = tl
 
             spots = _scan_spots(pil, pods_only)
 
@@ -1137,6 +1140,10 @@ class WildlifeManager:
             plant = getattr(tile, "plant", None)
             if plant is None:
                 return None
+            grown = getattr(plant, "_grown_pil", None)     # drawn ("Grown") plant style
+            key = getattr(plant, "_icon_key", None)
+            if grown is not None and isinstance(key, tuple) and key and key[0] == "grown":
+                return grown
             from icon_loader import stage_icon_path_for_plant, cached_path_exists
             path = stage_icon_path_for_plant(plant)
             if path and cached_path_exists(path):

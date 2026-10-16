@@ -129,7 +129,10 @@ def stage_icon_path_for_plant(plant) -> str:
     # Stage 3: Split into early/late leafy without creating new stage
     if stage == 3:
         try:
-            base_thresholds = [0, 0, 4, 8, 13, 18, 25, 30]
+            try:
+                base_thresholds = plant.stage_thresholds()   # the plant's own pace
+            except Exception:
+                base_thresholds = [0, 0, 4, 8, 13, 18, 25, 30]
             health = int(getattr(plant, "health", 100))
             health_factor = 0 if health > 70 else (1 if health > 40 else 2)
             
