@@ -237,12 +237,29 @@ class MendelianLawWizard(tk.Toplevel):
 
         def _upd(event=None):
             try:
+                if not label.winfo_exists():
+                    return
                 w = src.winfo_width()
-                if w > 1:
+                if use_window:
+                    # the window may not be laid out yet: use the widest
+                    # size we know (never wrap narrower than the screen allows)
+                    w = max(w, src.winfo_reqwidth())
+                    if w <= 1:
+                        w = min(900, label.winfo_screenwidth())
+                    # Text that fits on its lines is never wrapped at all
+                    # (wraplength 0) — only a truly too-long line wraps.
+                    import tkinter.font as _tkf
+                    f = _tkf.Font(font=label.cget("font"))
+                    longest = max((f.measure(ln) for ln in str(label.cget("text")).split("\n")),
+                                  default=0)
+                    avail = max(min_w, w - margin)
+                    label.configure(wraplength=0 if longest <= avail else avail)
+                elif w > 1:
                     label.configure(wraplength=max(min_w, w - margin))
             except Exception:
                 pass
         src.bind("<Configure>", _upd, add="+")
+        _upd()
         label.after(50, _upd)
 
     def _show_page(self, n):
@@ -1279,6 +1296,7 @@ class MendelianLawWizard(tk.Toplevel):
                         setattr(app, f"epistasis_{epi_trait}_first_plant", pid)
                     try:
                         app._toast(f"{epi['law_name']} unlocked! ({epi['ratio_str']})", level="info")
+                        app._ring_bell()
                     except Exception:
                         pass
                     trait_label = dict((k, lbl) for k, lbl, *_ in self.TRAITS).get(epi_trait, epi_trait)
@@ -1481,6 +1499,7 @@ class MendelianLawWizard(tk.Toplevel):
 
         try:
             app._toast(f"{law_name} unlocked!", level="info")
+            app._ring_bell()
         except Exception:
             pass
         try:
@@ -1493,8 +1512,9 @@ class MendelianLawWizard(tk.Toplevel):
                                              self._sels[0]["dominant"][1])
         rec_val_str = self.VALUE_LABELS.get(self._sels[0]["recessive"][1],
                                              self._sels[0]["recessive"][1])
+        # (the labels carry a line break for the two-line buttons)
         trait_name  = dict((k, lbl) for k, lbl, *_ in self.TRAITS).get(
-            self._sels[0]["dominant"][0], self._sels[0]["dominant"][0])
+            self._sels[0]["dominant"][0], self._sels[0]["dominant"][0]).replace("\n", " ")
 
         if law_num == 2:
             # Update ratio UI to the player-chosen trait, not just the first detected one
@@ -1515,7 +1535,7 @@ class MendelianLawWizard(tk.Toplevel):
             rec2_val_str = self.VALUE_LABELS.get(self._sels[1]["recessive"][1],
                                                   self._sels[1]["recessive"][1])
             trait_name2  = dict((k, lbl) for k, lbl, *_ in self.TRAITS).get(
-                self._sels[1]["dominant"][0], self._sels[1]["dominant"][0])
+                self._sels[1]["dominant"][0], self._sels[1]["dominant"][0]).replace("\n", " ")
             extra = (f"\n\nTrait 1: {dom_val_str} > {rec_val_str}  ({trait_name})"
                      f"\nTrait 2: {dom2_val_str} > {rec2_val_str}  ({trait_name2})")
 
@@ -1572,7 +1592,7 @@ class MendelianLawWizard(tk.Toplevel):
 
         _msg_lbl = tk.Label(panel, text=message,
                             font=self._p1size(self.FONT_BOLD), bg=color, fg=fg,
-                            wraplength=520, justify="left")
+                            wraplength=0, justify="left")
         _msg_lbl.pack(anchor="w", padx=4)
         # Use the whole banner width — wrap only if it truly doesn't fit.
         self._autowrap(_msg_lbl, panel, margin=90, use_window=True)

@@ -10,6 +10,44 @@ from tkinter import Canvas
 from PIL import Image, ImageTk
 import math
 
+# Same look as the plant inspection window: cream background, dark brown
+# text, Segoe UI, flat buttons (Labels, so the colours also show on a Mac).
+BG = "#f5f0e6"
+INK = "#3b2a1a"
+MUTED = "#6b5a44"
+OK_GREEN = "#2e7d32"
+CRIMSON = "#B0102C"
+BTN_BG = "#e0dccf"
+BTN_HOVER = "#d0c8b7"
+
+
+class _FlatButton(tk.Label):
+    """A flat button like the inspector's (configure(command=...) works)."""
+
+    def __init__(self, parent, text="", command=None, **kw):
+        kw.setdefault("font", ("Segoe UI", 14, "bold"))
+        kw.setdefault("bg", BTN_BG)
+        kw.setdefault("fg", "#333333")
+        kw.setdefault("padx", 14)
+        kw.setdefault("pady", 4)
+        kw.setdefault("cursor", "hand2")
+        super().__init__(parent, text=text, **kw)
+        self._command = command
+        self.bind("<Enter>", lambda e: tk.Label.configure(self, bg=BTN_HOVER))
+        self.bind("<Leave>", lambda e: tk.Label.configure(self, bg=BTN_BG))
+        self.bind("<ButtonRelease-1>", self._click)
+
+    def _click(self, _e=None):
+        if callable(self._command):
+            self._command()
+
+    def configure(self, cnf=None, **kw):
+        if "command" in kw:
+            self._command = kw.pop("command")
+        return tk.Label.configure(self, cnf, **kw)
+
+    config = configure
+
 
 class PollinationDialog(tk.Toplevel):
     """
@@ -31,12 +69,19 @@ class PollinationDialog(tk.Toplevel):
             callback: Function to call when pollination is complete (success: bool)
         """
         super().__init__(parent)
+        self.configure(bg=BG)
         
         self.callback = callback
         self.flower_color = flower_color
         self.is_emasculated = is_emasculated
         self.pollen_source = pollen_source
         self.completed = False
+        # anthers of an unemasculated flower brushed by the brush (their
+        # pollen goes onto it): before reaching the stigma / in total
+        self._anthers = []
+        self._touched = set()
+        self.anthers_touched_before = 0
+        self.anthers_touched = 0
         
         # Select correct flower image based on emasculation status
         if is_emasculated:
@@ -92,14 +137,14 @@ class PollinationDialog(tk.Toplevel):
     def _create_widgets(self):
         """Create the dialog widgets."""
         # Instructions
-        instruction_frame = tk.Frame(self, bg="#f0f0f0")
+        instruction_frame = tk.Frame(self, bg=BG)
         instruction_frame.pack(fill="x", padx=10, pady=10)
         
         title_label = tk.Label(
             instruction_frame,
             text="Apply Pollen!",
-            font=("Segoe UI", 14, "bold"),
-            bg="#f0f0f0"
+            font=("Segoe UI", 16, "bold"),
+            bg=BG, fg=INK
         )
         title_label.pack(pady=(0, 5))
         
@@ -108,24 +153,24 @@ class PollinationDialog(tk.Toplevel):
             source_label = tk.Label(
                 instruction_frame,
                 text=f"Pollen from: {self.pollen_source}",
-                font=("Segoe UI", 10),
-                bg="#f0f0f0",
-                fg="#666666"
+                font=("Segoe UI", 12),
+                bg=BG,
+                fg=MUTED
             )
             source_label.pack()
         
         # Status label
         self.status_label = tk.Label(
             instruction_frame,
-            text="Click the stigma to pollinate",
-            font=("Segoe UI", 11),
-            bg="#f0f0f0",
-            fg="#1976d2"
+            text="Brush over the stigma to pollinate",
+            font=("Segoe UI", 14, "bold"),
+            bg=BG,
+            fg=INK
         )
         self.status_label.pack(pady=(5, 0))
         
         # Canvas for flower image
-        canvas_frame = tk.Frame(self)
+        canvas_frame = tk.Frame(self, bg=BG)
         canvas_frame.pack(padx=20, pady=10)
         
         # Load flower image
@@ -169,16 +214,13 @@ class PollinationDialog(tk.Toplevel):
         )
         self.canvas.pack()
         
-        # Load custom anther cursor
+        # The camel-hair brush (pollinate_64.png), its tip yellow with the
+        # pollen it carries — its tip sits exactly on the mouse pointer.
         try:
-            cursor_img = Image.open(self.anther_cursor_path)
-            # Scale to 0.5: 280x70 -> 140x35
-            cursor_width = 140
-            cursor_height = 35
-            cursor_img = cursor_img.resize((cursor_width, cursor_height), Image.Resampling.LANCZOS)
+            from emasculation_dialog import brush_image, BRUSH_PX
+            cursor_img, self._brush_tip = brush_image(BRUSH_PX, 1.0)
             self.anther_cursor = ImageTk.PhotoImage(cursor_img)
             self.has_custom_cursor = True
-            print(f"Loaded custom anther cursor at {cursor_width}x{cursor_height}")
         except Exception as e:
             print(f"Could not load custom cursor: {e}, using hand2 instead")
             self.has_custom_cursor = False
@@ -197,6 +239,7 @@ class PollinationDialog(tk.Toplevel):
             self.cursor_icon = self.canvas.create_image(
                 -100, -100,
                 image=self.anther_cursor,
+                anchor="nw",
                 tags="cursor_icon"
             )
             self.canvas.tag_raise(self.cursor_icon)
@@ -218,28 +261,26 @@ class PollinationDialog(tk.Toplevel):
         self.canvas.config(cursor="crosshair")
         
         # Success message frame
-        self.success_frame = tk.Frame(self, bg="#e8f5e9", height=0)
+        self.success_frame = tk.Frame(self, bg=BG, height=0)
         self.success_frame.pack(fill="x", padx=10, pady=(5, 0))
         
         self.success_label = tk.Label(
             self.success_frame,
             text="",
-            font=("Segoe UI", 10),
-            fg="#2e7d32",
-            bg="#e8f5e9",
+            font=("Segoe UI", 14, "bold"),
+            fg=OK_GREEN,
+            bg=BG,
             pady=5
         )
         
         # Button frame
-        button_frame = tk.Frame(self)
+        button_frame = tk.Frame(self, bg=BG)
         button_frame.pack(fill="x", padx=10, pady=(0, 10))
         
-        self.cancel_btn = tk.Button(
+        self.cancel_btn = _FlatButton(
             button_frame,
             text="Cancel",
             command=self._on_cancel,
-            font=("Segoe UI", 10),
-            width=10
         )
         self.cancel_btn.pack(side="right", padx=5)
     
@@ -330,7 +371,7 @@ class PollinationDialog(tk.Toplevel):
             )
             
             # Create anther body
-            self.canvas.create_oval(
+            _body = self.canvas.create_oval(
                 x - anther_width // 2,
                 y - anther_height // 2,
                 x + anther_width // 2,
@@ -343,13 +384,15 @@ class PollinationDialog(tk.Toplevel):
             
             # Add pollen dot
             pollen_size = max(3, int(4 * self.scale_factor))
-            self.canvas.create_oval(
+            _dot = self.canvas.create_oval(
                 x - pollen_size, y - pollen_size,
                 x + pollen_size, y + pollen_size,
                 fill="#ffeb3b",
                 outline="",
                 tags="anther_visual"
             )
+            self._anthers.append({"x": x, "y": y, "body": _body, "dot": _dot,
+                                  "r": max(anther_width, anther_height) * 0.45})
     
     def _create_stigma_target(self):
         """Create the invisible clickable stigma target area."""
@@ -389,6 +432,28 @@ class PollinationDialog(tk.Toplevel):
         if self.completed:
             return
         
+        # The brush follows the mouse everywhere: on an unemasculated
+        # flower it may brush the anther tips on its way (their pollen
+        # then sticks to it as well).
+        if self.has_custom_cursor and self.cursor_icon:
+            tx, ty = getattr(self, "_brush_tip", (0, 0))
+            self.canvas.coords(self.cursor_icon, event.x - tx, event.y - ty)
+            self.canvas.itemconfig(self.cursor_icon, state='normal')
+            self.canvas.tag_raise(self.cursor_icon)
+            self.canvas.config(cursor="none")
+        for i, a in enumerate(self._anthers):
+            if i in self._touched:
+                continue
+            if math.hypot(event.x - a["x"], event.y - a["y"]) < a["r"]:
+                self._touched.add(i)
+                self.anthers_touched = len(self._touched)
+                if not getattr(self, "_pollen_applied", False):
+                    self.anthers_touched_before = self.anthers_touched
+                try:
+                    self.canvas.itemconfig(a["dot"], fill="#fff4c2")
+                except Exception:
+                    pass
+
         # Check if hovering over stigma
         dx = event.x - self.stigma_scaled_x
         dy = event.y - self.stigma_scaled_y
@@ -400,18 +465,19 @@ class PollinationDialog(tk.Toplevel):
             
             # Show custom cursor
             if self.has_custom_cursor and self.cursor_icon:
-                self.canvas.coords(self.cursor_icon, event.x, event.y)
+                tx, ty = getattr(self, "_brush_tip", (0, 0))
+                self.canvas.coords(self.cursor_icon, event.x - tx, event.y - ty)
                 self.canvas.itemconfig(self.cursor_icon, state='normal')
+                self.canvas.tag_raise(self.cursor_icon)
                 self.canvas.config(cursor="none")
             else:
                 self.canvas.config(cursor="hand2")
+            # moving the brush tip onto the stigma is enough (no click needed)
+            if distance < self.click_tolerance * 0.7:
+                self._apply_pollen()
         else:
-            # Not hovering - stigma indicator stays hidden
-            
-            if self.has_custom_cursor and self.cursor_icon:
-                self.canvas.itemconfig(self.cursor_icon, state='hidden')
-                self.canvas.config(cursor="crosshair")
-            else:
+            # Not hovering over the stigma (the brush stays visible)
+            if not (self.has_custom_cursor and self.cursor_icon):
                 self.canvas.config(cursor="crosshair")
     
     def _on_canvas_click(self, event):
@@ -429,7 +495,10 @@ class PollinationDialog(tk.Toplevel):
             print(f"Stigma clicked at ({event.x}, {event.y})")
     
     def _apply_pollen(self):
-        """Apply pollen to the stigma."""
+        """Apply pollen to the stigma (once — by brushing over it or a click)."""
+        if getattr(self, "_pollen_applied", False):
+            return
+        self._pollen_applied = True
         # Stigma indicator remains hidden - no visual feedback on the indicator itself
         # Visual feedback comes from status message only
         

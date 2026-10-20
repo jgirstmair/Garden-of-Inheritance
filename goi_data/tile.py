@@ -584,7 +584,7 @@ class TileCanvas(tk.Canvas):
     def _create_badges(self):
         """Create status badges (P, E, !) in corners."""
         self.badge_size = 18
-        self.badge_y = 4
+        self.badge_y = 1          # the very top of the plot
         self.p_inset_right = 2
         self.e_overhang_left = 0
         
@@ -605,6 +605,8 @@ class TileCanvas(tk.Canvas):
         e_y = self.badge_y
         self._draw_badge(e_x, e_y, "E", bg="#BBDEFB", fg="#0D47A1", tag="e_badge")
         self._e_badge_x = e_x
+        self._p_badge_x = p_x
+        self._bang_badge_x = p_x
     
     def _draw_badge(self, x, y, char, bg, fg, tag):
         """
@@ -653,6 +655,31 @@ class TileCanvas(tk.Canvas):
             )
         except Exception:
             pass
+
+    def clear_special_object(self):
+        """Removes a beehive / measuring station from this tile again (it
+        is moved elsewhere — see GardenApp._ensure_special_plots_free):
+        back to a normal, single-square plot."""
+        was_station = getattr(self, 'special_object', None) == 'measuring_station'
+        self.special_object = None
+        self._special_object_img = None
+        if was_station:
+            try:
+                self.h = self.w
+                self.config(height=self.h)
+                self.coords(self.bg_rect, 0, 0, self.w, self.h)
+                self._bg_cache_key = None
+                inset = 1
+                self.coords(self.sel_line_left, inset, 0, inset, self.h)
+                self.coords(self.sel_line_right, self.w - inset, 0, self.w - inset, self.h)
+                self.coords(self.sel_line_bottom, 0, self.h - inset, self.w, self.h - inset)
+            except Exception:
+                pass
+        try:
+            self.itemconfig("plant_img", state="hidden")
+        except Exception:
+            pass
+        self._render_state = None
 
     def set_special_object(self, kind):
         """
@@ -1359,9 +1386,11 @@ class TileCanvas(tk.Canvas):
     
     def _render_dead(self):
         """Render a dead plant."""
+        # "dead" takes the plant number's place on the corner sign — and,
+        # like the number, only shows while the mouse is over the plot
         try:
-            self.itemconfig(self.label_item, text="dead", state="normal")
-            self._id_sign_sync()
+            self.itemconfig(self.label_item, text="dead")
+            self._sync_label_visibility()
         except Exception:
             pass
         
@@ -1387,10 +1416,10 @@ class TileCanvas(tk.Canvas):
                 pass
     
     def _sync_label_visibility(self):
-        """Plant number: only on hover, unless it carries the pollen "!"
-        (or the game wants all numbers shown)."""
+        """Plant number (or "dead"): only on hover, unless it carries the
+        pollen "!" (or the game wants all numbers shown)."""
         try:
-            if self.plant is None or not getattr(self.plant, "alive", True):
+            if self.plant is None:
                 self._id_sign_sync()
                 return
             text = str(self.itemcget(self.label_item, "text"))
@@ -1403,29 +1432,20 @@ class TileCanvas(tk.Canvas):
 
     def _id_sign_sync(self):
         """Sizes the corner sign to the plant number and shows / hides it
-        with the number. While it shows, the P / ! badge moves just left
-        of it so both stay readable."""
+        with the number. (The E and P badges sit in the top-left corner,
+        away from it — see _place_badges.)"""
         try:
             text = str(self.itemcget(self.label_item, "text"))
             shown = (self.itemcget(self.label_item, "state") != "hidden") and bool(text)
             self.coords(self.label_item, self.w - 5, 2)
-            p_target = self.w - getattr(self, "p_inset_right", 2) - getattr(self, "badge_size", 18)
             if shown:
                 x1, y1, x2, y2 = self.bbox(self.label_item)
                 left = x1 - 3
                 self.coords(self.label_bg, left, -1, self.w + 1, y2 + 1)
                 self.itemconfig(self.label_bg, state="normal")
                 self.tag_raise("tile_label")
-                p_target = min(p_target, left - 2 - getattr(self, "badge_size", 18))
             else:
                 self.itemconfig(self.label_bg, state="hidden")
-            cur = getattr(self, "_p_badge_x", None)
-            if cur is None:
-                cur = self.w - getattr(self, "p_inset_right", 2) - getattr(self, "badge_size", 18)
-            if p_target != cur:
-                self.move("p_badge", p_target - cur, 0)
-                self.move("bang_badge", p_target - cur, 0)
-            self._p_badge_x = p_target
         except Exception:
             pass
 
@@ -1451,12 +1471,7 @@ class TileCanvas(tk.Canvas):
             # With the drop icon there is no water bar on the left, so the
             # E badge sits at the plot's left edge — mirroring the P badge
             # on the right.
-            e_x = (self.p_inset_right if water_as_drop
-                   else self.water_thick - self.e_overhang_left)
-            cur = getattr(self, "_e_badge_x", self.water_thick - self.e_overhang_left)
-            if e_x != cur:
-                self.move("e_badge", e_x - cur, 0)
-                self._e_badge_x = e_x
+            # (E / P badges: top-left corner, see _place_badges)
 
             # Health is either the fill bar or a row of heart icons, never
             # both — same live-toggle pattern as the water bar/drop above,
@@ -1554,6 +1569,29 @@ class TileCanvas(tk.Canvas):
             is_emasculated = (int(getattr(self.plant, "n_emasculated", 0) or 0) > 0
                               or bool(getattr(self.plant, "emasculated", False)))
             self.itemconfig("e_badge", state="normal" if is_emasculated else "hidden")
+        except Exception:
+            is_emasculated = False
+        self._place_badges(is_emasculated)
+
+    _BADGE_LEFT = 1      # x of the first badge (the plot's very top-left)
+    _BADGE_GAP = 2
+
+    def _place_badges(self, e_shown):
+        """E (emasculated) in the very top-left corner of the plot and P
+        (pollinated) right next to it — or in the corner itself when there
+        is no E — so neither covers the plant number (top-right)."""
+        try:
+            s = getattr(self, "badge_size", 18)
+            e_x = self._BADGE_LEFT
+            p_x = self._BADGE_LEFT + ((s + self._BADGE_GAP) if e_shown else 0)
+            for tag, attr, x in (("e_badge", "_e_badge_x", e_x),
+                                 ("p_badge", "_p_badge_x", p_x),
+                                 ("bang_badge", "_bang_badge_x", p_x)):
+                cur = getattr(self, attr, x)
+                if cur != x:
+                    self.move(tag, x - cur, 0)
+                setattr(self, attr, x)
+                self.tag_raise(tag)
         except Exception:
             pass
     

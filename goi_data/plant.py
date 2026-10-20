@@ -30,7 +30,9 @@ TRAITS = {
     "flower_color": 4,
     "pod_shape": 7,
     "pod_color": 6,
-    "seed_shape": 7,
+    # The shape of the pea it grew from is seen before sowing (round or
+    # wrinkled), so it is known from the start (see know_planted_seed).
+    "seed_shape": 0,
     "seed_color": 7,
 }
 
@@ -261,6 +263,18 @@ class Plant:
         
         # Initialize reproductive capacity
         self._init_reproduction()
+        self.know_planted_seed()
+
+    def know_planted_seed(self):
+        """The planted pea's shape (round / wrinkled) is known from the
+        start — Mendel saw it before sowing. (Also called for plants from
+        older saves.)"""
+        try:
+            v = (self.traits or {}).get("seed_shape")
+            if v and "seed_shape" not in self.revealed_traits:
+                self.revealed_traits["seed_shape"] = v
+        except Exception:
+            pass
     
     def _init_reproduction(self):
         """Initialize realistic pod and ovule counts."""

@@ -250,8 +250,10 @@ class TemperatureTracker:
             pass
         return None
     
-    def take_measurement(self):
-        """Quick measurement - returns (success, message). ALWAYS includes month and year for plotting."""
+    def take_measurement(self, manual=False):
+        """Quick measurement - returns (success, message). ALWAYS includes month and year for plotting.
+        manual=True: taken by the player (not by auto-record) — counts for
+        the observer achievements."""
         can, hour, reason = self.can_measure_now()
         if not can:
             return False, reason
@@ -269,7 +271,9 @@ class TemperatureTracker:
             'temperature': temp,
             'month': ct.month,  # CRITICAL for plotting
             'year': ct.year,    # CRITICAL for plotting
-            'is_simulation': True
+            'is_simulation': True,
+            'manual': bool(manual),
+            'auto': not bool(manual),        # taken by "Auto-record temperature"
         }
         
         self.measurements.append(measurement)
@@ -417,7 +421,12 @@ class TemperatureTracker:
         status_sim.pack(padx=15, pady=(0,8))
         
         def do_measure():
-            success, msg = self.take_measurement()
+            success, msg = self.take_measurement(manual=True)
+            if success and callable(getattr(self, "on_manual_measurement", None)):
+                try:
+                    self.on_manual_measurement()
+                except Exception:
+                    pass
             status_sim.config(text=msg, fg=COLOR_MORNING if success else "red")
             if success:
                 left_content.after(2000, lambda: status_sim.config(text=""))
@@ -644,10 +653,20 @@ class TemperatureTracker:
                     bg="white", fg=COLOR_TEXT_SECONDARY).pack(padx=20, pady=20)
         else:
             for m in sorted(self.measurements, key=lambda x: x.get('datetime',''), reverse=True):
-                i = tk.Frame(s1, bg="#E8F4F8", padx=10, pady=6)
+                is_auto = bool(m.get('auto'))
+                rbg = "#EEF0F2" if is_auto else "#E8F4F8"     # auto readings: grey
+                i = tk.Frame(s1, bg=rbg, padx=10, pady=6)
                 i.pack(fill="x", padx=10, pady=2)
-                tk.Label(i, text=m.get('datetime','N/A'), font=("Segoe UI",FONT_SMALL,"bold"),
-                        bg="#E8F4F8", fg=COLOR_TEXT_PRIMARY).pack(anchor="w")
+                top = tk.Frame(i, bg=rbg)
+                top.pack(fill="x")
+                tk.Label(top, text=m.get('datetime','N/A'), font=("Segoe UI",FONT_SMALL,"bold"),
+                        bg=rbg, fg=COLOR_TEXT_PRIMARY).pack(side="left")
+                if is_auto:
+                    tk.Label(top, text="\u2699 auto", font=("Segoe UI",FONT_SMALL-1,"bold"),
+                             bg="#9AA3AD", fg="white", padx=5).pack(side="right")
+                else:
+                    tk.Label(top, text="\u270e by hand", font=("Segoe UI",FONT_SMALL-1),
+                             bg=rbg, fg="#2E6B3A").pack(side="right")
                 txt = f"{m.get('temperature','N/A')}°C"
                 if 'month' in m and 'hour' in m:
                     exp = self.mendel_averages.get(m['month'],{}).get(m['hour'])
@@ -655,7 +674,7 @@ class TemperatureTracker:
                         dev = m['temperature'] - exp
                         txt += f" • Avg: {exp:.1f}°C • Diff: {'+' if dev>0 else ''}{dev:.1f}°C"
                 tk.Label(i, text=txt, font=("Segoe UI",FONT_SMALL-1),
-                        bg="#E8F4F8", fg=COLOR_TEXT_SECONDARY).pack(anchor="w")
+                        bg=rbg, fg=COLOR_TEXT_SECONDARY).pack(anchor="w")
         
         c1.pack(side="left", fill="both", expand=True)
         sb1.pack(side="right", fill="y")

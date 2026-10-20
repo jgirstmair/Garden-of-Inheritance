@@ -148,10 +148,12 @@ class Pollen(InventoryItem):
     def __post_init__(self):
         """Derive metadata from source plant."""
         # Set source ID
+        # (a brush loaded from a save has no plant any more: keep its id)
         try:
-            self.source_id = int(getattr(self.source_plant, "id", 0) or 0)
+            if self.source_plant is not None or not self.source_id:
+                self.source_id = int(getattr(self.source_plant, "id", 0) or self.source_id or 0)
         except Exception:
-            self.source_id = 0
+            self.source_id = int(self.source_id or 0) if str(self.source_id or 0).isdigit() else 0
         
         # Copy genotype
         try:
@@ -369,10 +371,13 @@ class PollenChooserPopup(Toplevel):
         except Exception:
             items = []
         try:
-            today = int(getattr(self.app.garden, "day_of_month",
-                                getattr(self.app.garden, "day", 0)))
+            today = int(self.app._today())       # unique game day (same as the game uses)
         except Exception:
-            today = 0
+            try:
+                today = int(getattr(self.app.garden, "day_of_month",
+                                    getattr(self.app.garden, "day", 0)))
+            except Exception:
+                today = 0
         return items, today
 
     def _render(self):
@@ -386,13 +391,11 @@ class PollenChooserPopup(Toplevel):
 
         items, today = self._get_items_and_today()
 
-        # Group by source plant
-        groups = defaultdict(list)
-        for pkt in items:
-            groups[int(getattr(pkt, "source_id", 0) or 0)].append(pkt)
-
-        keys  = sorted(groups.keys())
-        total = len(keys)
+        # One card per brush (each pollen packet is one prepared brush),
+        # ordered by the plant the pollen came from.
+        brushes = sorted(items, key=lambda p_: (int(getattr(p_, "source_id", 0) or 0),
+                                                int(getattr(p_, "source_flower", 0) or 0)))
+        total = len(brushes)
 
         # Clamp page
         if total > 0:
@@ -405,24 +408,34 @@ class PollenChooserPopup(Toplevel):
         end   = min(total, start + self.MAX_PER_PAGE)
 
         if total:
-            self._page_lbl.configure(text=f"Pollen groups {start+1}–{end} of {total}")
+            self._page_lbl.configure(text=f"Brushes {start+1}–{end} of {total}")
         else:
-            self._page_lbl.configure(text="No pollen collected yet")
+            self._page_lbl.configure(text="No brush carries pollen yet")
 
-        shown = keys[start:end]
+        shown = brushes[start:end]
 
         if not shown:
             f = tk.Frame(self._grid, borderwidth=1, relief="groove", padx=10, pady=10)
             f.grid(row=1, column=1, padx=8, pady=8, sticky="nsew")
-            tk.Label(f, text="No pollen collected yet.",
+            tk.Label(f, text="No brush carries pollen yet.",
                      fg="#666666", font=("Segoe UI", 12, "italic")).pack()
+            self._theme()
             return
 
-        for idx, source_id in enumerate(shown):
-            packets = groups[source_id]
-            self._render_card(idx, source_id, packets, today)
+        for idx, pkt in enumerate(shown):
+            source_id = int(getattr(pkt, "source_id", 0) or 0)
+            self._render_card(idx, source_id, [pkt], today, number=start + idx + 1)
+        self._theme()
 
-    def _render_card(self, idx, source_id, packets, today):
+    def _theme(self):
+        """Same cream look as the plant inspection window."""
+        try:
+            if self.app is not None:
+                self.app._apply_inspector_theme(self)
+        except Exception:
+            pass
+
+    def _render_card(self, idx, source_id, packets, today, number=None):
         bstyle = self.app.button_style if self.app else {}
         r, c   = idx // 3, idx % 3
 
@@ -436,13 +449,13 @@ class PollenChooserPopup(Toplevel):
         hdr.pack(fill="x")
 
         def _discard(sid=source_id):
+            # cleans this one brush
             try:
                 inv = self.app.inventory
-                for pkt in list(inv.get_all("pollen")):
-                    if int(getattr(pkt, "source_id", 0) or 0) == int(sid):
-                        inv.remove(pkt)
+                for pkt in list(packets):
+                    inv.remove(pkt)
                 if hasattr(self.app, "_toast"):
-                    self.app._toast(f"Deleted pollen from plant #{sid}.")
+                    self.app._toast(f"Brush cleaned (pollen of plant #{sid}).")
             except Exception:
                 pass
             self._render()
@@ -484,8 +497,17 @@ class PollenChooserPopup(Toplevel):
             btn_x.image = _remove_img
         btn_x.pack(side="left", anchor="w", padx=(0, 8))
 
-        tk.Label(hdr, text=f"from Plant #{source_id}",
+        _fl = getattr(packets[0], "source_flower", None) if packets else None
+        tk.Label(hdr, text=(f"Brush {number}" if number else "Brush"),
                  font=("Segoe UI", 11, "bold")).pack(side="left")
+        _mix = getattr(packets[0], "mix", None) if packets else None
+        if _mix and len(_mix) > 1:
+            # the brush also touched other plants' anthers: a mix
+            _txt = "Pollen of " + ", ".join(f"#{m.get('source_id')}" for m in _mix)
+        else:
+            _txt = f"Plant #{source_id}" + (f", flower {_fl}" if _fl else "")
+        tk.Label(card, text=_txt, wraplength=200, justify="left",
+                 font=("Segoe UI", 10)).pack(anchor="w")
 
         # ── Icon row: flower icon + anther icon ──────────────────────────────
         icon_row = tk.Frame(card)
@@ -531,24 +553,18 @@ class PollenChooserPopup(Toplevel):
             tk.Label(icon_row, text="🌸", font=("Segoe UI", sz // 2)).pack(
                 side="left", padx=(0, 4))
 
-        # Anther icon
+        # The brush (pollinate_64.png), its tip yellow with pollen
         try:
-            anther_path = os.path.join(ICONS_DIR, "anther_small.png")
-            if os.path.exists(anther_path):
-                raw = safe_image(anther_path)
-                if raw:
-                    img = raw.subsample(
-                        max(1, raw.width()  // sz),
-                        max(1, raw.height() // sz),
-                    )
-                    lbl = tk.Label(icon_row, image=img)
-                    lbl.pack(side="left", padx=(0, 4))
-                    self._img_refs.append(img)
-                    card._img_refs.append(img)
-            else:
-                tk.Label(icon_row, text="🌿", font=("Segoe UI", sz // 2)).pack(side="left")
+            from emasculation_dialog import brush_image
+            from PIL import ImageTk as _ITk
+            _bim, _tip = brush_image(sz, 1.0)
+            img = _ITk.PhotoImage(_bim)
+            lbl = tk.Label(icon_row, image=img)
+            lbl.pack(side="left", padx=(0, 4))
+            self._img_refs.append(img)
+            card._img_refs.append(img)
         except Exception:
-            tk.Label(icon_row, text="🌿", font=("Segoe UI", sz // 2)).pack(side="left")
+            tk.Label(icon_row, text="🖌", font=("Segoe UI", sz // 2)).pack(side="left")
 
         # ── Viability ────────────────────────────────────────────────────────
         def _exp(pkt):
@@ -598,11 +614,11 @@ class PollenChooserPopup(Toplevel):
         btn_use.pack(side="right")
 
         # Count text — left side
-        stale_tag = "  STALE" if viable_count == 0 and packets else ""
+        stale_tag = "pollen dried out" if viable_count == 0 and packets else "fresh pollen (today)"
         tk.Label(info_row,
-                 text=f"×{len(packets)} collected  |  {viable_count} viable{stale_tag}",
+                 text=stale_tag,
                  font=("Segoe UI", 9),
-                 fg=("#b45309" if stale_tag else "#444444")).pack(side="left")
+                 fg=("#b45309" if viable_count == 0 else "#444444")).pack(side="left")
 
     # ── Pagination ────────────────────────────────────────────────────────────
 
@@ -613,9 +629,6 @@ class PollenChooserPopup(Toplevel):
 
     def _next(self):
         items, _ = self._get_items_and_today()
-        groups = defaultdict(list)
-        for pkt in items:
-            groups[int(getattr(pkt, "source_id", 0) or 0)].append(pkt)
-        if (self.page + 1) * self.MAX_PER_PAGE < len(groups):
+        if (self.page + 1) * self.MAX_PER_PAGE < len(items):
             self.page += 1
             self._render()

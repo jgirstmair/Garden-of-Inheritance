@@ -14,12 +14,15 @@ and half day (the game caches them) — never per frame.
 import math
 import os
 import random
-import time
+import threading
+from collections import OrderedDict
 
-from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter
 
 TILE = 64            # final picture size (same as the plant icons)
-SS = 3               # supersampling
+SS = 3               # supersampling (module default; plant_image picks per size)
+TILE_SS = 5          # tile pictures are drawn at 5x and scaled down: finer edges.
+                     # (the background helpers do this work, see pea_worker.py)
 S = TILE * SS
 OW = 2               # outline width at 3x (~2/3 px in the tile: soft, less pixelated)
 # Strength of the "painted" style (Game Settings > Plant style)
@@ -29,6 +32,10 @@ PAINT_GLOW = 0.32    # soft glow around the plant
 PAINT_WARM = (1.02, 2, 0.97)   # a hint of golden light: red x1.02 +2, blue x0.97
 PAINT_SAT = 1.12     # a little more colour, so the painted plants stay lush green
 PAINTERLY = True     # soft, hand-painted polish (set per call by plant_image)
+STAKED = False       # "staked" style: support stake, smaller pods, soft outline
+TENDRIL_FRAME = 0    # 0 = tendrils at rest; 1, 2 = tips bent a little (see render)
+TENDRIL_FRAMES = 3
+TENDRIL_AMP = 0.55   # how far a tendril tip may bend (radians, roughly)
 
 # ---------------------------------------------------------------- colours
 OUT = (16, 20, 14, 255)          # thin, nearly black outline (~1 px in the tile)
@@ -272,6 +279,64 @@ def leaf(d, x, y, ang, length, width, col, back=False):
             d.ellipse((sx - rr, sy - rr, sx + rr, sy + rr), fill=SPOT)
 
 
+STAKE_FROM = 7.0              # model day: early leafy stage (see STAGE_AGE[3])
+STAKE = (128, 88, 48, 255)
+STAKE_LIGHT = (182, 138, 84, 255)
+STRING = (222, 206, 164, 255)
+
+
+def _draw_stake(d, plant, cx, ground, nodes, old=0.0):
+    """A slim wooden stake beside the stem — the same long one for dwarf
+    plants as for tall ones (the gardener doesn't cut a shorter stake)."""
+    r = random.Random(int(getattr(plant, "rseed", 0) or 0) * 17 + 3)
+    side = r.choice((-1, 1))
+    x0 = cx + side * r.uniform(4.5, 5.5) * SS
+    top_h = S * 0.80
+    lean = side * r.uniform(0.0, 1.2) * SS
+    x1 = x0 + lean
+    y0 = ground + 1.5 * SS
+    y1 = ground - top_h
+    w = 2.3 * SS
+    col = mix(STAKE, (120, 110, 90, 255), old * 0.3)
+    # the stick, with a light edge and a cut, slightly pointed top
+    d.polygon([(x0 - w / 2, y0), (x0 + w / 2, y0), (x1 + w / 2, y1 + w), (x1, y1),
+               (x1 - w / 2, y1 + w)], fill=col, outline=OUT)
+    d.line([(x0 - w * 0.15, y0 - SS), (x1 - w * 0.15, y1 + 2 * w)],
+           fill=mix(col, STAKE_LIGHT, 0.7), width=max(1, int(SS * 0.5)))
+    # string ties to the stem at a few leaf pairs below the stake's top
+    for k in (2, 4, 6):
+        if k < len(nodes):
+            nx, ny = nodes[k]
+            if ny < y1 + 2 * SS:
+                continue
+            t = (y0 - ny) / max(1.0, (y0 - y1))
+            sx = x0 + (x1 - x0) * t
+            d.line([(sx, ny), (nx, ny + 0.6 * SS)], fill=STRING, width=max(1, int(SS * 0.6)))
+            d.ellipse((sx - 0.9 * SS, ny - 0.7 * SS, sx + 0.9 * SS, ny + 0.7 * SS), fill=STRING)
+
+
+def stake_layer(traits, seed, args, size=TILE):
+    """Just the support stake of this plant picture (weathered, no plant,
+    no string ties), placed and scaled exactly as in the living picture —
+    for a dead plant whose remains lie on the ground while the stake still
+    stands. None if the picture has no stake (too young)."""
+    _layers["stake_layer"] = Image.new("RGBA", (TILE * max(TILE_SS, min(8, int(math.ceil(
+        int(size or TILE) * 3.0 / TILE)))), int(TILE * max(TILE_SS, min(8, int(math.ceil(
+            int(size or TILE) * 3.0 / TILE)))) * 1.5)), (0, 0, 0, 0))
+    _layers.pop("stake_out", None)
+    try:
+        plant_image(traits, seed, args["age"], pods_visible=args.get("pods_visible"),
+                    painterly=args.get("painterly", False), sickness=args.get("sickness", 0.0),
+                    flowers_max=args.get("flowers_max"), size=size, marks=args.get("marks"),
+                    late=args.get("late"), staked=True)
+    finally:
+        _layers.pop("stake_layer", None)
+    out = _layers.pop("stake_out", None)
+    if out is not None and not out.getbbox():
+        return None
+    return out
+
+
 def smooth(t):
     return t * t * (3 - 2 * t)
 
@@ -357,6 +422,15 @@ def render(plant, age, phase=0.0, pods_visible=None, sickness=0.0, flowers_max=N
         k = (y_base - room) / max(1.0, (y_base - nodes[-1][1]))
         nodes = nodes[:2] + [(nx_, y_base - (y_base - ny_) * k) for nx_, ny_ in nodes[2:]]
 
+    # Support stake from the leafy stage on, as Mendel kept his peas
+    # upright "mit Stäben, Baumzweigen und gespannten Schnüren" — behind
+    # the plant, with a couple of string ties to the stem.
+    if STAKED and age >= STAKE_FROM:
+        _draw_stake(d, plant, cx, ground, nodes, old)
+        sl = _layers.get("stake_layer")
+        if sl is not None:
+            _draw_stake(ImageDraw.Draw(sl), plant, cx, ground, [], max(old, 0.7))
+
     # Stem (thicker at the base)
     thick_line(d, nodes, stem_col, 3 * SS)
 
@@ -397,12 +471,19 @@ def render(plant, age, phase=0.0, pods_visible=None, sickness=0.0, flowers_max=N
                      mix(leaf_col, LEAF_HI, 0.15), back=(s2 > 0))
             # tendril: three thin branches with curled ends
             for b in (-0.5, 0.05):
-                ba = pang + b
+                # tendrils are mobile: in frames 1 / 2 each tip bends a
+                # little up or down (its own amount, fixed per plant)
+                o = 0.0
+                if TENDRIL_FRAME:
+                    tr_ = random.Random(int(getattr(plant, "rseed", 0) or 0) * 131 + i * 17
+                                        + int(b * 100) + TENDRIL_FRAME * 7919)
+                    o = tr_.uniform(-1.0, 1.0) * TENDRIL_AMP
+                ba = pang + b + o * 0.35
                 bl = 9 * SS * reach
                 bx, by = ex + math.cos(ba) * bl, ey + math.sin(ba) * bl
                 pts = [(ex, ey), (bx, by)]
                 for k in range(4):                     # a single loose curl at the tip
-                    a = ba + side * (k + 1) * 0.9
+                    a = ba + side * (k + 1) * (0.9 + o * 0.45)
                     rr = 2.2 * SS * reach
                     pts.append((pts[-1][0] + math.cos(a) * rr, pts[-1][1] + math.sin(a) * rr))
                 d.line(pts, fill=TENDRIL, width=SS - 1, joint="curve")
@@ -633,7 +714,7 @@ def _draw_pod(d, plant, fx, fy, side, g, dry):
     light = mix(col, (255, 255, 225, 255), 0.38)
     shade = mix(col, (30, 50, 20, 255), 0.22)
     seam = mix(mix(base, (255, 255, 230, 255), 0.55), POD_DRY_OUT, dry * 0.7)
-    L, W = 24 * SS * g, 6.4 * SS * g
+    L, W = 20.5 * SS * g, 5.5 * SS * g             # (~15 % smaller than the first pods)
     hang = math.pi / 2 - side * 0.28                  # down, a little outward
     P = _local(fx, fy, hang)
     n_seeds = 6
@@ -644,7 +725,7 @@ def _draw_pod(d, plant, fx, fy, side, g, dry):
         w = math.sin(math.pi * min(1.0, u * 1.06)) ** 0.45 * W
         bump = 0.5 - 0.5 * math.cos(2 * math.pi * n_seeds * u)        # smooth: 0 between peas, 1 on a pea
         if plant.constricted:
-            w *= 0.66 + 0.34 * bump
+            w *= 0.74 + 0.26 * bump                   # waists between the peas (a little gentler)
         elif g > 0.6:
             w *= 0.95 + 0.05 * bump                                      # peas showing a little
         top = curve - W * 0.28
@@ -722,30 +803,39 @@ _LUT_A20 = [255 if v > 20 else 0 for v in range(256)]
 _LUT_A100 = [255 if v > 100 else 0 for v in range(256)]
 _LUT_EDGE = [190 if v else 0 for v in range(256)]
 _LUT_EDGE_SOFT = [min(255, int(v * 0.9)) for v in range(256)]
+_LUT_HALO = [min(255, int(v * 2.2)) for v in range(256)]
 _LUT_BACK = [min(255, int(v * (1.0 + DEPTH_BRIGHT))) for v in range(256)]
 _LUT_BACK_A = [int(v * DEPTH_ALPHA) for v in range(256)]
 _LUT_WARM_R = [min(255, int(v * PAINT_WARM[0] + PAINT_WARM[1])) for v in range(256)]
 _LUT_WARM_B = [int(v * PAINT_WARM[2]) for v in range(256)]
 
 
-def _fit(img):
+def _fit(img, companion=None):
     """Back to an S x S picture standing on its bottom edge. If anything
     reaches above the picture, the whole plant is scaled down a little to
-    fit — so no plant ever grows out of its plot."""
+    fit — so no plant ever grows out of its plot. A companion layer (e.g.
+    the stake alone) gets exactly the same crop and scale; then a pair is
+    returned."""
+    def _done(a, b=None):
+        return (a, b) if companion is not None else a
     if img.height <= S:
-        return img
+        return _done(img, companion)
     a = img.getchannel("A").point(_LUT_A20)
     bb = a.getbbox()
     top = bb[1] if bb else img.height - S
     need = img.height - top + 3 * SS              # content height + a little air (and the outline)
     if need <= S:
-        return img.crop((0, img.height - S, S, img.height))
+        box = (0, img.height - S, S, img.height)
+        return _done(img.crop(box), companion.crop(box) if companion is not None else None)
     k = S / float(need)
-    small = img.resize((max(1, int(img.width * k)), max(1, int(img.height * k))), Image.LANCZOS,
-                       reducing_gap=2.0)
-    out = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    out.paste(small, ((S - small.width) // 2, S - small.height), small)
-    return out
+
+    def _scale(im):
+        small = im.resize((max(1, int(im.width * k)), max(1, int(im.height * k))), Image.LANCZOS,
+                          reducing_gap=2.0)
+        out = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        out.paste(small, ((S - small.width) // 2, S - small.height), small)
+        return out
+    return _done(_scale(img), _scale(companion) if companion is not None else None)
 
 
 SOIL = ((150, 112, 72, 255), (176, 136, 92, 255), (120, 86, 54, 255), (196, 160, 112, 255),
@@ -787,8 +877,14 @@ def _finish(img):
         if DEPTH_ALPHA < 1.0:
             a = a.point(_LUT_BACK_A)
         img = Image.alpha_composite(Image.merge("RGBA", (r, g, b, a)), img)
-    img = _fit(img)
+    sl = _layers.pop("stake_layer", None)
+    if sl is not None:
+        img, sl = _fit(img, sl)
+    else:
+        img = _fit(img)
     out_px = int(_layers.get("out_px") or TILE)  # TILE, or larger (e.g. the Inspect window)
+    if sl is not None:
+        _layers["stake_out"] = sl.resize((out_px, out_px), Image.LANCZOS, reducing_gap=2.0)
     small = img.resize((out_px, out_px), Image.LANCZOS, reducing_gap=2.0)
     plant_a = small.getchannel("A")
     if PAINTERLY:
@@ -801,8 +897,16 @@ def _finish(img):
     m = plant_a
     # leave thin things (tendrils, stalks) out: only solid shapes get the border
     solid = m.point(_LUT_A100).filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
-    solid = ImageChops.multiply(solid.filter(ImageFilter.MaxFilter(3)), m.filter(ImageFilter.MaxFilter(3)))
-    edge = ImageChops.subtract(solid, m)
+    if STAKED:
+        # soft halo just outside the shapes (blurred, not a hard pixel
+        # ring), about one tile pixel wide at any picture size
+        rad = 0.6 * out_px / float(TILE)
+        halo = solid.filter(ImageFilter.GaussianBlur(rad)).point(_LUT_HALO)
+        edge = ImageChops.subtract(halo, m)
+    else:
+        solid = ImageChops.multiply(solid.filter(ImageFilter.MaxFilter(3)),
+                                    m.filter(ImageFilter.MaxFilter(3)))
+        edge = ImageChops.subtract(solid, m)
     line = Image.new("RGBA", (out_px, out_px), (14, 16, 12, 0))
     line.putalpha(edge.point(_LUT_EDGE_SOFT))
     return Image.alpha_composite(small, line)
@@ -932,11 +1036,23 @@ def _trait_flags(traits):
 
 
 def plant_image(traits, seed, age, pods_visible=None, painterly=True, phase=0.0,
-                sickness=0.0, flowers_max=None, size=TILE, marks=None, late=None):
+                sickness=0.0, flowers_max=None, size=TILE, marks=None, late=None,
+                staked=False, tframe=0):
     """PIL RGBA picture (TILE x TILE) of a plant with these Mendel traits
     (dict with plant_height, flower_position, flower_color, pod_color,
     pod_shape) at `age` model days."""
-    global PAINTERLY
+    global PAINTERLY, SS, S, HS, OW, STAKED, TENDRIL_FRAME
+    # Bigger pictures (Inspect window, map) are drawn with more detail:
+    # the drawing scale follows the output size (3x for a tile, 6x for
+    # 128 px), so they are not just a blown-up tile drawing.
+    _saved = (SS, S, HS, OW)
+    _want = int(size or TILE)
+    _ss = max(TILE_SS, min(8, int(math.ceil(_want * 3.0 / TILE))))
+    if _ss != SS:
+        SS = _ss
+        S = TILE * SS
+        HS = int(S * 1.5)
+        OW = max(2, int(round(2 * SS / 3.0)))
     f = trait_flags(traits)
     plant = PeaPlant(
         tall=f["tall"], terminal=f["terminal"], purple=f["purple"],
@@ -944,7 +1060,11 @@ def plant_image(traits, seed, age, pods_visible=None, painterly=True, phase=0.0,
         seed=int(seed) if str(seed).lstrip("-").isdigit() else abs(hash(seed)) % 100000)
     plant.seed_color = "yellow" if f["seed_yellow"] else "green"
     old = PAINTERLY
+    old_staked = STAKED
+    old_tf = TENDRIL_FRAME
     PAINTERLY = bool(painterly)
+    STAKED = bool(staked)
+    TENDRIL_FRAME = int(tframe or 0) % TENDRIL_FRAMES
     # The drawing is made at S x S (3x the tile), so a bigger picture of up
     # to S pixels simply keeps more of that detail.
     _layers["out_px"] = max(16, min(S, int(size or TILE)))
@@ -953,17 +1073,109 @@ def plant_image(traits, seed, age, pods_visible=None, painterly=True, phase=0.0,
                       sickness=sickness, flowers_max=flowers_max, marks=marks, late=late)
     finally:
         PAINTERLY = old
+        STAKED = old_staked
+        TENDRIL_FRAME = old_tf
+        SS, S, HS, OW = _saved
         _layers["out_px"] = TILE
 
 
-def final_image(traits, seed, args, size, health=100):
-    """The tile picture as the game shows it: plant_image() plus the flip
-    and the weak / late-season tint. `args` is the game's _grown_args dict.
+# ---------------------------------------------------------------------------
+# Picture cache: pictures drawn in this process are kept in memory (plants
+# with the same look share one), so drawing the same picture again is free.
+# Nothing is saved to disk.
+# ---------------------------------------------------------------------------
+VARIANTS = 6                 # plant shapes per trait combination (x2 by mirroring)
+
+
+def variant_seed(plant_id):
+    """The drawing seed for a plant: one of VARIANTS fixed shapes."""
+    try:
+        n = int(plant_id)
+    except Exception:
+        n = abs(hash(str(plant_id)))
+    return 1000 + (n % VARIANTS)
+
+
+# where earlier versions saved their pictures (removed by remove_store)
+STORE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plant_pictures")
+_MEM = OrderedDict()
+_MEM_MAX = 1500
+_MEM_LOCK = threading.Lock()
+
+
+def _cache_key(traits, seed, args, size):
+    f = trait_flags(traits)
+    age = round(float(args["age"]), 2)
+    purple, pod_y, constr = f["purple"], f["pod_yellow"], f["constricted"]
+    if age < BUD_DAY - 1:
+        # before the buds, flower and pod traits don't show: share pictures
+        purple, pod_y, constr = True, False, False
+    seed_y = f["seed_yellow"] if age < GERMINATE + 3 else None
+    mk = tuple((bool(m.get("e")), bool(m.get("p")), bool(m.get("gone")))
+               for m in (args.get("marks") or ()) if isinstance(m, dict))
+    late = tuple(tuple(x) if isinstance(x, (list, tuple)) else (x,)
+                 for x in (args.get("late") or ()))
+    fmax = args.get("flowers_max")
+    if age < BUD_DAY - 1:
+        fmax, mk = None, ()               # no flowers yet: these don't show either
+    return (bool(args.get("painterly")), bool(args.get("staked", False)),
+            f["tall"], f["terminal"], purple, pod_y, constr, seed_y, int(seed), age,
+            fmax, args.get("pods_visible"), mk, late,
+            round(float(args.get("sickness") or 0.0), 3), int(size),
+            int(args.get("tframe", 0) or 0))
+
+
+def _mem_get(key):
+    with _MEM_LOCK:
+        im = _MEM.get(key)
+        if im is not None:
+            _MEM.move_to_end(key)
+        return im
+
+
+def _mem_put(key, im):
+    with _MEM_LOCK:
+        _MEM[key] = im
+        _MEM.move_to_end(key)
+        while len(_MEM) > _MEM_MAX:
+            _MEM.popitem(last=False)
+
+
+def cached_plant_image(traits, seed, args, size, draw=True):
+    """The plant picture (without flip / tint) from the memory cache, drawn
+    first if it isn't there yet (draw=False: None instead)."""
+    key = _cache_key(traits, seed, args, size)
+    im = _mem_get(key)
+    if im is not None or not draw:
+        return im
+    im = plant_image(traits, seed, args["age"],
+                     pods_visible=args.get("pods_visible"), painterly=args["painterly"],
+                     sickness=args["sickness"], flowers_max=args["flowers_max"],
+                     size=size, marks=args.get("marks"), late=args.get("late"),
+                     staked=bool(args.get("staked", False)), tframe=int(args.get("tframe", 0) or 0))
+    _mem_put(key, im)
+    return im
+
+
+def remove_store():
+    """Deletes the plant_pictures folder left by earlier versions that
+    saved every picture to disk (no longer used)."""
+    try:
+        import shutil
+        if os.path.isdir(STORE_DIR):
+            shutil.rmtree(STORE_DIR, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def final_image(traits, seed, args, size, health=100, draw=True):
+    """The tile picture as the game shows it: the plant picture plus the
+    flip and the weak / late-season tint. `args` is the game's _grown_args
+    dict. draw=False: None unless the picture is already in the cache.
     (Used by the game itself and by its background helper pea_worker.py.)"""
-    pil = plant_image(traits, seed, args["age"],
-                      pods_visible=args.get("pods_visible"), painterly=args["painterly"],
-                      sickness=args["sickness"], flowers_max=args["flowers_max"],
-                      size=size, marks=args.get("marks"), late=args.get("late"))
+    pil = cached_plant_image(traits, seed, args, size, draw=draw)
+    if pil is None:
+        return None
     if args.get("flipped"):
         pil = pil.transpose(Image.FLIP_LEFT_RIGHT)
     is_weak, is_late, needs_tint = args.get("tint", (False, False, False))

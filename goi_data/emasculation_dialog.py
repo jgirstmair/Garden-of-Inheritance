@@ -9,6 +9,55 @@ import tkinter as tk
 from tkinter import Canvas
 from PIL import Image, ImageTk
 import math
+import os
+
+# the forceps cursor in the emasculation dialog (was 24 px)
+FORCEPS_PX = 128
+# The forceps' tip (found in each picture: its visible point furthest
+# towards the bottom left) sits exactly on the mouse point; this extra
+# offset can fine-tune it: DX moves the forceps that many pixels to the
+# left, DY that many pixels down.
+FORCEPS_TIP_DX, FORCEPS_TIP_DY = 2, 0
+# while the mouse button is held down the forceps are shown closed
+FORCEPS_CLOSED_ICON = "icons/forceps_closed_128x128.png"
+
+# Same look as the plant inspection window: cream background, dark brown
+# text, Segoe UI, flat buttons (Labels, so the colours also show on a Mac).
+BG = "#f5f0e6"
+INK = "#3b2a1a"
+MUTED = "#6b5a44"
+OK_GREEN = "#2e7d32"
+CRIMSON = "#B0102C"
+BTN_BG = "#e0dccf"
+BTN_HOVER = "#d0c8b7"
+
+
+class _FlatButton(tk.Label):
+    """A flat button like the inspector's (configure(command=...) works)."""
+
+    def __init__(self, parent, text="", command=None, **kw):
+        kw.setdefault("font", ("Segoe UI", 14, "bold"))
+        kw.setdefault("bg", BTN_BG)
+        kw.setdefault("fg", "#333333")
+        kw.setdefault("padx", 14)
+        kw.setdefault("pady", 4)
+        kw.setdefault("cursor", "hand2")
+        super().__init__(parent, text=text, **kw)
+        self._command = command
+        self.bind("<Enter>", lambda e: tk.Label.configure(self, bg=BTN_HOVER))
+        self.bind("<Leave>", lambda e: tk.Label.configure(self, bg=BTN_BG))
+        self.bind("<ButtonRelease-1>", self._click)
+
+    def _click(self, _e=None):
+        if callable(self._command):
+            self._command()
+
+    def configure(self, cnf=None, **kw):
+        if "command" in kw:
+            self._command = kw.pop("command")
+        return tk.Label.configure(self, cnf, **kw)
+
+    config = configure
 
 
 class EmasculationDialog(tk.Toplevel):
@@ -39,6 +88,7 @@ class EmasculationDialog(tk.Toplevel):
                 player having to redo them.
         """
         super().__init__(parent)
+        self.configure(bg=BG)
         
         # Also used to collect pollen (take one or more anthers): then the
         # window has its own title/heading and "Done" instead of "Cancel".
@@ -59,7 +109,10 @@ class EmasculationDialog(tk.Toplevel):
             self.flower_image_path = "icons/flower_purple_emasculated.png"
         
         # Load tweezer cursor icon
-        self.tweezer_cursor_path = "icons/pollen.png"
+        # the large forceps picture (the small pollen.png if it is missing)
+        self.tweezer_cursor_path = ("icons/forceps_128x128.png"
+                                    if os.path.exists("icons/forceps_128x128.png")
+                                    else "icons/pollen.png")
         
         # Display scaling factor (0.5 = 50% size, 1.0 = 100% size)
         self.display_scale = 0.5  # Make everything 50% smaller
@@ -95,14 +148,14 @@ class EmasculationDialog(tk.Toplevel):
     def _create_widgets(self):
         """Create the dialog widgets."""
         # Instructions
-        instruction_frame = tk.Frame(self, bg="#f0f0f0")
+        instruction_frame = tk.Frame(self, bg=BG)
         instruction_frame.pack(fill="x", padx=10, pady=10)
         
         title_label = tk.Label(
             instruction_frame,
             text=self._heading_text,
-            font=("Segoe UI", 14, "bold"),
-            bg="#f0f0f0"
+            font=("Segoe UI", 16, "bold"),
+            bg=BG, fg=INK
         )
         title_label.pack(pady=(0, 5))
         
@@ -110,14 +163,14 @@ class EmasculationDialog(tk.Toplevel):
         self.progress_label = tk.Label(
             instruction_frame,
             text=f"Remaining: {self.total_anthers - self.starting_removed}",
-            font=("Segoe UI", 11, "bold"),
-            bg="#f0f0f0",
-            fg="#d32f2f"
+            font=("Segoe UI", 14, "bold"),
+            bg=BG,
+            fg=CRIMSON
         )
         self.progress_label.pack(pady=(5, 0))
         
         # Canvas for flower image and anthers
-        canvas_frame = tk.Frame(self)
+        canvas_frame = tk.Frame(self, bg=BG)
         canvas_frame.pack(padx=20, pady=10)
         
         # Load flower image
@@ -162,21 +215,9 @@ class EmasculationDialog(tk.Toplevel):
         )
         self.canvas.pack()
         
-        # Load custom tweezer cursor
-        try:
-            cursor_img = Image.open(self.tweezer_cursor_path)
-            # Keep cursor at constant size (24x24) regardless of display scale
-            cursor_size = 24
-            cursor_img = cursor_img.resize((cursor_size, cursor_size), Image.Resampling.LANCZOS)
-            # Create cursor string for tkinter
-            # Note: Tkinter expects specific cursor format, we'll use the image as PhotoImage
-            self.tweezer_cursor = ImageTk.PhotoImage(cursor_img)
-            self.has_custom_cursor = True
-            print(f"Loaded custom tweezer cursor at {cursor_size}x{cursor_size} (constant size)")
-        except Exception as e:
-            print(f"Could not load custom cursor: {e}, using hand2 instead")
-            self.has_custom_cursor = False
-            self.tweezer_cursor = None
+        # Load custom tweezer cursor (the brush dialog has its own, see
+        # BrushDialog._load_cursor)
+        self._load_cursor()
         
         # Draw flower image first (at the back)
         if self.flower_image:
@@ -204,37 +245,62 @@ class EmasculationDialog(tk.Toplevel):
         # Bind click event
         self.canvas.bind("<Button-1>", self._on_canvas_click)
         self.canvas.bind("<Motion>", self._on_mouse_move)
+        # the forceps close while the mouse button is held down
+        self.canvas.bind("<ButtonPress-1>", lambda e: (setattr(self, "_last_ptr", (e.x, e.y)),
+                                                       self._forceps_grip(True)), add="+")
+        self.canvas.bind("<ButtonRelease-1>", lambda e: self._forceps_release(), add="+")
         
         # Set default cursor
         self.canvas.config(cursor="crosshair")
         
         # Success message frame (pre-allocated, initially empty)
-        self.success_frame = tk.Frame(self, bg="#e8f5e9", height=0)
+        self.success_frame = tk.Frame(self, bg=BG, height=0)
         self.success_frame.pack(fill="x", padx=10, pady=(5, 0))
         
         self.success_label = tk.Label(
             self.success_frame,
             text="",
-            font=("Segoe UI", 10),
-            fg="#2e7d32",
-            bg="#e8f5e9",
+            font=("Segoe UI", 14, "bold"),
+            fg=OK_GREEN,
+            bg=BG,
             pady=5
         )
         # Don't pack yet - will pack when needed
         
         # Button frame
-        button_frame = tk.Frame(self)
+        button_frame = tk.Frame(self, bg=BG)
         button_frame.pack(fill="x", padx=10, pady=(0, 10))
         
-        self.cancel_btn = tk.Button(
+        self.cancel_btn = _FlatButton(
             button_frame,
             text=self._cancel_text,
             command=self._on_cancel,
-            font=("Segoe UI", 10),
-            width=10
         )
         self.cancel_btn.pack(side="right", padx=5)
     
+    def _load_cursor(self):
+        try:
+            cursor_img = Image.open(self.tweezer_cursor_path).convert("RGBA")
+            # Constant size regardless of display scale (FORCEPS_PX)
+            cursor_size = FORCEPS_PX
+            cursor_img = cursor_img.resize((cursor_size, cursor_size), Image.Resampling.LANCZOS)
+            self.tweezer_cursor = ImageTk.PhotoImage(cursor_img)
+            self.tweezer_open = self.tweezer_cursor
+            self._tip_open = brush_tip(cursor_img)
+            self._tip = self._tip_open
+            self.tweezer_closed = None
+            self._tip_closed = self._tip_open
+            if os.path.exists(FORCEPS_CLOSED_ICON):
+                closed = Image.open(FORCEPS_CLOSED_ICON).convert("RGBA").resize(
+                    (cursor_size, cursor_size), Image.Resampling.LANCZOS)
+                self.tweezer_closed = ImageTk.PhotoImage(closed)
+                self._tip_closed = brush_tip(closed)
+            self.has_custom_cursor = True
+        except Exception as e:
+            print(f"Could not load custom cursor: {e}, using hand2 instead")
+            self.has_custom_cursor = False
+            self.tweezer_cursor = None
+
     def _create_anthers(self):
         """Create the 10 anthers using precise coordinates with slight randomization."""
         self.anthers = []
@@ -410,11 +476,17 @@ class EmasculationDialog(tk.Toplevel):
                 outline_width = max(4, int(5 * self.scale_factor))
                 self.canvas.itemconfig(anther["body"], outline="#ff8c00", width=outline_width)
         
-        # Update cursor
-        if hovering:
+        # Update cursor (the closed forceps stay in view while they are
+        # closed — no crosshair in between)
+        if hovering or getattr(self, "_forceps_closed", False):
             if self.has_custom_cursor and self.cursor_icon:
                 # Show custom tweezer cursor icon at mouse position
-                self.canvas.coords(self.cursor_icon, event.x, event.y)
+                # bottom-left corner (the tips) on the mouse point
+                if not getattr(self, "_brush_tip", None):
+                    self._last_ptr = (event.x, event.y)
+                    self._place_forceps()
+                else:
+                    self.canvas.coords(self.cursor_icon, event.x, event.y)
                 self.canvas.itemconfig(self.cursor_icon, state='normal')
                 # Hide system cursor
                 self.canvas.config(cursor="none")
@@ -430,6 +502,72 @@ class EmasculationDialog(tk.Toplevel):
             else:
                 self.canvas.config(cursor="crosshair")
     
+    def _place_forceps(self):
+        """The forceps' tip exactly on the mouse point (open or closed
+        picture: each has its own tip position)."""
+        ptr = getattr(self, "_last_ptr", None)
+        if ptr is None or not getattr(self, "cursor_icon", None):
+            return
+        tx, ty = getattr(self, "_tip", (0, FORCEPS_PX - 1))
+        self.canvas.itemconfig(self.cursor_icon, anchor="nw")
+        self.canvas.coords(self.cursor_icon, ptr[0] - tx - FORCEPS_TIP_DX,
+                           ptr[1] - ty + FORCEPS_TIP_DY)
+
+    FORCEPS_CLOSED_MIN_MS = 300     # the forceps stay closed at least this long
+
+    def _forceps_release(self):
+        """Mouse button up: the forceps open again — but only once they
+        have been closed for at least FORCEPS_CLOSED_MIN_MS."""
+        import time as _t
+        held = (_t.monotonic() - getattr(self, "_grip_t", 0.0)) * 1000.0
+        wait = max(0, int(self.FORCEPS_CLOSED_MIN_MS - held))
+        job = getattr(self, "_grip_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        if wait <= 0:
+            self._grip_job = None
+            self._forceps_grip(False)
+        else:
+            self._grip_job = self.after(wait, lambda: (setattr(self, "_grip_job", None),
+                                                       self._forceps_grip(False)))
+
+    def _forceps_grip(self, closed):
+        """Closed forceps while the button is pressed, open again after."""
+        if closed:
+            import time as _t
+            self._grip_t = _t.monotonic()
+            job = getattr(self, "_grip_job", None)
+            if job is not None:              # pressed again before it opened
+                try:
+                    self.after_cancel(job)
+                except Exception:
+                    pass
+                self._grip_job = None
+        img = (getattr(self, "tweezer_closed", None) if closed
+               else getattr(self, "tweezer_open", None))
+        if img is None or not getattr(self, "cursor_icon", None):
+            return
+        try:
+            self._forceps_closed = bool(closed)
+            self._tip = (getattr(self, "_tip_closed", None) if closed
+                         else getattr(self, "_tip_open", None)) or (0, FORCEPS_PX - 1)
+            self.canvas.itemconfig(self.cursor_icon, image=img)
+            self._place_forceps()
+            if closed:
+                self.canvas.itemconfig(self.cursor_icon, state="normal")
+                self.canvas.config(cursor="none")
+            else:
+                # open again: show what the mouse is over now (forceps over
+                # an anther, otherwise the crosshair)
+                ptr = getattr(self, "_last_ptr", None)
+                if ptr is not None:
+                    self._on_mouse_move(type("E", (), {"x": ptr[0], "y": ptr[1]})())
+        except Exception:
+            pass
+
     def _on_canvas_click(self, event):
         """Handle click on canvas to check if an anther was clicked."""
         if self.completed:
@@ -523,3 +661,181 @@ class EmasculationDialog(tk.Toplevel):
     def _on_close(self):
         """Handle window close button."""
         self._on_cancel()
+
+
+# ============================================================================
+# Collecting pollen with a camel-hair brush (no anthers are removed)
+# ============================================================================
+# the camel-hair brush (high-quality picture; the older small one if missing)
+BRUSH_ICONS = ("icons/brush_128x128.png", "icons/pollinate_64.png")
+BRUSH_ICON = BRUSH_ICONS[0]
+BRUSH_TOUCHES = 5
+HOVER_TOUCH_FRAC = 0.7       # the brush tip this close to an anther touches it               # different anthers to touch for one brush
+BRUSH_PX = 256                  # brush cursor size on the flower
+POLLEN_YELLOW = (236, 196, 38)
+
+
+def _fallback_brush(px=64):
+    """A simple drawn brush (if pollinate_64.png is missing): wooden handle
+    from the top right, bristles ending in a tip at the bottom left."""
+    from PIL import ImageDraw
+    im = Image.new("RGBA", (px, px), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    k = px / 64.0
+    d.line([(60 * k, 4 * k), (26 * k, 38 * k)], fill=(140, 92, 48, 255), width=int(7 * k))
+    d.polygon([(30 * k, 30 * k), (36 * k, 36 * k), (24 * k, 46 * k), (18 * k, 40 * k)],
+              fill=(170, 170, 170, 255), outline=(60, 60, 60, 255))
+    d.polygon([(18 * k, 40 * k), (24 * k, 46 * k), (6 * k, 60 * k), (3 * k, 58 * k)],
+              fill=(120, 84, 52, 255), outline=(50, 34, 20, 255))
+    return im
+
+
+def brush_image(px=64, yellow=0.0):
+    """The brush picture (pollinate_64.png) at px pixels, its tip tinted
+    pollen-yellow by `yellow` (0..1). Returns (PIL image, tip (x, y))."""
+    im = None
+    for path in BRUSH_ICONS:                 # looked up now, not at import
+        try:
+            im = Image.open(path).convert("RGBA")
+            break
+        except Exception:
+            continue
+    if im is None:
+        im = _fallback_brush()
+    im = im.resize((px, px), Image.Resampling.LANCZOS)
+    tip = brush_tip(im)
+    if yellow > 0:
+        im = im.copy()
+        pix = im.load()
+        r = px * 0.22                 # the bristles (bottom-left part of the picture)
+        tx, ty = tip
+        for y in range(px):
+            for x in range(px):
+                cr, cg, cb, ca = pix[x, y]
+                if ca < 20:
+                    continue
+                dd = math.hypot(x - tx, y - ty)
+                if dd > r:
+                    continue
+                t = yellow * (1.0 - dd / r) ** 0.6
+                pix[x, y] = (int(cr + (POLLEN_YELLOW[0] - cr) * t),
+                             int(cg + (POLLEN_YELLOW[1] - cg) * t),
+                             int(cb + (POLLEN_YELLOW[2] - cb) * t), ca)
+    return im, tip
+
+
+def brush_tip(im):
+    """The brush's tip: the visible pixel furthest towards the bottom
+    left (brushes are drawn diagonally, bristles at the bottom left)."""
+    a = im.getchannel("A")
+    w, h = im.size
+    best, tip = None, (0, h - 1)
+    px = a.load()
+    for y in range(h):
+        for x in range(w):
+            if px[x, y] > 60:
+                v = x - y
+                if best is None or v < best:
+                    best, tip = v, (x, y)
+    return tip
+
+
+class BrushDialog(EmasculationDialog):
+    """Collect pollen: touch the tips of five different anthers of this
+    flower with a camel-hair brush. Nothing is removed — the anthers stay
+    on the flower; the brush tip turns more yellow with every anther.
+    callback(success, anthers_touched)."""
+
+    def __init__(self, parent, flower_color="purple", callback=None):
+        self.touched = set()
+        super().__init__(parent, flower_color, callback, starting_removed=0,
+                         title="Collect pollen",
+                         heading="Brush over the tips of five anthers",
+                         cancel_text="Cancel")
+        self.progress_label.config(text=f"Anthers touched: 0 / {BRUSH_TOUCHES}", fg=MUTED)
+
+    # -- the brush as the mouse cursor ------------------------------------
+    def _load_cursor(self):
+        try:
+            self._brush_level = 0.0
+            self._set_brush(0.0)
+            self.has_custom_cursor = True
+        except Exception as e:
+            print(f"Could not load the brush: {e}")
+            self.has_custom_cursor = False
+            self.tweezer_cursor = None
+
+    def _set_brush(self, yellow):
+        im, tip = brush_image(BRUSH_PX, yellow)
+        self._brush_tip = tip
+        self.tweezer_cursor = ImageTk.PhotoImage(im)
+        if getattr(self, "cursor_icon", None):
+            try:
+                self.canvas.itemconfig(self.cursor_icon, image=self.tweezer_cursor, anchor="nw")
+            except Exception:
+                pass
+
+    def _on_mouse_move(self, event):
+        if not (self.has_custom_cursor and self.cursor_icon):
+            return
+        tx, ty = getattr(self, "_brush_tip", (0, BRUSH_PX))
+        # the brush follows the mouse with its tip exactly on the pointer
+        self.canvas.itemconfig(self.cursor_icon, anchor="nw", state="normal")
+        self.canvas.coords(self.cursor_icon, event.x - tx, event.y - ty)
+        self.canvas.tag_raise(self.cursor_icon)
+        self.canvas.config(cursor="none")
+        if self.completed:
+            return
+        # moving the brush tip over an anther is enough (no click needed)
+        hit = None
+        for anther in self.anthers:
+            d = math.hypot(event.x - anther["x"], event.y - anther["y"])
+            near = d < self.click_tolerance and anther["id"] not in self.touched
+            if hit is None and near and d < self.click_tolerance * HOVER_TOUCH_FRAC:
+                hit = anther
+            self.canvas.itemconfig(anther["body"], outline="#ff6600" if near else "#ff8c00",
+                                   width=max(5, int(6 * self.scale_factor)) if near
+                                   else max(4, int(5 * self.scale_factor)))
+        if hit is not None:
+            self._touch_anther(hit)
+
+    # -- touching an anther -------------------------------------------------
+    def _on_canvas_click(self, event):
+        if self.completed:
+            return
+        for anther in self.anthers:
+            if anther["id"] in self.touched:
+                continue
+            if math.hypot(event.x - anther["x"], event.y - anther["y"]) < self.click_tolerance:
+                self._touch_anther(anther)
+                break
+
+    def _touch_anther(self, anther):
+        self.touched.add(anther["id"])
+        # a little pollen came off: the anther's yellow dot pales
+        try:
+            self.canvas.itemconfig(f"anther_{anther['id']}_pollen", fill="#fff4c2")
+        except Exception:
+            pass
+        n = len(self.touched)
+        self._set_brush(min(1.0, n / float(BRUSH_TOUCHES)))
+        if n < BRUSH_TOUCHES:
+            self.progress_label.config(text=f"Anthers touched: {n} / {BRUSH_TOUCHES}", fg=MUTED)
+            return
+        self.completed = True
+        self.progress_label.config(text=f"Anthers touched: {n} / {BRUSH_TOUCHES}", fg=OK_GREEN)
+        self.success_label.config(text="Camel-hair brush prepared for pollination.")
+        self.success_label.pack(fill="x")
+        self.cancel_btn.config(text="Close", command=self._on_complete)
+        self.after(1400, self._on_complete)
+
+    def _on_complete(self):
+        if self.callback:
+            self.callback(True, len(self.touched))
+        self.destroy()
+
+    def _on_cancel(self):
+        if self.callback:
+            self.callback(False, len(self.touched))
+        self.destroy()
+

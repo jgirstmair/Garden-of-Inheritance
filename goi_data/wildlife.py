@@ -109,6 +109,12 @@ _FREQ_PRESETS = {
 
 FRAME_MS    = 900
 WANDER_MS   = 1400
+# The pea weevil (Bruchus pisi) feeds on pollen: now and then it walks to an
+# open flower on its plant and crawls into it for a while.
+BRUCHUS_FLOWER_CHANCE = 0.65
+BRUCHUS_WALK_STEP_MS = 110
+BRUCHUS_WALK_PX = 1.4
+BRUCHUS_INSIDE_MS = (6000, 14000)
 MIN_STAY_MS = 12000         # one visit lasts 12–42 s (real time)
 MAX_STAY_MS = 42000
 
@@ -312,6 +318,8 @@ class _Creature:
         self._alive      = True
         self._jobs       = []
         self._flying     = False
+        self._walking    = False    # weevil walking to a flower
+        self._inside     = False    # weevil inside a flower (hidden)
         self._rest_variant = variant
         self._fly_variant  = variant
         self.flier       = self._is_flier()
@@ -374,6 +382,8 @@ class _Creature:
         stay = random.randint(MIN_STAY_MS, MAX_STAY_MS)
         self._later(FRAME_MS,  self._tick_anim)
         self._later(WANDER_MS, self._wander)
+        if self.type_name == "bruchus" and random.random() < BRUCHUS_FLOWER_CHANCE:
+            self._later(random.randint(2500, 6000), self._seek_flower)
         if self.flier:
             if target is not None:
                 t_tile, tx, ty = target
@@ -637,7 +647,7 @@ class _Creature:
     def _tick_anim(self):
         if not self._alive:
             return
-        if self._flying:                      # flight drives its own frames
+        if self._flying or self._inside:      # flight drives its own frames
             self._later(FRAME_MS, self._tick_anim)
             return
         self._fi = (self._fi + 1) % max(1, len(self.variant.frames))
@@ -653,7 +663,7 @@ class _Creature:
     def _wander(self):
         if not self._alive:
             return
-        if self._flying:
+        if self._flying or self._walking or self._inside:
             self._later(WANDER_MS, self._wander)
             return
         ts = getattr(self.tile, 'w', 85)
@@ -672,6 +682,83 @@ class _Creature:
             except Exception:
                 pass
         self._later(WANDER_MS, self._wander)
+
+    # ── Pea weevil: into a flower ─────────────────────────────────────────────
+    def _seek_flower(self):
+        """Walk to an open flower of this plant and crawl into it."""
+        if not self._alive or self._item is None or self._flying:
+            return
+        pt = self.mgr._flower_target(self.tile)
+        if pt is None:
+            return
+        self._walking = True
+        self._walk_step(float(pt[0]), float(pt[1]))
+
+    def _walk_step(self, tx, ty):
+        if not self._alive or self._item is None:
+            return
+        dx, dy = tx - self.cx, ty - self.cy
+        dist = math.hypot(dx, dy)
+        if dist <= BRUCHUS_WALK_PX:
+            self.cx, self.cy = tx, ty
+            self._move_item()
+            self._walking = False
+            self._crawl_in()
+            return
+        k = BRUCHUS_WALK_PX / dist
+        # a little side-to-side, like a beetle picking its way along
+        self.cx += dx * k + random.uniform(-0.4, 0.4)
+        self.cy += dy * k + random.uniform(-0.4, 0.4)
+        self._move_item()
+        self._later(BRUCHUS_WALK_STEP_MS, lambda: self._walk_step(tx, ty))
+
+    def _move_item(self):
+        try:
+            self.tile.coords(self._item, self.cx, self.cy)
+            if not self._inside:
+                self.tile.tag_raise(self._item)
+        except Exception:
+            pass
+
+    def _crawl_in(self):
+        """First half-hidden behind the petals, then gone inside."""
+        if not self._alive or self._item is None:
+            return
+        self._inside = True
+        try:
+            img_item = getattr(self.tile, "img_item", None)
+            if img_item is not None:
+                self.tile.tag_lower(self._item, img_item)    # the petals cover it
+        except Exception:
+            pass
+        self._later(900, self._hide_inside)
+
+    def _hide_inside(self):
+        if not self._alive or self._item is None:
+            return
+        try:
+            self.tile.itemconfig(self._item, state="hidden")
+        except Exception:
+            pass
+        self._later(random.randint(*BRUCHUS_INSIDE_MS), self._crawl_out)
+
+    def _crawl_out(self):
+        if not self._alive or self._item is None:
+            return
+        try:
+            self.tile.itemconfig(self._item, state="normal")
+        except Exception:
+            pass
+        self._later(700, self._out_again)
+
+    def _out_again(self):
+        if not self._alive or self._item is None:
+            return
+        self._inside = False
+        try:
+            self.tile.tag_raise("wildlife")
+        except Exception:
+            pass
 
     def _depart(self):
         for j in self._jobs:
@@ -1131,6 +1218,37 @@ class WildlifeManager:
 
         except Exception as exc:
             log.error("Wildlife _pick_pixel error: %s", exc)
+            return None
+
+    def _flower_target(self, tile):
+        """Tile-canvas position of an open flower on this plot (for the
+        weevil to walk to), or None."""
+        try:
+            pil = self._pil_for_tile(tile)
+            if pil is None:
+                return None
+            ts = getattr(tile, "w", 85)
+            water_thick = getattr(tile, "water_thick", max(4, ts // 8))
+            health_thick = getattr(tile, "health_thick", max(3, ts // 14))
+            icon_lift = max(6, ts // 14)
+            try:
+                icon_drop = int(tile.configs.get("ICON_DROP", 3))
+            except Exception:
+                icon_drop = 3
+            pw, ph = pil.size
+            x0 = ts // 2 + water_thick // 2 - pw // 2
+            y0 = ts // 2 - health_thick // 2 - icon_lift + icon_drop - ph // 2
+            tl = getattr(tile, "_icon_topleft", None)
+            if tl:
+                x0, y0 = tl
+            clusters = _cluster_spots(_scan_spots(pil, False), radius=6)
+            if not clusters:
+                return None
+            cl = max(clusters, key=len) if random.random() < 0.5 else random.choice(clusters)
+            fx, fy = _centroid(cl)
+            return x0 + fx, y0 + fy
+        except Exception as exc:
+            log.debug("Wildlife _flower_target: %s", exc)
             return None
 
     def _pil_for_tile(self, tile):
