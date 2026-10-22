@@ -1540,6 +1540,19 @@ _WAIT_CONDITIONS = {
 }
 
 
+def _marked_plant_selected(app, stage):
+    """The selected plot holds one of the plants marked for this line
+    (see "highlight_plants")."""
+    try:
+        idx = getattr(app, "selected_index", None)
+        if idx is None:
+            return False
+        tile = app.tiles[idx]
+        return tile in _plant_highlight_tiles(app, stage)
+    except Exception:
+        return False
+
+
 def _plant_highlight_tiles(app, stage):
     """The plots on screen whose living plant is at exactly `stage` (or, if
     none is, at that stage or beyond). Part 5 also uses "father" (plants
@@ -2477,7 +2490,14 @@ def _line_end_image(app, name):
     return img
 
 
-def _set_rich_status_text(app, text, highlight_words, left_gutter=0, end_image=None):
+# Text colour per speaker: Friar Cyril red, Gregor Mendel a deep blue
+# (clearly different from Cyril's red and from the black highlighted
+# words, and well readable on the light status bar)
+_SPEAKER_COLORS = {"cyril": "#c01818", "mendel": "#1f4f99"}
+
+
+def _set_rich_status_text(app, text, highlight_words, left_gutter=0, end_image=None,
+                          color=None):
     """Renders `text` into the rich status overlay, coloring any of
     highlight_words (matched longest-first so e.g. "Plant All" doesn't
     get swallowed by a shorter "Plant" rule) in black and everything
@@ -2492,6 +2512,10 @@ def _set_rich_status_text(app, text, highlight_words, left_gutter=0, end_image=N
     except Exception:
         pass
     words = sorted({w for w in (highlight_words or []) if w}, key=len, reverse=True)
+    try:
+        txt.tag_configure("normal", foreground=color or _SPEAKER_COLORS["cyril"])
+    except Exception:
+        pass
     try:
         txt.configure(state="normal")
         txt.delete("1.0", "end")
@@ -2806,7 +2830,8 @@ class _StatusBarDialogue:
         try:
             left_gutter = self._gutter_width() if self._line_idx > 0 else 0
             _set_rich_status_text(self.app, text, self._highlight_words, left_gutter,
-                                  end_image=img)
+                                  end_image=img,
+                                  color=_SPEAKER_COLORS.get(str(self._speaker or "").strip().lower()))
         except Exception:
             pass
         self._reposition_buttons(text, img)
@@ -3169,6 +3194,16 @@ class _StatusBarDialogue:
         # flickering between above and below it): its buttons only glow
         # (see the glow_targets below, which always include them).
         target_names = [n for n in (target_names or []) if not str(n).startswith("inspector_")]
+        # Inspect / Harvest only make sense for a marked plant: their arrow
+        # appears once one of the marked plants is selected (and goes away
+        # again if another plant is selected) — otherwise players click the
+        # button straight away, with no or the wrong plant selected.
+        _hp = extra.get("highlight_plants")
+        if _hp is not None:
+            for _gn in [n for n in target_names if n in ("inspect_button", "harvest_button")]:
+                target_names.remove(_gn)
+                self._poll_late_highlight(
+                    _gn, idx, when=lambda _st=_hp: _marked_plant_selected(self.app, _st))
         widgets = []
         sides = []
         for name in (target_names or []):
@@ -3291,7 +3326,7 @@ class _StatusBarDialogue:
 
         self.app.root.after(300, _poll)
 
-    def _poll_late_highlight(self, name, idx):
+    def _poll_late_highlight(self, name, idx, when=None):
         """For a target that only exists once the player opens something
         (e.g. Harvest All inside the inspector): keeps looking for it while
         this line shows, puts the arrow on it as soon as it appears, and
@@ -3303,6 +3338,12 @@ class _StatusBarDialogue:
                     or self._line_idx != idx):
                 return
             w = _HIGHLIGHT_TARGETS.get(name, lambda app: None)(self.app)
+            if when is not None:
+                try:
+                    if not when():
+                        w = None                    # not yet (see "when")
+                except Exception:
+                    w = None
             arrow = state["arrow"]
             if arrow is not None and self._active_arrow is not arrow:
                 state["arrow"] = arrow = None       # cleared elsewhere

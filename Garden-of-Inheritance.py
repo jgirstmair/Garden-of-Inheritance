@@ -2538,7 +2538,28 @@ class GardenApp(InspectorMixin):
             win.focus_force()
         except Exception:
             pass
+        # always the top layer while it is open (other always-on-top windows
+        # like the inspection window can't come over it)
+        self._keep_congrats_on_top(win)
         return win
+
+    def _keep_congrats_on_top(self, win):
+        def _tick():
+            try:
+                if not win.winfo_exists():
+                    return
+                top = win.tk.call("wm", "stackorder", ".")
+                last = str(top[-1]) if top else ""
+                if last != str(win):          # something else came over it
+                    win.attributes("-topmost", True)
+                    win.lift()
+                win.after(400, _tick)
+            except Exception:
+                pass
+        try:
+            win.after(400, _tick)
+        except Exception:
+            pass
 
     def _open_achievements_window(self):
         """All achievements, grouped (tutorial, laws, breeding, visitors):
@@ -2933,12 +2954,18 @@ class GardenApp(InspectorMixin):
                                   font=("Segoe UI", 11)).pack(side="left")
         dlg.bind("<Escape>", lambda e: _done(False))
         self._center_on_screen(dlg)
+        try:
+            dlg.attributes("-topmost", True)       # above the (topmost) Inspect window
+        except Exception:
+            pass
         dlg.deiconify()
         try:
             dlg.lift()
             dlg.grab_set()
         except Exception:
             pass
+        # stays the top window while it is open
+        self._keep_congrats_on_top(dlg)
 
         def _ready_to_type():
             try:
