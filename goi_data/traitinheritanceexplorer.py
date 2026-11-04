@@ -1249,18 +1249,37 @@ LAW2_DOM_FRAC_MAX = 0.796  # 3.9:1  (3.9/4.9)
 LAW3_MIN_N = 80
 LAW3_CHI2_MAX = 4.0
 
+# Trait names and order as in the Genotype Viewer
+TRAIT_LABELS = {
+    "flower_color": "Flower color", "plant_height": "Plant height",
+    "pod_shape": "Pod shape", "pod_color": "Pod color",
+    "seed_shape": "Seed shape", "seed_color": "Seed color",
+    "flower_position": "Flower position",
+}
+TRAIT_ORDER = ("seed_shape", "seed_color", "flower_color", "plant_height",
+               "pod_shape", "pod_color", "flower_position")
+# Genes behind each trait (pod shape and flower position have two)
+TRAIT_LOCI = {
+    "seed_shape": ("R",), "seed_color": ("I",), "flower_color": ("A",),
+    "plant_height": ("Le",), "height": ("Le",), "pod_color": ("Gp",),
+    "pod_shape": ("P", "V"), "flower_position": ("Fa", "Mfa"),
+}
+# The planted pea's colour and shape are seen at sowing
+SEED_TRAITS = ("seed_color", "seed_shape")
+
+
 class TraitInheritanceExplorer(tk.Toplevel):
-    BG = "#0c1a21"
-    PANEL = "#0f2230"
-    CARD = "#102633"
-    FG = "#e8f0f5"
-    MUTED = "#a8bcc9"
-    ACCENT = "#1f6aa5"
+    BG = "#f5f0e6"
+    PANEL = "#efe8d8"
+    CARD = "#fbf7ee"
+    FG = "#3b2a1a"
+    MUTED = "#7a6a55"
+    ACCENT = "#8B4226"
     PAD = 10
 
     # --- Background tints for pods (applied to whole pod card) ---
-    POD_TINT_GREEN = "#2d5145"   # slightly less green
-    POD_TINT_YELLOW = "#6a5a16"  # strong yellow/olive
+    POD_TINT_GREEN = "#dde8cb"   # slightly less green
+    POD_TINT_YELLOW = "#f0e2a6"  # strong yellow/olive
 
     def _pod_tint_from_color(self, color_str):
         s = str(color_str or "").lower()
@@ -1271,17 +1290,24 @@ class TraitInheritanceExplorer(tk.Toplevel):
         return self.CARD
 
     def _on_canvas_node_click(self, event=None, source_canvas=None):
-        c = source_canvas if source_canvas is not None else self.canvas
+        c = source_canvas if source_canvas is not None else getattr(event, "widget", None) or self.canvas
+        # Whatever lies on top (allele letters, the picture, the ring):
+        # every item of a node carries its "node_<id>" tag. Canvas (scrolled)
+        # coordinates, not window ones.
+        pid = None
         try:
-            item = c.find_closest(event.x, event.y)
-            tags = c.gettags(item)
+            cx, cy = c.canvasx(event.x), c.canvasy(event.y)
+            items = list(c.find_withtag("current")) + list(
+                reversed(c.find_overlapping(cx - 2, cy - 2, cx + 2, cy + 2)))
+            for it in items:
+                for t in c.gettags(it):
+                    if t.startswith("node_"):
+                        pid = t[5:]
+                        break
+                if pid is not None:
+                    break
         except Exception:
             return
-        pid = None
-        for t in tags:
-            if t.startswith("node_"):
-                pid = t.split("_", 12)[1]
-                break
         if pid is None:
             return
         # sync list selection
@@ -1299,6 +1325,184 @@ class TraitInheritanceExplorer(tk.Toplevel):
         else:
             self._render_preview(str(pid))
 
+    # ── Sections (as in the Inspect window) ─────────────────────────────────
+    _SECTION_LIST = (("plant", "Traits"), ("archive", "Archive"), ("tree", "Family tree"),
+                     ("pods", "Pod Seeds"), ("punnett", "Punnett Square"), ("ratio", "Trait Ratio"))
+    _SECTION_TAB = {"pods": 0, "punnett": 1, "ratio": 2}
+    _SECTIONS_DEFAULT = {"plant": False, "archive": False, "tree": True, "tab": 0}
+
+    @staticmethod
+    def _settings_io():
+        """The game's display-settings load/save (same file as the Inspect
+        window's sections), or (None, None) when run on its own."""
+        import sys as _sys
+        for name in ("__main__", "Garden-of-Inheritance"):
+            m = _sys.modules.get(name)
+            ld = getattr(m, "_load_display_settings", None)
+            sv = getattr(m, "_save_display_settings", None)
+            if callable(ld) and callable(sv):
+                return ld, sv
+        return None, None
+
+    def _family_only(self):
+        """Plant Roulette (missions.py): only the family tree is shown."""
+        try:
+            import missions as _ms
+            return bool(_ms.tie_family_only(self.app))
+        except Exception:
+            return False
+
+    def _load_sections(self):
+        st = dict(self._SECTIONS_DEFAULT)
+        if self._family_only():
+            st.update({"plant": False, "archive": False, "tree": True, "tab": None})
+            return st
+        ov = getattr(self.app, "_tut_tie_sections", None)     # the tutorial's own choice
+        if isinstance(ov, dict):
+            st.update(ov)
+            return st
+        # The TIE always opens the same way: family tree and Pod Seeds
+        # (the other sections are opened when wanted, not remembered).
+        return st
+        ld, _ = self._settings_io()
+        try:
+            saved = (ld() or {}).get("tie_sections") if ld else None
+            if isinstance(saved, dict):
+                for k in ("plant", "archive", "tree"):
+                    if k in saved:
+                        st[k] = bool(saved[k])
+                if "tab" in saved:
+                    t = saved["tab"]
+                    st["tab"] = int(t) if t in (0, 1, 2) else None
+        except Exception:
+            pass
+        if not (st["plant"] or st["archive"] or st["tree"] or st["tab"] is not None):
+            st = dict(self._SECTIONS_DEFAULT)
+        return st
+
+    def _save_sections(self):
+        if getattr(self.app, "_tutorial_active", False):
+            return                                   # the tutorial's choice, not the player's
+        ld, sv = self._settings_io()
+        if not (ld and sv):
+            return
+        try:
+            s = ld() or {}
+            s["tie_sections"] = dict(self._sections)
+            sv(s)
+        except Exception:
+            pass
+
+    def _section_on(self, key):
+        st = self._sections
+        if key in self._SECTION_TAB:
+            return st.get("tab") == self._SECTION_TAB[key]
+        return bool(st.get(key))
+
+    def _style_section_btns(self):
+        for key, b in (getattr(self, "_section_btns", None) or {}).items():
+            on = self._section_on(key)
+            # Pod Seeds / Punnett Square / Trait Ratio (one view at a time)
+            # are green when open, the other sections brown
+            on_bg = "#4f7d3a" if key in self._SECTION_TAB else "#8a7a52"
+            try:
+                b.configure(bg=on_bg if on else "#e8e0cf", fg="white" if on else "#3b2a1a")
+            except Exception:
+                pass
+
+    def _toggle_section(self, key):
+        if self._family_only():
+            return                                   # the family tree only
+        st = dict(self._sections)
+        if key in self._SECTION_TAB:
+            idx = self._SECTION_TAB[key]
+            st["tab"] = None if st.get("tab") == idx else idx
+        else:
+            st[key] = not st.get(key)
+        if not (st["plant"] or st["archive"] or st["tree"] or st["tab"] is not None):
+            return                                   # one section always stays open
+        self._sections = st
+        self._save_sections()
+        self._apply_sections()
+
+    def set_sections(self, **kw):
+        """Opens / closes sections (the tutorial): plant, archive, tree
+        (True/False) and tab (0 Pod Seeds, 1 Punnett Square, 2 Trait Ratio,
+        None = none of them)."""
+        st = dict(self._sections)
+        st.update(kw)
+        if not (st["plant"] or st["archive"] or st["tree"] or st["tab"] is not None):
+            st["tree"] = True
+        self._sections = st
+        self._apply_sections()
+
+    def open_tab(self, idx):
+        self.set_sections(tab=int(idx))
+
+    def _active_tab(self):
+        """0 Pod Seeds, 1 Punnett Square, 2 Trait Ratio; -1 when that part
+        of the window is closed (then it is not drawn at all)."""
+        st = getattr(self, "_sections", None)
+        if st is not None and st.get("tab") is None:
+            return -1
+        return self.tie_notebook.index(self.tie_notebook.select())
+
+    @staticmethod
+    def _pane_in(paned, child):
+        try:
+            return str(child) in [str(x) for x in paned.panes()]
+        except Exception:
+            return False
+
+    def _apply_sections(self, initial=False):
+        """Shows exactly the open sections and fits the window to them."""
+        st = self._sections
+        self._style_section_btns()
+        try:
+            # left: traits and/or the archive list
+            for w in (self._traits_box, self._list_box):
+                w.pack_forget()
+            if st.get("plant"):
+                self._traits_box.pack(fill="x", expand=False, padx=self.PAD, pady=(self.PAD, self.PAD))
+            if st.get("archive"):
+                self._list_box.pack(fill="both", expand=True, padx=self.PAD,
+                                    pady=((self.PAD if not st.get("plant") else 0), self.PAD))
+            want_left = bool(st.get("plant") or st.get("archive"))
+            want_right = bool(st.get("tree") or st.get("tab") is not None)
+            pw = self.pw
+            if want_left and not self._pane_in(pw, self._left_pane):
+                pw.insert(0, self._left_pane, weight=1)
+            elif not want_left and self._pane_in(pw, self._left_pane):
+                pw.forget(self._left_pane)
+            if want_right and not self._pane_in(pw, self._right_pane):
+                pw.add(self._right_pane, weight=5)
+            elif not want_right and self._pane_in(pw, self._right_pane):
+                pw.forget(self._right_pane)
+            # right: family tree and/or one of the three views
+            rs = self._right_split
+            have_tree = self._pane_in(rs, self._lineage_pane)
+            have_tabs = self._pane_in(rs, self._tabs_pane)
+            if st.get("tree") and not have_tree:
+                if have_tabs:
+                    rs.add(self._lineage_pane, before=self._tabs_pane, width=500)
+                else:
+                    rs.add(self._lineage_pane, width=500)
+            elif not st.get("tree") and have_tree:
+                rs.forget(self._lineage_pane)
+            tab = st.get("tab")
+            if tab is not None and not have_tabs:
+                rs.add(self._tabs_pane, width=700)
+            elif tab is None and have_tabs:
+                rs.forget(self._tabs_pane)
+            if tab is not None:
+                if self.tie_notebook.index(self.tie_notebook.select()) != tab:
+                    self.tie_notebook.select(tab)        # (draws it: _on_tab_changed)
+                else:
+                    self._on_tab_changed()
+        except Exception as e:
+            print(f"[TIE _apply_sections] {e!r}")
+        self._schedule_auto_resize(40 if not initial else 10)
+
     def _is_maximized(self):
         """
         Cross-platform "is this window currently maximized" check.
@@ -1309,18 +1513,89 @@ class TraitInheritanceExplorer(tk.Toplevel):
         current value rather than setting it).
         """
         try:
+            if self.state() == 'zoomed':
+                return True
             if platform.system() == "Darwin":
-                return bool(self.attributes('-zoomed'))
-            return self.state() == 'zoomed'
+                # Aqua has no "-zoomed" attribute: a window filling the
+                # screen counts as maximized
+                sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+                return self.winfo_width() >= sw * 0.92 and self.winfo_height() >= sh * 0.8
+            return False
         except Exception:
             return False
 
+    def _maximize(self):
+        """Maximized on every system: "zoomed" (Windows and macOS), the
+        X11 "-zoomed" attribute, or else simply the screen's size."""
+        done = False
+        try:
+            self.state('zoomed')
+            done = True
+        except Exception:
+            pass
+        if not done:
+            try:
+                self.attributes('-zoomed', True)
+                done = True
+            except Exception:
+                pass
+
+        def _check():
+            try:
+                if getattr(self, "_max_h_cap", None):
+                    return          # the tutorial sized it itself (status bar stays free)
+                if not self._is_maximized():
+                    sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+                    top = 25 if platform.system() == "Darwin" else 0
+                    self.geometry(f"{sw}x{sh - top - 60}+0+{top}")
+            except Exception:
+                pass
+        self.after(250, _check)
+
+    def _reveal_when_ready(self):
+        """The window is built invisibly (all its size adjustments happen
+        unseen) and only shown once it has stopped changing size."""
+        import time as _time
+        t0 = _time.monotonic()
+        self._last_cfg_t = t0
+
+        def _on_cfg(e=None):
+            if e is None or e.widget is self:
+                self._last_cfg_t = _time.monotonic()
+        try:
+            self.bind("<Configure>", _on_cfg, add="+")
+        except Exception:
+            pass
+
+        def _poll():
+            try:
+                if not self.winfo_exists():
+                    return
+                now = _time.monotonic()
+                quiet = now - getattr(self, "_last_cfg_t", t0)
+                if (now - t0 >= 0.6 and quiet >= 0.35) or now - t0 >= 3.0:
+                    self.attributes("-alpha", 1.0)
+                    self.lift()
+                    return
+                self.after(100, _poll)
+            except Exception:
+                try:
+                    self.attributes("-alpha", 1.0)
+                except Exception:
+                    pass
+        self.after(150, _poll)
+
     def __init__(self, parent_window, app, default_pid=None):
         tk.Toplevel.__init__(self, parent_window)
+        # invisible until it has settled (see _reveal_when_ready)
+        try:
+            self.attributes("-alpha", 0.0)
+        except Exception:
+            pass
         self.app = app
         self.title("Trait Inheritance Explorer (TIE)")
         self.configure(bg=self.BG)
-        self.minsize(1024, 600)
+        self.minsize(420, 320)
 
         # ── Auto-resize debouncing ──────────────────────────────────────────
         # Several render paths (lineage tree, Pod Seeds cards, Punnett square)
@@ -1376,29 +1651,29 @@ class TraitInheritanceExplorer(tk.Toplevel):
             "Action.TButton",
             padding=(10, 4),
             foreground=self.FG,
-            background="#1e4d6b",
+            background="#e0dccf",
             font=("Segoe UI", 11),
         )
         self._style.map(
             "Action.TButton",
             foreground=[("active", self.FG), ("pressed", self.FG)],
-            background=[("active", "#2a6080"), ("pressed", "#163c55")],
+            background=[("active", "#d0c8b7"), ("pressed", "#c8bfa8")],
         )
 
         # Nav button style (slightly lighter blue — pagination ◀ ▶)
         self._style.configure(
             "Nav.TButton",
             padding=(8, 3),
-            foreground="#ffffff",
-            background="#2a5a7a",
+            foreground="#3b2a1a",
+            background="#e0dccf",
             font=("Segoe UI", 11),
         )
         self._style.map(
             "Nav.TButton",
-            foreground=[("active", "#ffffff"), ("pressed", "#ffffff"),
-                        ("disabled", "#607090")],
-            background=[("active", "#3a6e8e"), ("pressed", "#1e4a62"),
-                        ("disabled", "#1a3040")],
+            foreground=[("active", "#3b2a1a"), ("pressed", "#3b2a1a"),
+                        ("disabled", "#a09a8c")],
+            background=[("active", "#d0c8b7"), ("pressed", "#c8bfa8"),
+                        ("disabled", "#ece8de")],
         )
 
         def _mkbtn(parent, text, command, **extra):
@@ -1425,6 +1700,11 @@ class TraitInheritanceExplorer(tk.Toplevel):
             # plant (or previewed ancestor) is currently showing so the
             # allele suffixes in _render_traits appear immediately,
             # without needing to reselect the plant.
+            try:
+                if not self.app._confirm_genotype_reveal(parent=self):
+                    return
+            except Exception:
+                pass
             self.app._genotype_revealed = True
 
             # Actively widen the left panel NOW, not just next time this
@@ -1460,15 +1740,92 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 snap = self._get_snap(pid)
                 if snap:
                     self._render_traits(snap)
+            # every trait is now known: redraw the tree, pods and ratios
+            try:
+                self._refresh_views()
+            except Exception:
+                pass
 
         _mkbtn(tb, "Close", self.destroy).pack(side="left")
-        _mkbtn(tb, "Reveal Genotype", _reveal_genotype).pack(side="left", padx=(6, 0))
+        self._reveal_btn = _mkbtn(tb, "Reveal Genotype", _reveal_genotype)
+        self._reveal_btn.pack(side="left", padx=(6, 0))
+        # "Show alleles" — only offered once the genotype has been revealed:
+        # the lineage tree then shows allele letters instead of pictures.
+        self._show_alleles_var = tk.BooleanVar(value=False)
+        self._alleles_cb = tk.Checkbutton(
+            tb, text="Show alleles", variable=self._show_alleles_var,
+            bg=self.BG, fg=self.ACCENT, selectcolor=self.CARD,
+            activebackground=self.BG, activeforeground=self.ACCENT,
+            font=("Segoe UI", 11, "bold"),
+            command=lambda: self._refresh_views())
         _mkbtn(tb, "Export Plant", self._export_selected_traits).pack(side="left", padx=(6, 0))
 
         tk.Label(tb, text=" Find #", bg=self.BG, fg=self.FG).pack(side="left", padx=(12,4))
         self.find_entry = tk.Entry(tb, width=5)
         self.find_entry.pack(side="left", ipadx=3)
         _mkbtn(tb, "Go", self._find_and_select).pack(side="left", padx=(4,0))
+
+        # The plant shown: in the toolbar (right), so it stays visible
+        # whichever sections are open.
+        _title_box = tk.Frame(tb, bg=self.BG)
+        _title_box.pack(side="right")
+        self.lbl_left_title = tk.Label(_title_box, text="—", bg=self.BG, fg=self.FG,
+                                       font=("Segoe UI", 14, "bold"))
+        self.lbl_left_title.pack(side="left")
+        self.lbl_left_parents = tk.Label(_title_box, text="", bg=self.BG, fg=self.MUTED,
+                                         font=("Segoe UI", 12))
+        self.lbl_left_parents.pack(side="left", padx=(10, 0))
+
+        # ── Section buttons (as in the Inspect window): each one opens or
+        # closes its part of the window, which then fits itself to what is
+        # open. Pod Seeds / Punnett Square / Trait Ratio show one at a time
+        # (clicking the open one closes it). Remembered for next time.
+        self._sections = self._load_sections()
+        secbar = tk.Frame(self, bg=self.BG)
+        secbar.pack(fill="x", padx=self.PAD, pady=(0, 2))
+        self._section_bar = secbar
+        self._section_btns = {}
+        for key, label in self._SECTION_LIST:
+            if key == "pods":
+                tk.Frame(secbar, bg=self.BG, width=14).pack(side="left")   # gap: the analysis group
+            b = tk.Label(secbar, text=label, font=("Segoe UI", 12, "bold"), padx=10, pady=4,
+                         cursor="hand2", relief="flat")
+            b.pack(side="left", padx=(0, 6))
+            b.bind("<Button-1>", lambda e, k=key: self._toggle_section(k))
+            self._section_btns[key] = b
+        self._style_section_btns()
+        if self._family_only():
+            # Plant Roulette: no other sections, no genotype to reveal
+            secbar.pack_forget()
+            try:
+                self._reveal_btn.pack_forget()
+            except Exception:
+                pass
+
+        # ── Trait shown by the tree, the pods and the ratios (one choice for all) ──
+        self.trait_mode = tk.StringVar(value="Flowers")
+        try:
+            self.trait_mode.trace_add('write', lambda *a: self._refresh_views())
+        except Exception:
+            pass
+        trait_bar = tk.Frame(self, bg=self.BG)
+        trait_bar.pack(fill="x", padx=self.PAD, pady=(0, 2))
+        self._trait_bar = trait_bar
+        tk.Label(trait_bar, text="Trait shown:", bg=self.BG, fg=self.MUTED,
+                 font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 8))
+        # value = internal mode name; text = Genotype Viewer name and order
+        _modes = [("Seed shape", "Seed shape"), ("Seed color", "Seed color"),
+                  ("Flowers", "Flower color"), ("Height", "Plant height"),
+                  ("Pod shape", "Pod shape"), ("Pod color", "Pod color")]
+        if self._family_only():
+            _modes.append(("Flower position", "Flower position"))   # (tree only)
+        for label, _txt in _modes:
+            rb = tk.Radiobutton(trait_bar, text=_txt, variable=self.trait_mode, value=label,
+                                bg=self.BG, fg=self.FG, selectcolor=self.CARD, activebackground=self.BG,
+                                indicatoron=True, font=("Segoe UI", 10),
+                                command=lambda: self._refresh_views())
+            rb.pack(side="left", padx=(0, 6))
+            self.__dict__.setdefault("_trait_rbs", {})[label] = rb    # (the tutorial lets one glow)
 
         # Close via Escape or "Q" — skip closing if focus is in a text entry
         # (e.g. the Find # box), so typing "q" there doesn't accidentally
@@ -1491,15 +1848,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
                        # initial open.
         pw.pack(fill="both", expand=True, padx=self.PAD, pady=(4, self.PAD))
 
-        left = tk.Frame(pw, bg=self.PANEL, highlightthickness=1, highlightbackground="#153242")
+        left = tk.Frame(pw, bg=self.PANEL, highlightthickness=1, highlightbackground="#d9cdb4")
         pw.add(left, weight=1)
-
-        left_header = tk.Frame(left, bg=self.PANEL)
-        left_header.pack(fill="x", padx=self.PAD, pady=(self.PAD, 6))
-        self.lbl_left_title = tk.Label(left_header, text="—", bg=self.PANEL, fg=self.FG, font=("Segoe UI", 14, "bold"))
-        self.lbl_left_title.pack(anchor="w")
-        self.lbl_left_parents = tk.Label(left_header, text="", bg=self.PANEL, fg=self.MUTED, font=("Segoe UI", 12))
-        self.lbl_left_parents.pack(anchor="w", pady=(2,0))
+        self._left_pane = left
 
         # ✅ Proper traits box for the explorer
         # expand=False — this box's content is a fixed handful of trait
@@ -1510,16 +1861,21 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # a scrollable list of however many plants), so it's the one
         # that now gets expand=True instead.
         traits_box = tk.LabelFrame(left, text="Traits", bg=self.PANEL, fg=self.FG, labelanchor="nw")
-        traits_box.pack(fill="x", expand=False, padx=self.PAD, pady=(0, self.PAD))
+        traits_box.pack(fill="x", expand=False, padx=self.PAD, pady=(self.PAD, self.PAD))
+        self._traits_box = traits_box
 
         self.traits_container = tk.Frame(traits_box, bg=self.PANEL)
         self.traits_container.pack(fill="both", expand=True, padx=6, pady=6)
 
         list_box = tk.LabelFrame(left, text="Archived plants", bg=self.PANEL, fg=self.FG, labelanchor="nw")
         list_box.pack(fill="both", expand=True, padx=self.PAD, pady=(0, self.PAD))
+        self._list_box = list_box
         list_wrap = tk.Frame(list_box, bg=self.PANEL)
         list_wrap.pack(fill="both", expand=True, padx=6, pady=6)
-        self.listbox = tk.Listbox(list_wrap, height=10, font=("Segoe UI", 11))
+        self.listbox = tk.Listbox(list_wrap, height=10, font=("Segoe UI", 11),
+                                  bg=self.CARD, fg=self.FG, relief="flat",
+                                  highlightthickness=1, highlightbackground="#d9cdb4",
+                                  selectbackground="#8B4226", selectforeground="#ffffff")
         self.listbox.pack(side="left", fill="both", expand=True)
         self.listbox.bind("<<ListboxSelect>>", self._on_select)
         sb = tk.Scrollbar(list_wrap, command=self.listbox.yview)
@@ -1527,8 +1883,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self.listbox.config(yscrollcommand=sb.set)
 
         # ── Right pane: fixed lineage (left) + switching tabs (right) ───────
-        right_pane = tk.Frame(pw, bg=self.PANEL, highlightthickness=1, highlightbackground="#153242")
+        right_pane = tk.Frame(pw, bg=self.PANEL, highlightthickness=1, highlightbackground="#d9cdb4")
         pw.add(right_pane, weight=5)
+        self._right_pane = right_pane
 
         # Horizontal split: lineage always-visible on left, tab switcher on right
         right_split = tk.PanedWindow(right_pane, orient="horizontal", bg=self.PANEL,
@@ -1537,24 +1894,25 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self._right_split = right_split   # saved so _auto_resize_window can adjust sash
 
         # ── Fixed lineage pane (left — always visible) ────────────────────────
-        lineage_pane = tk.Frame(right_split, bg="#0b1a22", highlightthickness=0)
+        lineage_pane = tk.Frame(right_split, bg="#fbf7ee", highlightthickness=0)
         right_split.add(lineage_pane, width=500)
+        self._lineage_pane = lineage_pane
 
-        canvas_frame = tk.Frame(lineage_pane, bg="#0b1a22", highlightthickness=0)
+        canvas_frame = tk.Frame(lineage_pane, bg="#fbf7ee", highlightthickness=0)
         # Tighter horizontal padding specifically here (not self.PAD, which
         # is shared with every other panel) — this is the pane people asked
         # to have less wasted margin around, not the whole UI.
         canvas_frame.pack(fill="both", expand=True, padx=(4, self.PAD), pady=self.PAD)
 
-        self.canvas = tk.Canvas(canvas_frame, bg="#0b1a22", highlightthickness=0)
+        self.canvas = tk.Canvas(canvas_frame, bg="#fbf7ee", highlightthickness=0)
         # Trees can keep growing across generations indefinitely, so
         # auto-resizing the window can never fully keep up forever —
         # scrolling has to carry the rest. A default tk.Scrollbar against
         # this dark background renders as a thin, pale sliver that's easy
         # to miss or hard to grab precisely, so style it to actually stand
         # out and be comfortably grabbable.
-        _sb_opts = dict(troughcolor="#0b1a22", bg="#3a6a80",
-                         activebackground="#4fb3e6", highlightthickness=0,
+        _sb_opts = dict(troughcolor="#fbf7ee", bg="#c8bfa8",
+                         activebackground="#a89f8a", highlightthickness=0,
                          bd=0, width=14, elementborderwidth=0)
         _tree_vscroll = tk.Scrollbar(canvas_frame, orient="vertical",   command=self.canvas.yview, **_sb_opts)
         _tree_hscroll = tk.Scrollbar(canvas_frame, orient="horizontal", command=self.canvas.xview, **_sb_opts)
@@ -1578,6 +1936,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # ── Tab switcher pane (right — Pod Seeds / Punnett Square / Trait Ratio) ──
         tabs_pane = tk.Frame(right_split, bg=self.PANEL, highlightthickness=0)
         right_split.add(tabs_pane, width=700)
+        self._tabs_pane = tabs_pane
 
         # ── Notebook tab styling ──────────────────────────────────────────────
         nb_style = ttk.Style()
@@ -1590,23 +1949,23 @@ class TraitInheritanceExplorer(tk.Toplevel):
         )
         nb_style.configure(
             "TIE.TNotebook.Tab",
-            background="#0f2535",
-            foreground="#5a8fa8",
-            padding=[12, 5],
-            font=("Segoe UI", 11),
+            background="#e8dfc9",
+            foreground="#6b5a44",
+            padding=[10, 4],
+            font=("Segoe UI", 12, "bold"),     # as the Inspect window's section buttons
             borderwidth=0,
-            focuscolor="#1e6fa0",
+            focuscolor="#8B4226",
             focusthickness=0,
             relief="flat",
         )
         nb_style.map(
             "TIE.TNotebook.Tab",
-            background=[("selected", "#1e6fa0"), ("active", "#16506e")],
-            foreground=[("selected", "#ffffff"),  ("active",  "#cce8f5")],
-            padding=[("selected", [16, 7])],
+            background=[("selected", "#8B4226"), ("active", "#d9cdb4")],
+            foreground=[("selected", "#ffffff"),  ("active",  "#3b2a1a")],
+            padding=[("selected", [10, 4])],
             font=[("selected", ("Segoe UI", 12, "bold"))],
             expand=[("selected", [0, 0, 0, 2])],
-            focuscolor=[("selected", "#1e6fa0"), ("active", "#16506e")],
+            focuscolor=[("selected", "#8B4226"), ("active", "#d9cdb4")],
             relief=[("selected", "flat"), ("active", "flat")],
         )
 
@@ -1617,53 +1976,60 @@ class TraitInheritanceExplorer(tk.Toplevel):
                             padding=[10, 5],
                             relief="flat")
         nb_style.map("TraitTitle.TMenubutton",
-                     background=[("active", "#1e6fa0"), ("!active", "#16405a")],
-                     foreground=[("active", "#ffffff"), ("!active", "#cce8f5")],
+                     background=[("active", "#8B4226"), ("!active", "#e0dccf")],
+                     foreground=[("active", "#ffffff"), ("!active", "#3b2a1a")],
                      relief=[("active", "flat"), ("!active", "flat")])
 
+        # Holds which of Pod Seeds / Punnett Square / Trait Ratio is chosen;
+        # its own tab row is not shown (the section buttons do that now).
         self.tie_notebook = ttk.Notebook(tabs_pane, style="TIE.TNotebook")
-        self.tie_notebook.pack(side="top", fill="x", padx=4, pady=(4, 0))
-        self.tie_notebook.enable_traversal()
         self.tie_notebook.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_changed())
 
-        # ── Shared trait toolbar (below tab bar, above content) ───────────────
-        self.trait_mode = tk.StringVar(value="Flowers")
-        try:
-            self.trait_mode.trace_add('write', lambda *a: self._refresh_views())
-        except Exception:
-            pass
+        # ── Small toolbar of the open view (its size buttons) ─────────────────
         shared_toolbar = tk.Frame(tabs_pane, bg=self.PANEL)
         shared_toolbar.pack(side="top", fill="x", padx=self.PAD, pady=(6, 4))
         self._shared_toolbar = shared_toolbar
-        for label in ("Flowers", "Pod color", "Pod shape", "Seed color", "Seed shape", "Height"):
-            rb = tk.Radiobutton(shared_toolbar, text=label, variable=self.trait_mode, value=label,
-                                bg=self.PANEL, fg=self.FG, selectcolor=self.CARD, activebackground=self.PANEL,
-                                indicatoron=True, font=("Segoe UI", 10),
-                                command=lambda: self._refresh_views())
-            rb.pack(side="left", padx=(0, 12))
 
-        # Pod icon size toggle — lives in the shared toolbar, shown only on Pod Seeds tab
-        self._pods_icon_small = False
+        self.after_idle(self._sync_allele_toggle)
+
+        # Pod size toggle — on the Pod Seeds' own line (next to the page
+        # arrows). Small pods are the default.
+        self._pods_icon_small = True
         def _toggle_pods_size():
             self._pods_icon_small = not self._pods_icon_small
-            self._pods_size_btn.config(text="＋" if self._pods_icon_small else "－")
+            self._pods_size_btn.config(text="Maximize" if self._pods_icon_small else "Minimize")
+            # the cards change their layout (two columns when small):
+            # throw the built cards away so they are made anew
+            try:
+                fr = self.pods_row
+                fc = getattr(fr, "_pod_family_cache", None)
+                for cs in ((fc or {}).get("cards") or {}).values():
+                    try:
+                        cs["card_canvas"].destroy()
+                    except Exception:
+                        pass
+                for cs in (getattr(fr, "_pod_cards", None) or {}).values():
+                    try:
+                        cs["card_canvas"].destroy()
+                    except Exception:
+                        pass
+                fr._pod_family_cache = None
+                fr._pod_cards = None
+                fr._pod_sig = None
+            except Exception:
+                pass
             pid_ = (getattr(self, "preview_pid", None)
                     or getattr(self, "_pods_pid", None)
                     or getattr(self, "current_pid", None))
             if pid_:
                 self._render_siblings(pid_)
-        self._pods_size_btn = tk.Button(
-            shared_toolbar, text="－",
-            bg="#1e4d6b", fg=self.FG, relief="flat", bd=0,
-            font=("Segoe UI", 11, "bold"), padx=8, pady=0,
-            command=_toggle_pods_size)
-        # Packed/unpacked by _on_tab_changed; shown only on Pod Seeds tab
+        self._toggle_pods_size = _toggle_pods_size     # (its button is made with the Pod Seeds view)
 
         # Ratio font-size toggle — also lives in the shared toolbar, shown only on Trait Ratio tab
         self._ratio_font_large = False
         self._ratio_size_btn = tk.Button(
             shared_toolbar, text="＋",
-            bg="#1e4d6b", fg=self.FG, relief="flat", bd=0,
+            bg="#e0dccf", fg=self.FG, relief="flat", bd=0,
             font=("Segoe UI", 11, "bold"), padx=8, pady=0,
             command=lambda: self._toggle_ratio_font_size())
         # Packed/unpacked by _on_tab_changed; shown only on Trait Ratio tab
@@ -1671,6 +2037,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # ── Content switcher — each tab's body frame lives here ───────────────
         tab_content = tk.Frame(tabs_pane, bg=self.PANEL)
         tab_content.pack(side="top", fill="both", expand=True, padx=4, pady=(0, 4))
+        self._tab_content = tab_content
 
         # ── Tab 0: Pod Seeds (parents + siblings) ─────────────────────────────
         self.tie_notebook.add(tk.Frame(self.tie_notebook, bg=self.PANEL, height=1), text="  Pod Seeds  ")
@@ -1685,8 +2052,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
         pods_body.columnconfigure(0, weight=1)
         pods_body.rowconfigure(1, weight=1)
 
-        # Nav bar row 0, col 0 — hidden until >1 page
-        self.pods_nav_frame = tk.Frame(pods_body, bg=self.PANEL)
+        # Row 0: the page arrows (only when there is more than one page)
+        # and the Minimize / Maximize button, on one line
+        pods_head = tk.Frame(pods_body, bg=self.PANEL)
+        pods_head.grid(row=0, column=0, sticky="w", pady=(2, 4))
+        self._pods_head = pods_head
+        self.pods_nav_frame = tk.Frame(pods_head, bg=self.PANEL)
+        self._pods_size_btn = tk.Button(
+            pods_head, text="Maximize",
+            bg="#e0dccf", fg=self.FG, relief="flat", bd=0,
+            font=("Segoe UI", 10, "bold"), padx=10, pady=1,
+            command=self._toggle_pods_size)
+        self._pods_size_btn.pack(side="left")
 
         # Vertical scrollbar for pods (col 1)
         _pods_vscroll = tk.Scrollbar(pods_body, orient="vertical")
@@ -1752,12 +2129,8 @@ class TraitInheritanceExplorer(tk.Toplevel):
                            command=lambda: self.after(10, self._on_cross_settings_changed)
                            ).pack(side="left", padx=(10, 0))
 
-        _CROSS_TRAITS = [
-            ("Flower Color",    "flower_color"),    ("Flower Position", "flower_position"),
-            ("Pod Color",       "pod_color"),       ("Pod Shape",       "pod_shape"),
-            ("Seed Color",      "seed_color"),      ("Seed Shape",      "seed_shape"),
-            ("Plant Height",    "plant_height"),
-        ]
+        # Genotype Viewer names and order
+        _CROSS_TRAITS = [(TRAIT_LABELS[k], k) for k in TRAIT_ORDER]
         self._cross_trait_labels = [t[0] for t in _CROSS_TRAITS]
         self._cross_trait_keys   = [t[1] for t in _CROSS_TRAITS]
 
@@ -1769,7 +2142,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 command=self._cross_auto_detect)
         else:
             self._cross_best_btn = tk.Button(
-                cross_ctrl, text="\u27f3 Best fit", bg="#1e4d6b", fg=self.FG,
+                cross_ctrl, text="\u27f3 Best fit", bg="#e0dccf", fg=self.FG,
                 relief="flat", bd=0, font=("Segoe UI", 9), padx=10,
                 command=self._cross_auto_detect)
         self._cross_best_btn.pack(side="left", padx=(16, 0))
@@ -1785,7 +2158,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 self._render_cross_tab(pid_)
         _punnett_size_btn = tk.Button(
             cross_ctrl, text="＋",
-            bg="#1e4d6b", fg=self.FG, relief="flat", bd=0,
+            bg="#e0dccf", fg=self.FG, relief="flat", bd=0,
             font=("Segoe UI", 11, "bold"), padx=10, pady=1,
             command=_toggle_punnett_size)
         self._punnett_size_btn = _punnett_size_btn
@@ -1799,7 +2172,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         _cross_vsb.pack(side="right", fill="y")
         _cross_hsb = tk.Scrollbar(_cross_scroll_wrap, orient="horizontal")
         _cross_hsb.pack(side="bottom", fill="x")
-        self.cross_canvas = tk.Canvas(_cross_scroll_wrap, bg="#0d1f2e",
+        self.cross_canvas = tk.Canvas(_cross_scroll_wrap, bg="#fbf7ee",
                                        highlightthickness=0,
                                        xscrollcommand=_cross_hsb.set,
                                        yscrollcommand=_cross_vsb.set)
@@ -1809,17 +2182,17 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self._cross_img_refs = []
 
         # Title frame is a child of cross_canvas so create_window works reliably
-        _CANVAS_BG = "#0d1f2e"
+        _CANVAS_BG = "#fbf7ee"
         cross_title_frame = tk.Frame(self.cross_canvas, bg=_CANVAS_BG)
         self._cross_title_frame = cross_title_frame
         _title_inner = cross_title_frame
 
         _is_mac = getattr(self, "_is_mac", False)
         _tf    = ("Segoe UI", 14, "bold")
-        _bg_n  = "#16405a"
-        _bg_h  = "#1e6fa0"
-        _hl_n  = "#2a6080"
-        _hl_h  = "#3a9fca"
+        _bg_n  = "#e0dccf"
+        _bg_h  = "#d0c8b7"
+        _hl_n  = "#d0c8b7"
+        _hl_h  = "#a0522d"
 
         def _make_trait_btn(parent, var):
             """Return a Menubutton that looks like a title-style button."""
@@ -1843,7 +2216,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
         def _build_menu(btn, var):
             m = tk.Menu(btn, tearoff=0, bg=self.CARD, fg=self.FG,
-                        activebackground="#1e6fa0", activeforeground="#ffffff",
+                        activebackground="#8B4226", activeforeground="#ffffff",
                         font=("Segoe UI", 11))
             for _lbl in self._cross_trait_labels:
                 m.add_command(
@@ -1852,7 +2225,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                                             self.after(10, self._on_cross_settings_changed)))
             btn["menu"] = m
 
-        self._cross_t1 = tk.StringVar(value=self._cross_trait_labels[3])  # Seed Color
+        self._cross_t1 = tk.StringVar(value=TRAIT_LABELS["seed_color"])
         self._cross_t1_menu = _make_trait_btn(_title_inner, self._cross_t1)
         _build_menu(self._cross_t1_menu, self._cross_t1)
         self._cross_t1_menu.pack(side="left")
@@ -1860,7 +2233,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self._cross_x_lbl = tk.Label(_title_inner, text=" × ", bg=_CANVAS_BG, fg=self.MUTED,
                                       font=("Segoe UI", 14, "bold"))
 
-        self._cross_t2 = tk.StringVar(value=self._cross_trait_labels[4])  # Seed Shape
+        self._cross_t2 = tk.StringVar(value=TRAIT_LABELS["seed_shape"])
         self._cross_t2_menu = _make_trait_btn(_title_inner, self._cross_t2)
         _build_menu(self._cross_t2_menu, self._cross_t2)
         # _cross_x_lbl and _cross_t2_menu packed/unpacked by _on_cross_settings_changed
@@ -1875,16 +2248,11 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # attribute fallback below — which is the actually-correct method
         # on Mac — was never being reached there. Branching on the real
         # platform instead of hoping the exception fires correctly.
-        try:
-            if platform.system() == "Darwin":
-                self.attributes('-zoomed', True)
-            else:
-                try:
-                    self.state('zoomed')
-                except Exception:
-                    self.attributes('-zoomed', True)   # some Linux window managers
-        except Exception:
-            pass
+        # (macOS has no "-zoomed" attribute — that call failed silently
+        # there, so the TIE never opened maximized on a Mac)
+        # (no longer maximized: the window fits itself to the open sections,
+        # see _apply_sections / _auto_resize_window)
+        self._reveal_when_ready()
 
         # ── Initial window sizing (one-shot) ──────────────────────────────────
         def _fix_sash():
@@ -1964,7 +2332,11 @@ class TraitInheritanceExplorer(tk.Toplevel):
             except Exception as e:
                 print(f"[TIE _fix_sash] EXCEPTION: {e!r}")
         def _fix_sash_once():
-            _fix_sash()
+            try:
+                self._left_panel_w = self._desired_left_panel_w()
+                self._apply_sections(initial=True)
+            except Exception as e:
+                print(f"[TIE sections] {e!r}")
             self._layout_done = True
         self.after(50, _fix_sash_once)
 
@@ -2534,6 +2906,12 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
         # Helper to read trait from any snapshot structure
         def _trait_from_snap(s, key):
+            # not discovered yet → "?"
+            try:
+                if self._trait_hidden(s, key):
+                    return "?"
+            except Exception:
+                pass
             # direct dict-style traits
             if isinstance(s, dict):
                 try:
@@ -3234,7 +3612,238 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
         return layers
 
+    # ── What the player has discovered ──────────────────────────────────────
+    @staticmethod
+    def _norm_trait_key(key):
+        k = str(key or "").strip().lower().replace(" ", "_")
+        return {"flowers": "flower_color", "flower": "flower_color",
+                "height": "plant_height"}.get(k, k)
+
+    def _live_revealed_map(self):
+        """{plant id: revealed_traits} for plants still on the plots — newer
+        than the archive copy. Cached for half a second."""
+        import time as _time
+        now = _time.monotonic()
+        cache = getattr(self, "_live_rev_cache", None)
+        if cache and now - cache[0] < 0.5:
+            return cache[1]
+        m = {}
+        try:
+            for t in getattr(self.app, "tiles", []) or []:
+                pl = getattr(t, "plant", None)
+                rt = getattr(pl, "revealed_traits", None) if pl is not None else None
+                if isinstance(rt, dict):
+                    m[str(getattr(pl, "id", ""))] = rt
+        except Exception:
+            pass
+        self._live_rev_cache = (now, m)
+        return m
+
+    def _trait_hidden(self, snap, key):
+        """True if the player has not yet discovered `key` on this plant.
+        Seed colour/shape (the planted pea) are always known; everything is
+        known once the genotype was revealed; snapshots without discovery
+        records (old saves, made-up examples) count as fully known."""
+        key = self._norm_trait_key(key)
+        if key in SEED_TRAITS or snap is None:
+            return False
+        if getattr(self.app, "_genotype_revealed", False):
+            return False
+        if isinstance(snap, dict):
+            if snap.get("_unsown"):
+                return True
+            pid, rt = snap.get("id"), snap.get("revealed_traits")
+        else:
+            pid, rt = getattr(snap, "id", None), getattr(snap, "revealed_traits", None)
+        live = self._live_revealed_map().get(str(pid)) if pid is not None else None
+        if live is not None:
+            rt = live
+        if not isinstance(rt, dict):
+            return False
+        return key not in rt
+
+    def _visible_traits(self, snap):
+        """The snapshot's traits without the undiscovered ones."""
+        try:
+            traits = (snap.get("traits") if isinstance(snap, dict)
+                      else getattr(snap, "traits", None)) or {}
+        except Exception:
+            traits = {}
+        return {k: v for k, v in traits.items() if not self._trait_hidden(snap, k)}
+
+    def _unsown_seed_snaps(self, mid, fid, planted):
+        """Harvested seeds of the cross mid × fid that were not sown, as
+        small snapshots {id, traits (seed colour/shape), source_pod_index,
+        _unsown}. Pod contents come from app.archive["pod_seeds"]; sown
+        seeds are matched against `planted` (same pod, same seed look)."""
+        from collections import Counter as _C, defaultdict as _dd
+        try:
+            store = (getattr(self.app, "archive", {}) or {}).get("pod_seeds") or {}
+        except Exception:
+            store = {}
+        if not store or mid in (None, "", -1):
+            return []
+        fid = mid if fid in (None, "", -1) else fid
+        selfed = str(mid) == str(fid)
+
+        def _n(v):
+            return str(v or "").strip().lower()
+
+        by_pod = _dd(list)
+        bearers = [(mid, fid)] if selfed else [(mid, fid), (fid, mid)]
+        for bearer, other in bearers:
+            for r in store.get(str(bearer)) or []:
+                d = r.get("donor")
+                ok = (selfed and (d in (None, "") or str(d) == str(bearer))) or \
+                     (not selfed and d not in (None, "") and str(d) == str(other))
+                if ok:
+                    by_pod[str(r.get("pod"))].append(r)
+        if not by_pod:
+            return []
+        sown = _dd(_C)
+        for sn in planted or []:
+            try:
+                t = (sn.get("traits") if isinstance(sn, dict) else getattr(sn, "traits", None)) or {}
+                pidx = sn.get("source_pod_index") if isinstance(sn, dict) else getattr(sn, "source_pod_index", None)
+                sown[str(pidx)][(_n(t.get("seed_color")), _n(t.get("seed_shape")))] += 1
+            except Exception:
+                pass
+        out = []
+        for pod, recs in by_pod.items():
+            left = sown.get(pod, _C())
+            for r in recs:
+                k = (_n(r.get("seed_color")), _n(r.get("seed_shape")))
+                if left.get(k, 0) > 0:
+                    left[k] -= 1
+                    continue
+                out.append({"id": f"seed {r.get('id')}", "_unsown": True,
+                            "source_pod_index": r.get("pod"),
+                            "mother_id": mid, "father_id": fid,
+                            "traits": {"seed_color": r.get("seed_color"),
+                                       "seed_shape": r.get("seed_shape")}})
+        return out
+
+    def _unknown_icon(self, px, h=None):
+        """A grey "?" picture, px wide and h (default px) tall — the size of
+        the icon it stands in for — with the "?" itself centred (cached)."""
+        px = max(12, int(px or 40))
+        h = max(12, int(h or px))
+        cache = self.__dict__.setdefault("_unknown_icon_cache", {})
+        if (px, h) in cache:
+            return cache[(px, h)]
+        im = None
+        try:
+            from PIL import Image as _I, ImageDraw as _D, ImageFont as _F, ImageTk as _T
+            img = _I.new("RGBA", (px, h), (0, 0, 0, 0))
+            d = _D.Draw(img)
+            fsz = int(min(px, h) * 0.72)
+            font = None
+            for name in ("DejaVuSans-Bold.ttf", "arialbd.ttf", "Arial Bold.ttf",
+                         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                         "/Library/Fonts/Arial Bold.ttf",
+                         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+                try:
+                    font = _F.truetype(name, fsz)
+                    break
+                except Exception:
+                    continue
+            if font is None:
+                try:
+                    font = _F.load_default(size=fsz)
+                except Exception:
+                    font = _F.load_default()
+            # centre the glyph's own ink box (anchor "mm" sits it a little high)
+            try:
+                bx0, by0, bx1, by1 = d.textbbox((0, 0), "?", font=font)
+                d.text(((px - (bx1 - bx0)) / 2 - bx0, (h - (by1 - by0)) / 2 - by0), "?",
+                       fill=(136, 128, 112, 255), font=font)
+            except Exception:
+                d.text((px / 2, h / 2), "?", fill=(136, 128, 112, 255), font=font, anchor="mm")
+            im = _T.PhotoImage(img)
+        except Exception:
+            im = None
+        cache[(px, h)] = im
+        return im
+
+    def _alleles_for(self, snap, key):
+        """[(a1, a2), ...] for the trait's gene(s), or [] if unknown."""
+        key = self._norm_trait_key(key)
+        try:
+            geno = (snap.get("genotype") if isinstance(snap, dict)
+                    else getattr(snap, "genotype", None)) or {}
+        except Exception:
+            geno = {}
+        if not geno and snap is not None:
+            # archive copy without genotype: ask the plant on the plot
+            try:
+                pid = snap.get("id") if isinstance(snap, dict) else getattr(snap, "id", None)
+                live = next((t.plant for t in getattr(self.app, "tiles", []) or []
+                             if getattr(t, "plant", None) is not None
+                             and str(getattr(t.plant, "id", "")) == str(pid)), None)
+                geno = (getattr(live, "genotype", None) or {}) if live is not None else {}
+            except Exception:
+                geno = {}
+        out = []
+        for loc in TRAIT_LOCI.get(key, ()):
+            pair = geno.get(loc) if isinstance(geno, dict) else None
+            if pair and len(pair) >= 2:
+                out.append((str(pair[0]), str(pair[1])))
+        return out
+
+    def _alleles_text(self, snap, key):
+        return "  ".join(f"{a}/{b}" for a, b in self._alleles_for(snap, key))
+
     def _icon_for_snap(self, trait_key, snap, sx=3, sy=3, target_px=None):
+        """Trait picture — a "?" while the trait is still undiscovered."""
+        try:
+            hidden = self._trait_hidden(snap, trait_key)
+        except Exception:
+            hidden = False
+        if not hidden:
+            return self._icon_for_snap_raw(trait_key, snap, sx, sy, target_px)
+        px, ph = target_px, target_px
+        if not px:
+            k = self._norm_trait_key(trait_key)
+            sample = {"flower_color": "purple", "plant_height": "tall",
+                      "pod_color": "green", "pod_shape": "inflated",
+                      "flower_position": "axial"}.get(k, "purple")
+            ref = self._icon_for_snap_raw(trait_key, {"traits": {k: sample}}, sx, sy, None)
+            try:
+                px, ph = (ref.width(), ref.height()) if ref is not None else (0, 0)
+            except Exception:
+                px = ph = 0
+            px = px or int(48 * float(sx or 1))
+            ph = ph or px
+        return self._unknown_icon(px, ph)
+
+    def _pil_scaled(self, path, sx=1, sy=1):
+        """Like safe_image_scaled (an int shrinks by that factor, a float
+        scales by it) but resized smoothly with PIL instead of Tk's
+        pixel-dropping zoom/subsample, which gave jagged edges."""
+        key = ("smooth", path, sx, sy)
+        cache = self.__dict__.setdefault("_icon_pil_cache", {})
+        if key in cache:
+            return cache[key]
+        im = None
+        try:
+            from PIL import Image as _PILImg, ImageTk as _PILTk
+            fx = (1.0 / sx) if isinstance(sx, int) and sx else float(sx or 1)
+            fy = (1.0 / sy) if isinstance(sy, int) and sy else float(sy or 1)
+            pil = _PILImg.open(path).convert("RGBA")
+            if (fx, fy) != (1.0, 1.0):
+                pil = pil.resize((max(1, round(pil.size[0] * fx)),
+                                  max(1, round(pil.size[1] * fy))), _PILImg.LANCZOS)
+            im = _PILTk.PhotoImage(pil)
+        except Exception:
+            try:
+                im = safe_image_scaled(path, sx, sy)
+            except Exception:
+                im = None
+        if im is not None:
+            cache[key] = im
+        return im
+
+    def _icon_for_snap_raw(self, trait_key, snap, sx=3, sy=3, target_px=None):
         """
         Return a tk/PIL PhotoImage for the given trait.
         When target_px is set, ALL icons are loaded via PIL and resized to
@@ -3253,8 +3862,16 @@ class TraitInheritanceExplorer(tk.Toplevel):
             try:
                 from PIL import Image as _PILImg, ImageTk as _PILTk
                 _pil = _PILImg.open(path).convert("RGBA")
-                _pil = _pil.resize((px, px), _PILImg.LANCZOS)
-                result = _PILTk.PhotoImage(_pil)
+                # fit inside px × px keeping the proportions, smooth edges
+                if max(_pil.size) > px:
+                    _pil.thumbnail((px, px), _PILImg.LANCZOS)
+                elif max(_pil.size) < px:
+                    _f = px / float(max(_pil.size))
+                    _pil = _pil.resize((max(1, round(_pil.size[0] * _f)),
+                                        max(1, round(_pil.size[1] * _f))), _PILImg.LANCZOS)
+                _sq = _PILImg.new("RGBA", (px, px), (0, 0, 0, 0))
+                _sq.paste(_pil, ((px - _pil.size[0]) // 2, (px - _pil.size[1]) // 2), _pil)
+                result = _PILTk.PhotoImage(_sq)
             except Exception:
                 result = None
             if result is not None:
@@ -3292,7 +3909,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     if target_px:
                         im = _pil_load(p, target_px)
                     else:
-                        im = safe_image_scaled(p, sx, sy)
+                        im = self._pil_scaled(p, sx, sy)
                     if im is not None:
                         return im
 
@@ -3356,7 +3973,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 if target_px:
                     im = _pil_load(p, target_px)
                 else:
-                    im = safe_image_scaled(p, sx, sy)
+                    im = self._pil_scaled(p, sx, sy)
                 if im is not None:
                     return im
 
@@ -3370,7 +3987,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     if target_px:
                         im = _pil_load(p, target_px)
                     else:
-                        im = safe_image_scaled(p, sx, sy)
+                        im = self._pil_scaled(p, sx, sy)
                     if im is not None:
                         return im
         except Exception:
@@ -3397,7 +4014,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # Punnett Square or Trait Ratio left those tabs showing stale content
         # until you switched tabs (or picked from the list) to force a redraw.
         try:
-            tab_idx = self.tie_notebook.index(self.tie_notebook.select())
+            tab_idx = self._active_tab()
         except Exception:
             tab_idx = 0
         if tab_idx == 0:   # Pod Seeds
@@ -3407,14 +4024,214 @@ class TraitInheritanceExplorer(tk.Toplevel):
         elif tab_idx == 2:  # Trait Ratio
             self._render_ratio_tab(g('id', pid))
 
+    # ── Smooth (anti-aliased) tree on Windows/Linux ─────────────────────────
+    # Tk's canvas draws lines and circles without anti-aliasing there (macOS
+    # does it itself), so the rings and connectors are drawn with PIL at 4×
+    # size and scaled down instead.
+    _SMOOTH_TREE = platform.system() != "Darwin"
+
+    @staticmethod
+    def _rgba(color):
+        try:
+            from PIL import ImageColor as _IC
+            return _IC.getrgb(color) + ((255,) if len(_IC.getrgb(color)) == 3 else ())
+        except Exception:
+            return (0, 0, 0, 255)
+
+    def _aa_node_image(self, outer, inner, ow, r1=28, r2=24):
+        cache = self.__dict__.setdefault("_aa_node_cache", {})
+        key = (outer, inner, ow, r1, r2)
+        if key in cache:
+            return cache[key]
+        im = None
+        try:
+            from PIL import Image as _I, ImageDraw as _D, ImageTk as _T
+            S = 4
+            half = r1 + ow + 2
+            size = 2 * half
+            big = _I.new("RGBA", (size * S, size * S), (0, 0, 0, 0))
+            d = _D.Draw(big)
+            c = size * S / 2.0
+            R, W = r1 * S, ow * S
+            d.ellipse((c - R - W / 2, c - R - W / 2, c + R + W / 2, c + R + W / 2),
+                      fill=self._rgba(outer))
+            # opaque inside, so the lineage lines run below the circle
+            d.ellipse((c - R + W / 2, c - R + W / 2, c + R - W / 2, c + R - W / 2),
+                      fill=self._rgba("#fbf7ee"))
+            R2 = r2 * S
+            d.ellipse((c - R2, c - R2, c + R2, c + R2), fill=self._rgba(inner))
+            im = _T.PhotoImage(big.resize((size, size), _I.LANCZOS))
+        except Exception:
+            im = None
+        cache[key] = im
+        return im
+
+    def _aa_draw_curve(self, c, x1, y1, x2, y2, ctrl, color, width, tags):
+        """Vertical S-curve (cubic Bézier) from (x1, y1) down to (x2, y2),
+        drawn smooth. Returns the canvas item or None."""
+        try:
+            from PIL import Image as _I, ImageDraw as _D, ImageTk as _T
+            pts = []
+            n = 40
+            for i in range(n + 1):
+                t = i / float(n)
+                u = 1 - t
+                bx = u ** 3 * x1 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t ** 3 * x2
+                by = (u ** 3 * y1 + 3 * u * u * t * (y1 + ctrl)
+                      + 3 * u * t * t * (y2 - ctrl) + t ** 3 * y2)
+                pts.append((bx, by))
+            m = width + 3
+            ox = min(x1, x2) - m
+            oy = min(y1, y2) - m
+            w = int(abs(x2 - x1) + 2 * m) + 1
+            h = int(abs(y2 - y1) + 2 * m) + 1
+            S = 4
+            big = _I.new("RGBA", (w * S, h * S), (0, 0, 0, 0))
+            d = _D.Draw(big)
+            col = self._rgba(color)
+            sp = [((px - ox) * S, (py - oy) * S) for px, py in pts]
+            d.line(sp, fill=col, width=int(width * S), joint="curve")
+            rr = width * S / 2.0
+            for ex, ey in (sp[0], sp[-1]):
+                d.ellipse((ex - rr, ey - rr, ex + rr, ey + rr), fill=col)
+            im = _T.PhotoImage(big.resize((w, h), _I.LANCZOS))
+            if not hasattr(c, "_aa_refs"):
+                c._aa_refs = []
+            c._aa_refs.append(im)
+            return c.create_image(ox, oy, anchor="nw", image=im, tags=tags)
+        except Exception:
+            return None
+
+    def _sync_allele_toggle(self):
+        """Show the "Show alleles" switch once the genotype is revealed."""
+        try:
+            cb = getattr(self, "_alleles_cb", None)
+            if cb is None:
+                return
+            revealed = bool(getattr(self.app, "_genotype_revealed", False))
+            if revealed and not cb.winfo_manager():
+                after = getattr(self, "_reveal_btn", None)
+                if after is not None:
+                    cb.pack(side="left", padx=(10, 0), after=after)
+                else:
+                    cb.pack(side="left", padx=(10, 0))
+            elif not revealed and cb.winfo_manager():
+                cb.pack_forget()
+            # revealed elsewhere (Genotype Viewer) while this window is open:
+            # the trait list loses its "?" too
+            if revealed != getattr(self, "_reveal_seen", revealed):
+                pid = getattr(self, "preview_pid", None) or getattr(self, "current_pid", None)
+                snap = self._get_snap(pid) if pid is not None else None
+                if snap:
+                    self.after_idle(lambda s=snap: self._render_traits(s))
+            self._reveal_seen = revealed
+        except Exception:
+            pass
+
+    def _alleles_on_tree(self):
+        return (bool(getattr(self.app, "_genotype_revealed", False))
+                and bool(getattr(self, "_show_alleles_var", None) is not None
+                         and self._show_alleles_var.get()))
+
+    def _draw_allele_pairs(self, c, cx, cy, pairs, tags):
+        """Allele letters centred on (cx, cy), one line per gene;
+        dominant (capital) letters in bold."""
+        n = len(pairs)
+        size = 14 if n == 1 else 11
+        fonts = self.__dict__.setdefault("_allele_fonts", {})
+        if size not in fonts:
+            fonts[size] = (tkfont.Font(family="Segoe UI", size=size, weight="bold"),
+                           tkfont.Font(family="Segoe UI", size=size))
+        f_b, f_n = fonts[size]
+        line_h = f_b.metrics("linespace")
+        y0 = cy - (n - 1) * line_h / 2.0
+        for i, (a, b) in enumerate(pairs):
+            pieces = [(a, a[:1].isupper()), ("/", False), (b, b[:1].isupper())]
+            widths = [(f_b if bold else f_n).measure(t) for t, bold in pieces]
+            x = cx - sum(widths) / 2.0
+            y = y0 + i * line_h
+            for (t, bold), w in zip(pieces, widths):
+                c.create_text(x, y, text=t, anchor="w", font=f_b if bold else f_n,
+                              fill=self.FG, tags=tags)       # dark: easy to read
+                x += w
+
+    def _apply_tree_alleles(self, c, nodes, icon_key):
+        """Swap node pictures for allele letters (when switched on) and
+        set up the allele hover label."""
+        try:
+            c.delete("allele")
+            c.delete("tip")
+        except Exception:
+            pass
+        show = self._alleles_on_tree()
+        for pid_str, items in (nodes or {}).items():
+            pairs = []
+            if show:
+                try:
+                    pairs = self._alleles_for(self._get_snap(pid_str), icon_key)
+                except Exception:
+                    pairs = []
+            icon = items.get("icon")
+            if icon is not None:
+                try:
+                    c.itemconfig(icon, state="hidden" if pairs else "normal")
+                except Exception:
+                    pass
+            if not pairs:
+                continue
+            try:
+                cx, cy = items["center"]
+                self._draw_allele_pairs(c, cx, cy, pairs,
+                                        tags=("allele", f"node_{pid_str}", "node"))
+            except Exception:
+                pass
+        # (no allele overlay on hover any more: »Show alleles« shows them)
+
+    def _tree_hover(self, c, enter):
+        """Hovering a node shows its alleles for the chosen trait — only
+        after the genotype was revealed."""
+        try:
+            c.delete("tip")
+        except Exception:
+            pass
+        if not enter or not getattr(self.app, "_genotype_revealed", False):
+            return
+        try:
+            cur = c.find_withtag("current")
+            if not cur:
+                return
+            pid_str = next((t[5:] for t in c.gettags(cur[0]) if t.startswith("node_")), None)
+            state = getattr(c, "_tree_state", None) or {}
+            items = (state.get("nodes") or {}).get(pid_str)
+            if pid_str is None or not items:
+                return
+            key = state.get("icon_key") or "flower_color"
+            pairs = self._alleles_for(self._get_snap(pid_str), key)
+            if not pairs:
+                return
+            # only the alleles, inside the circle, over the picture: a
+            # plain disc first so the letters read well ("disabled": the
+            # overlay never takes the mouse, so the hover can't flicker)
+            cx, cy = items["center"]
+            rr = 23
+            self.app._tie_alleles_hovered = True       # (the tutorial waits for it)
+            c.create_oval(cx - rr, cy - rr, cx + rr, cy + rr, fill="#fbf7ee",
+                          outline="", tags=("tip",), state="disabled")
+            self._draw_allele_pairs(c, cx, cy, pairs, tags=("tip",))
+            for it in c.find_withtag("tip"):
+                c.itemconfig(it, state="disabled")
+        except Exception:
+            pass
+
     def _refresh_views(self):
         """Re-render tree and sibling pods on trait-mode change or other triggers."""
+        self._sync_allele_toggle()
         try:
             self._img_refs = []
             root_id = getattr(self, "current_pid", None)
             prev    = getattr(self, "preview_pid", None)
             try:
-                tab_idx = self.tie_notebook.index(self.tie_notebook.select())
+                tab_idx = self._active_tab()
             except Exception:
                 tab_idx = 0
 
@@ -3445,16 +4262,16 @@ class TraitInheritanceExplorer(tk.Toplevel):
     # two children, the four lines form a visual × with each "arm" in its own color.
     # Palette is perceptually distinct on dark backgrounds.
     _EDGE_PALETTE = [
-        "#2a8fc4",   # vivid sky-blue
+        "#2b6f9e",   # vivid sky-blue
         "#d4662a",   # warm orange
-        "#2ab88a",   # teal-green
+        "#1f8a68",   # teal-green
         "#c45a9a",   # rose-purple
-        "#d4b02a",   # golden-yellow
+        "#b08a14",   # golden-yellow
         "#6a4ac4",   # violet
-        "#2ac45a",   # grass-green
+        "#2a9a48",   # grass-green
         "#c42a2a",   # red
         "#2a6ac4",   # mid-blue
-        "#c49a2a",   # amber
+        "#a87a14",   # amber
     ]
 
     def _draw_canvas_family(self, pid, target_canvas=None):
@@ -3469,8 +4286,8 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 vp_w = max(c.winfo_width(),  480)
                 vp_h = max(c.winfo_height(), 400)
 
-                node_outer = "#34b3e6"
-                node_fill  = "#193644"
+                node_outer = "#8B4226"
+                node_fill  = "#efe8d8"
 
                 layers = self._build_layers_archive(pid)
                 if not layers:
@@ -3714,7 +4531,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
                 def _node_colors(pid_str):
                     if pid_str == gold_id:
-                        return "#f4c542", "#5a3b00", self.NODE_OUTER_W + 1
+                        return "#d4a017", "#f6e3a1", self.NODE_OUTER_W + 1
                     return node_outer, node_fill, self.NODE_OUTER_W
 
                 # ── Trait icon key ────────────────────────────────────────────────
@@ -3729,6 +4546,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     "seed color": "seed_color",
                     "seed shape": "seed_shape",
                     "height":     "plant_height",
+                    "flower position": "flower_position",
                 }.get(mode, "flower_color")
 
                 # ── Reuse check ───────────────────────────────────────────────────
@@ -3752,8 +4570,13 @@ class TraitInheritanceExplorer(tk.Toplevel):
                         snap = self._get_snap(pid_str)
                         outer_color, inner_color, outer_w = _node_colors(pid_str)
                         try:
-                            c.itemconfig(items["outer"], outline=outer_color, width=outer_w)
-                            c.itemconfig(items["inner"], fill=inner_color)
+                            if items.get("aa"):
+                                _ring = self._aa_node_image(outer_color, inner_color, outer_w)
+                                if _ring is not None:
+                                    c.itemconfig(items["outer"], image=_ring)
+                            else:
+                                c.itemconfig(items["outer"], outline=outer_color, width=outer_w)
+                                c.itemconfig(items["inner"], fill=inner_color)
                         except Exception:
                             pass
                         try:
@@ -3780,10 +4603,12 @@ class TraitInheritanceExplorer(tk.Toplevel):
                                     pass
                     _prev_state["icon_key"] = icon_key
                     _prev_state["gold_id"] = gold_id
+                    self._apply_tree_alleles(c, _prev_state["nodes"], icon_key)
                     return
 
                 # ---- FULL REBUILD: genuinely different tree (or first draw) ----
                 c.delete("all")
+                c._aa_refs = []
                 _tree_node_items = {}
 
                 # ── Title ─────────────────────────────────────────────────────────
@@ -3828,7 +4653,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 #   P1 = (x1, y1+r + span*0.45)              — upper ctrl, x locked to parent
                 #   P2 = (x2, y2-r - span*0.45)              — lower ctrl, x locked to child
                 #   P3 = (x2, y2-r)                          — child top
-                r_connect = 26
+                r_connect = 0    # lines start at the node centre, hidden below the circle
                 drawn_edges = set()
 
                 for idx in range(1, len(layers)):
@@ -3850,8 +4675,12 @@ class TraitInheritanceExplorer(tk.Toplevel):
                             x1, y1 = pos[sp]
                             x2, y2 = pos[sid]
                             span   = max(1, (y2 - r_connect) - (y1 + r_connect))
-                            ctrl   = span * 0.45
+                            ctrl   = span * 0.8    # stronger S-bend
 
+                            if self._SMOOTH_TREE and self._aa_draw_curve(
+                                    c, x1, y1 + r_connect, x2, y2 - r_connect, ctrl,
+                                    color, self.LINK_W, ("edge",)) is not None:
+                                continue
                             if selfed:
                                 # Selfed → x1 ≈ x2: draw a clean vertical S so any
                                 # tiny residual x-offset stays invisible.
@@ -3892,12 +4721,19 @@ class TraitInheritanceExplorer(tk.Toplevel):
                         r1, r2  = 28, 24
                         outer_color, inner_color, outer_w = _node_colors(pid_str)
 
-                        outer_item = c.create_oval(x - r1, y - r1, x + r1, y + r1,
-                                      outline=outer_color, width=outer_w,
-                                      tags=(f"node_{pid_str}", "node"))
-                        inner_item = c.create_oval(x - r2, y - r2, x + r2, y + r2,
-                                      fill=inner_color, outline="",
-                                      tags=(f"node_{pid_str}", "node"))
+                        _ring = (self._aa_node_image(outer_color, inner_color, outer_w, r1, r2)
+                                 if self._SMOOTH_TREE else None)
+                        if _ring is not None:
+                            outer_item = inner_item = c.create_image(
+                                x, y, image=_ring, tags=(f"node_{pid_str}", "node"))
+                        else:
+                            outer_item = c.create_oval(x - r1, y - r1, x + r1, y + r1,
+                                          outline=outer_color, width=outer_w,
+                                          fill="#fbf7ee",   # lines run below
+                                          tags=(f"node_{pid_str}", "node"))
+                            inner_item = c.create_oval(x - r2, y - r2, x + r2, y + r2,
+                                          fill=inner_color, outline="",
+                                          tags=(f"node_{pid_str}", "node"))
                         icon_item = None
                         icon_img = None
                         try:
@@ -3922,6 +4758,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                         _tree_node_items[pid_str] = {
                             "outer": outer_item, "inner": inner_item,
                             "icon": icon_item, "icon_img": icon_img,
+                            "aa": _ring is not None, "center": (x, y), "r1": r1,
                         }
 
                 try:
@@ -3935,10 +4772,11 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     "gold_id": gold_id,
                     "nodes": _tree_node_items,
                 }
+                self._apply_tree_alleles(c, _tree_node_items, icon_key)
 
             except Exception as e:
                 c.create_text(20, 20, anchor="nw", text=f"Tree error: {e}",
-                              fill="#ffb4b4", font=("Segoe UI", 12, "bold"))
+                              fill="#b02a2a", font=("Segoe UI", 12, "bold"))
                 traceback.print_exc()
 
     def _desired_left_panel_w(self):
@@ -3984,7 +4822,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         cx = cy = icon_w // 2
         ico.create_oval(
             cx - r, cy - r, cx + r, cy + r,
-            fill="#223c4d", outline="#2ea1db"
+            fill="#efe8d8", outline="#8B4226"
         )
         ico.create_text(
             cx, cy,
@@ -4065,12 +4903,15 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 parts.append(f"{a1}/{a2}")
             return f" ({'; '.join(parts)})" if parts else ""
 
-        priority = ["flower_color","flower_position","Flowers","pod_color",
-                    "pod_shape","seed_color","seed_shape","plant_height","height"]
+        # Genotype Viewer order and names; undiscovered traits show "?"
+        priority = list(TRAIT_ORDER)
         ordered = sorted(
-            traits.items(),
+            ((k, ("?" if self._trait_hidden(snap, k) else v)) for k, v in traits.items()),
             key=lambda kv: (priority.index(kv[0]) if kv[0] in priority else 999, kv[0])
         )
+
+        def _label(k):
+            return TRAIT_LABELS.get(k, str(k).replace("_", " ").capitalize())
 
         # 🔧 compact layout knobs
         row_pad = 0          # was 4
@@ -4095,7 +4936,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         _value_font_obj = tkfont.Font(font=value_font)
         _max_row_text_w = 0
         for _name, _value in ordered:
-            _name_w = _name_font_obj.measure(f"{_name.replace('_',' ')}:")
+            _name_w = _name_font_obj.measure(f"{_label(_name)}:")
             _value_w = _value_font_obj.measure(f"{_value}{_allele_suffix(_name)}")
             _max_row_text_w = max(_max_row_text_w, _name_w, _value_w)
         # icon + its own gap (8) + text_col's own right padding (4)
@@ -4167,7 +5008,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
         for name, value in ordered:
             im = self._icon_for_snap(name, snap, sx=0.8, sy=0.8)  # was self.SCALE_TRAIT
             value_text = f"{value}{_allele_suffix(name)}"
-            name_text = f"{name.replace('_',' ')}:"
+            if value == "?":
+                value_text = "(not yet discovered)"     # the icon shows the "?"
+            name_text = f"{_label(name)}:"
 
             existing_row = self._trait_row_widgets.get(name) if _same_keys else None
 
@@ -4355,7 +5198,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                         img_id = c.create_oval(
                             canvas_w // 2 - r, canvas_h // 2 - r,
                             canvas_w // 2 + r, canvas_h // 2 + r,
-                            outline="#34b3e6", width=1, tags="fallback")
+                            outline="#8B4226", width=1, tags="fallback")
                     sib["icon_img"] = im
                     sib["img_id"] = img_id
                     sib["canvas_w"] = canvas_w
@@ -4370,20 +5213,173 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 if str(cid) == highlight_id and sib.get("img_id") is not None:
                     rect_id = c.create_rectangle(
                         2, 2, sib["canvas_w"] - 2, sib["canvas_h"] - 2,
-                        outline="#ffd166", width=3, tags="hl")
+                        outline="#d4a017", width=3, tags="hl")
                     c.tag_lower(rect_id, sib["img_id"])
             except Exception:
                 pass
         try:
+            _unk = local_counter.pop("?", 0)
             if local_counter:
                 ordered_local = sorted(local_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
                 counts_local = [cnt for _name, cnt in ordered_local]
                 ratio_local = reduced_ratio(counts_local)
             else:
-                ratio_local = "0"
+                ratio_local = "—"
+            if _unk:
+                ratio_local += f"\n+ {_unk} ?"
             cs["ratio_lbl"].configure(text=ratio_local)
+            cs["ratio_lbl"]._count_text = self._pod_count_text(local_counter, _unk)
         except Exception:
             pass
+
+    # ── Pod-shaped card outline ────────────────────────────────────────────
+    def _pod_geometry(self, iw, ih, pad):
+        """Sizes for a pod around content iw × ih: the content sits in the
+        straight middle; the ends taper to a point."""
+        side = pad
+        W = iw + 2 * side
+        T = int(max(24, min(52, W * 0.9)))      # length of each tapered end
+        stalk, beak = 16, 14                    # dried sepals on top, tip below
+        top = stalk
+        H = ih + 2 * T
+        return {"w": W + 8, "h": top + H + beak, "W": W, "T": T, "x0": 4,
+                "top": top, "bot": top + H, "cx0": 4 + side, "cy0": top + T,
+                "beak": beak}
+
+    def _pod_points(self, geo, scale=1.0):
+        import math as _m
+        W, T, x0 = geo["W"], geo["T"], geo["x0"]
+        top, bot = geo["top"], geo["bot"]
+        cx, hw = x0 + W / 2.0, W / 2.0
+        n = 24
+
+        def half(u):            # u: 0 at the tip … 1 at the shoulder (ogive)
+            return hw * (1 - (1 - u) ** 2)
+
+        right, left = [], []
+        for i in range(n + 1):                      # upper end
+            u = i / float(n)
+            hu = half(u)
+            right.append((cx + hu, top + T * u)); left.append((cx - hu, top + T * u))
+        for i in range(n, -1, -1):                  # lower end
+            u = i / float(n)
+            hu = half(u)
+            right.append((cx + hu, bot - T * u)); left.append((cx - hu, bot - T * u))
+        pts = right + left[::-1]
+        return [(px * scale, py * scale) for px, py in pts]
+
+    def _pod_sepals(self, geo):
+        """Three small dried leaves (the old flower's sepals) at the top tip,
+        as polygons."""
+        import math as _m
+        cx = geo["x0"] + geo["W"] / 2.0
+        ty = geo["top"] + 5
+        L = geo["top"] + 3
+        out = []
+        for ang, ln in ((-62, 0.85), (-24, 1.0), (14, 0.9), (52, 0.95)):
+            a = _m.radians(ang)
+            dx, dy = _m.sin(a), -_m.cos(a)          # leaf direction (up)
+            px, py = -dy, dx                        # sideways
+            l = L * ln
+            wdt = 3.2
+            curl = 2.0 if ang <= 0 else -2.0        # tips curl a little
+            out.append([(cx - px * 1.2, ty - py * 1.2),
+                        (cx + dx * l * 0.45 - px * wdt, ty + dy * l * 0.45 - py * wdt),
+                        (cx + dx * l + px * curl, ty + dy * l + py * curl),
+                        (cx + dx * l * 0.5 + px * wdt * 0.6, ty + dy * l * 0.5 + py * wdt * 0.6),
+                        (cx + px * 1.2, ty + py * 1.2)])
+        return out
+
+    def _pod_lines(self, geo):
+        """Curled tip below, as a point list (stalk: unused)."""
+        W, x0 = geo["W"], geo["x0"]
+        cx = x0 + W / 2.0
+        stalk = []
+        b = geo["bot"]
+        beak = [(cx, b - 1), (cx + 3, b + geo["beak"] * 0.5), (cx + 8, b + geo["beak"] - 2)]
+        return stalk, beak
+
+    def _pod_outline_color(self, fill):
+        try:
+            r, g, b = self._rgba(fill)[:3]
+            return "#%02x%02x%02x" % (int(r * 0.72), int(g * 0.72), int(b * 0.72))
+        except Exception:
+            return "#a89c80"
+
+    def _draw_pod_shape(self, c, geo, fill, tags):
+        line = self._pod_outline_color(fill)
+        stalk, beak = self._pod_lines(geo)
+        if self._SMOOTH_TREE:
+            try:
+                from PIL import Image as _I, ImageDraw as _D, ImageTk as _T
+                S = 4
+                big = _I.new("RGBA", (geo["w"] * S, geo["h"] * S), (0, 0, 0, 0))
+                d = _D.Draw(big)
+                pts = self._pod_points(geo, S)
+                for leaf in self._pod_sepals(geo):
+                    lp = [(x * S, y * S) for x, y in leaf]
+                    d.polygon(lp, fill=self._rgba("#b39a62"))
+                    d.line(lp + [lp[0]], fill=self._rgba("#7d6638"), width=int(1 * S), joint="curve")
+                d.polygon(pts, fill=self._rgba(fill))
+                d.line(pts + [pts[0]], fill=self._rgba(line), width=int(1.5 * S), joint="curve")
+                d.line([(x * S, y * S) for x, y in beak], fill=self._rgba(line),
+                       width=int(2.0 * S), joint="curve")
+                im = _T.PhotoImage(big.resize((geo["w"], geo["h"]), _I.LANCZOS))
+                c._pod_img = im
+                c.create_image(0, 0, anchor="nw", image=im, tags=tags)
+                return
+            except Exception:
+                pass
+        flat = [v for p in self._pod_points(geo) for v in p]
+        c.create_polygon(flat, fill=fill, outline=line, width=1.5, tags=tags)
+        for leaf in self._pod_sepals(geo):
+            c.create_polygon(*[v for p in leaf for v in p], fill="#b39a62",
+                             outline="#7d6638", width=1, smooth=True, tags=tags)
+        c.create_line(*[v for p in beak for v in p], fill=line, width=2,
+                      smooth=True, capstyle="round", tags=tags)
+
+    @staticmethod
+    def _pod_count_text(counter, unknown=0):
+        parts = [f"{n} {v}" for v, n in sorted(counter.items(), key=lambda kv: (-kv[1], str(kv[0])))]
+        if unknown:
+            parts.append(f"{unknown} not yet known")
+        return " + ".join(parts) if parts else ""
+
+    def _show_count_tip(self, lbl):
+        self._hide_count_tip()
+        txt = getattr(lbl, "_count_text", "")
+        if not txt:
+            return
+        try:
+            tip = tk.Toplevel(self)
+            tip.overrideredirect(True)
+            try:
+                tip.attributes("-topmost", True)
+            except Exception:
+                pass
+            tk.Label(tip, text=txt, bg="#fff8e1", fg=self.FG, font=("Segoe UI", 11, "bold"),
+                     bd=1, relief="solid", padx=8, pady=3).pack()
+            tip.update_idletasks()
+            x = lbl.winfo_rootx() + lbl.winfo_width() // 2 - tip.winfo_reqwidth() // 2
+            y = lbl.winfo_rooty() + lbl.winfo_height() + 18
+            try:                                 # just below the whole pod
+                cv = lbl.master.master
+                y = cv.winfo_rooty() + cv.winfo_height() + 4
+            except Exception:
+                pass
+            tip.geometry(f"+{max(0, x)}+{y}")
+            self._count_tip = tip
+        except Exception:
+            self._count_tip = None
+
+    def _hide_count_tip(self):
+        tip = getattr(self, "_count_tip", None)
+        self._count_tip = None
+        if tip is not None:
+            try:
+                tip.destroy()
+            except Exception:
+                pass
 
     def _build_pod_card(self, pods_row, pidx, sibling_pairs, mid, highlight_id,
                          is_combo, sib_trait_key, pending_redraws, maybe_reveal,
@@ -4405,19 +5401,21 @@ class TraitInheritanceExplorer(tk.Toplevel):
         """
         try:
             mother_snap = self._get_snap(mid)
-            m_traits = mother_snap.get("traits", {}) if isinstance(mother_snap, dict) else getattr(mother_snap, "traits", {}) or {}
+            m_traits = self._visible_traits(mother_snap) if mother_snap else {}
             pod_color_val = str(m_traits.get("pod_color", "")).lower()
         except Exception:
             pod_color_val = ""
         col_bg = self._pod_tint_from_color(pod_color_val)
 
-        _CR = 20
-        _CP = 6
+        # small icons ("−"): a narrower card around the single column
+        _small = bool(self._pods_icon_small and not is_combo)
+        _CR = 12 if _small else 20
+        _CP = 3 if _small else 6
         card_canvas = tk.Canvas(pods_row, bg=self.PANEL,
                                  highlightthickness=0, bd=0)
-        card_canvas.pack(side="left", padx=10, pady=8, fill="y")
+        card_canvas.pack(side="left", padx=4 if _small else 10, pady=8, fill="y")
         card = tk.Frame(card_canvas, bg=col_bg)
-        card_canvas.create_window(_CP, _CP, anchor="nw", window=card)
+        _win = card_canvas.create_window(_CP, _CP, anchor="nw", window=card)
 
         pending_redraws[0] += 1
         _counted = [False]
@@ -4430,21 +5428,13 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 ih = _cf.winfo_reqheight()
                 if iw < 2 or ih < 2:
                     return
-                w = iw + 2 * _p
-                h = ih + 2 * _p
-                _cc.configure(width=w, height=h)
+                # Pea-pod outline: pointed, rounded ends above and below
+                # the content, a short stalk on top, the curved tip below.
+                geo = self._pod_geometry(iw, ih, _p)
+                _cc.configure(width=geo["w"], height=geo["h"])
+                _cc.coords(_win, geo["cx0"], geo["cy0"])
                 _cc.delete("rrect")
-                pts = [
-                    _r, 0,  w-_r, 0,
-                    w,  0,  w,    _r,
-                    w,  h-_r, w,  h,
-                    w-_r, h, _r,  h,
-                    0,  h,  0,    h-_r,
-                    0,  _r, 0,    0,
-                ]
-                _cc.create_polygon(pts, smooth=True,
-                                   fill=_bg, outline="#2b4d59", width=1,
-                                   tags="rrect")
+                self._draw_pod_shape(_cc, geo, _bg, tags="rrect")
                 _cc.tag_lower("rrect")
                 if not _counted[0]:
                     _counted[0] = True
@@ -4458,21 +5448,25 @@ class TraitInheritanceExplorer(tk.Toplevel):
         card.bind("<Configure>", _redraw_card)
         card_canvas.after(20, _redraw_card)
 
-        tk.Label(card, text=f"Pod #{pidx if pidx is not None else '?'}",
-                 bg=col_bg, fg=self.FG, font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=10, pady=(10,6))
+        _px = 3 if _small else 6
+        tk.Label(card, text=(f"#{pidx if pidx is not None else '?'}" if _small
+                             else f"Pod #{pidx if pidx is not None else '?'}"),
+                 bg=col_bg, fg=self.FG,
+                 font=("Segoe UI", 10 if _small else 12, "bold")).pack(
+                     anchor="center", padx=_px,
+                     pady=(0, 3) if _small else (0, 6))
 
         col = tk.Frame(card, bg=col_bg)
-        col.pack(padx=10, pady=(0,8))
+        col.pack(padx=_px, pady=(0, 4) if _small else (0, 8))
 
         local_counter = Counter()
         siblings_state = []
-
         for cid, csnap in sibling_pairs:
             tval = _norm(_lookup_trait(csnap, sib_trait_key))
             local_counter[tval] += 1
 
             row = tk.Frame(col, bg=col_bg)
-            row.pack(anchor="w", pady=4)
+            row.pack(anchor="center" if _small else "w", pady=2 if _small else 4)
 
             _target_px = 32 if (self._pods_icon_small and not is_combo) else 56
             im = self._icon_for_snap(sib_trait_key, csnap,
@@ -4500,13 +5494,17 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 img_id = c.create_oval(
                     canvas_w // 2 - r, canvas_h // 2 - r,
                     canvas_w // 2 + r, canvas_h // 2 + r,
-                    outline="#34b3e6", width=1, tags="fallback"
+                    outline="#8B4226", width=1, tags="fallback"
                 )
 
+            if isinstance(csnap, dict) and csnap.get("_unsown"):
+                c.create_rectangle(1, 1, canvas_w - 2, canvas_h - 2,
+                                   outline="#9a8a6e", width=1, dash=(3, 3),
+                                   tags="unsown")
             if str(cid) == highlight_id and img_id is not None:
                 rect_id = c.create_rectangle(
                     2, 2, canvas_w - 2, canvas_h - 2,
-                    outline="#ffd166", width=3, tags="hl"
+                    outline="#d4a017", width=3, tags="hl"
                 )
                 try:
                     c.tag_lower(rect_id, img_id)
@@ -4518,15 +5516,22 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 "canvas_w": canvas_w, "canvas_h": canvas_h,
             })
 
+        _unk = local_counter.pop("?", 0)
         if local_counter:
             ordered_local = sorted(local_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
             counts_local = [cnt for _name, cnt in ordered_local]
             ratio_local = reduced_ratio(counts_local)
         else:
-            ratio_local = "0"
+            ratio_local = "—"
+        if _unk:
+            ratio_local += f"\n+ {_unk} ?"
         ratio_lbl = tk.Label(card, text=ratio_local, bg=col_bg, fg=self.FG,
-                              font=("Segoe UI", 12, "bold"))
-        ratio_lbl.pack(padx=10, pady=(4,10), anchor="center")
+                              font=("Segoe UI", 10 if _small else 12, "bold"), justify="center")
+        ratio_lbl.pack(padx=_px, pady=(2, 6) if _small else (4, 10), anchor="center")
+        # hover: the counts behind the ratio (e.g. "3 purple + 1 white")
+        ratio_lbl._count_text = self._pod_count_text(local_counter, _unk)
+        ratio_lbl.bind("<Enter>", lambda e, l=ratio_lbl: self._show_count_tip(l), add="+")
+        ratio_lbl.bind("<Leave>", lambda e: self._hide_count_tip(), add="+")
 
         return {"ratio_lbl": ratio_lbl, "siblings": siblings_state,
                 "card_canvas": card_canvas}
@@ -4643,6 +5648,14 @@ class TraitInheritanceExplorer(tk.Toplevel):
             except Exception:
                 return None
 
+        _lookup_trait_raw = _lookup_trait
+
+        def _lookup_trait(snap, key):
+            # undiscovered traits count as "?" (left out of the ratios)
+            if self._trait_hidden(snap, key):
+                return "?"
+            return _lookup_trait_raw(snap, key)
+
         is_combo = (target_sibs is not None)
 
         # --- resolve persistent canvas/row/nav targets ---
@@ -4683,11 +5696,35 @@ class TraitInheritanceExplorer(tk.Toplevel):
             # was destroying and rebuilding this same tiny, fixed-
             # structure nav bar on every single click for no real reason.
 
+        # a "no siblings" note from an earlier plant (e.g. an F0) goes
+        try:
+            _old_msg = getattr(pods_row_frame, "_msg_lbl", None)
+            if _old_msg is not None:
+                _old_msg.destroy()
+            pods_row_frame._msg_lbl = None
+        except Exception:
+            pass
+
+        def _clear_pod_row():
+            # every card is destroyed: forget the cached ones too, or the
+            # next plant would "reuse" dead cards and show nothing
+            for w in pods_row_frame.winfo_children(): w.destroy()
+            pods_row_frame._pod_cards = None
+            pods_row_frame._pod_sig = None
+            pods_row_frame._pod_family_cache = None
+            pods_row_frame._ratio_inline = None
+            if not is_combo:
+                try:
+                    nav_frame.pack_forget()
+                except Exception:
+                    pass
+
         sel = self._get_snap(pid)
         if not sel:
-            for w in pods_row_frame.winfo_children(): w.destroy()
-            tk.Label(pods_row_frame, text="No archived siblings.", bg=self.PANEL, fg=self.MUTED,
-                     font=("Segoe UI", 11)).pack(anchor="w", padx=12, pady=16)
+            _clear_pod_row()
+            pods_row_frame._msg_lbl = tk.Label(pods_row_frame, text="No archived siblings.", bg=self.PANEL, fg=self.MUTED,
+                     font=("Segoe UI", 11))
+            pods_row_frame._msg_lbl.pack(anchor="w", padx=12, pady=16)
             # Reveal canvas so the message is visible
             try:
                 if not is_combo and getattr(self, "_pods_win", None):
@@ -4743,10 +5780,33 @@ class TraitInheritanceExplorer(tk.Toplevel):
             self._pods_scan_cache = {"mid": mid, "fid": fid,
                                       "plants_len": _plants_len, "pods": pods}
 
+        # Seed colour / shape: every harvested seed counts, sown or not —
+        # the unsown ones are added to their pod (dashed frame).
+        _seed_mode = _sib_trait_key in SEED_TRAITS
+        _unsown_total = 0
+        if _seed_mode:
+            try:
+                _planted = [sn for lst in pods.values() for _c, sn in lst]
+                _extra = self._unsown_seed_snaps(mid, fid, _planted)
+            except Exception:
+                _extra = []
+            if _extra:
+                pods = {k: list(v) for k, v in pods.items()}
+                _keymap = {str(k): k for k in pods}
+                for sn in _extra:
+                    k = _keymap.get(str(sn.get("source_pod_index")))
+                    if k is None:
+                        k = sn.get("source_pod_index")
+                        _keymap[str(k)] = k
+                    pods.setdefault(k, []).append((sn["id"], sn))
+                _unsown_total = len(_extra)
+
         if not pods:
-            for w in pods_row_frame.winfo_children(): w.destroy()
-            tk.Label(_sibs_frame, text="No siblings found for this plant.", bg=self.PANEL, fg=self.MUTED,
-                     font=("Segoe UI", 11)).pack(anchor="w", padx=12, pady=16)
+            _clear_pod_row()
+            pods_row_frame._msg_lbl = tk.Label(
+                pods_row_frame, text="No siblings found for this plant.", bg=self.PANEL,
+                fg=self.MUTED, font=("Segoe UI", 11))
+            pods_row_frame._msg_lbl.pack(anchor="w", padx=12, pady=16)
             # Reveal canvas so the message is visible
             try:
                 if not is_combo and getattr(self, "_pods_win", None):
@@ -4762,11 +5822,24 @@ class TraitInheritanceExplorer(tk.Toplevel):
         grand_counter = Counter()
         highlight_id = str(pid)
 
-        PODS_PER_PAGE = 5
-        ordered_keys = sorted(pods.keys(), key=lambda x: (-1 if x is None else x))
+        PODS_PER_PAGE = 4
+        def _pod_sort(x):
+            try:
+                return (0, -1 if x is None else int(x))
+            except Exception:
+                return (1, str(x))
+        ordered_keys = sorted(pods.keys(), key=_pod_sort)
         total_pages = max(1, (len(ordered_keys) + PODS_PER_PAGE - 1) // PODS_PER_PAGE)
         # Clamp page
         if not hasattr(self, '_pods_page'): self._pods_page = 0
+        # A newly selected plant: open the page with its own pod (it is
+        # highlighted there); paging by hand afterwards stays as it is.
+        if str(getattr(self, "_pods_page_for", None)) != str(pid):
+            self._pods_page_for = str(pid)
+            for _i, _k in enumerate(ordered_keys):
+                if any(str(_c) == str(pid) for _c, _sn in pods[_k]):
+                    self._pods_page = _i // PODS_PER_PAGE
+                    break
         self._pods_page = max(0, min(self._pods_page, total_pages - 1))
         page_keys = ordered_keys[self._pods_page * PODS_PER_PAGE : (self._pods_page + 1) * PODS_PER_PAGE]
 
@@ -4784,7 +5857,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         if is_combo:
             nav_frame.pack_forget()
         else:
-            try: nav_frame.grid_remove()
+            try: nav_frame.pack_forget()
             except Exception: pass
         if total_pages > 1:
             if is_combo:
@@ -4795,8 +5868,8 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 self.combo_sibs_inner.pack(side="top", fill="x")
                 self.combo_ratio_frame.pack(side="top", fill="x", pady=(6, 0))
             else:
-                # Pods tab: nav in grid row 0 col 0
-                nav_frame.grid(row=0, column=0, sticky="w", pady=(0, 4))
+                # Pods tab: the arrows on the head line, before the size button
+                nav_frame.pack(side="left", padx=(0, 14), before=self._pods_size_btn)
             nav = nav_frame
             _tgt_s = target_sibs
             _tgt_r = target_ratio
@@ -4804,7 +5877,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             def _go_page(p, _pid=pid, _ts=_tgt_s, _tr=_tgt_r):
                 self._pods_page = p
                 self._render_siblings(_pid, target_sibs=_ts, target_ratio=_tr)
-            BTN_BG = "#2a5a7a"
+            BTN_BG = "#e0dccf"
             _is_mac = getattr(self, "_is_mac", False)
 
             def _set_nav_btn_enabled(btn, enabled, is_mac_btn):
@@ -4840,7 +5913,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                         except Exception: pass
                 else:
                     _prev_btn = tk.Button(nav, text="\u25c0", command=lambda: _go_page(cur - 1),
-                              bg=BTN_BG, fg="#ffffff", relief="flat", bd=0,
+                              bg=BTN_BG, fg="#3b2a1a", relief="flat", bd=0,
                               font=("Segoe UI", 11), padx=8,
                               state="normal" if cur > 0 else "disabled")
                     _prev_btn.pack(side="left", padx=(0, 6))
@@ -4856,7 +5929,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                         except Exception: pass
                 else:
                     _next_btn = tk.Button(nav, text="\u25b6", command=lambda: _go_page(cur + 1),
-                              bg=BTN_BG, fg="#ffffff", relief="flat", bd=0,
+                              bg=BTN_BG, fg="#3b2a1a", relief="flat", bd=0,
                               font=("Segoe UI", 11), padx=8,
                               state="normal" if cur < total_pages - 1 else "disabled")
                     _next_btn.pack(side="left", padx=(6, 0))
@@ -4958,6 +6031,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 _family_cache = getattr(pods_row_frame, "_pod_family_cache", None)
                 if (_family_cache is None or _family_cache.get("mid") != mid
                         or _family_cache.get("fid") != fid
+                        or _family_cache.get("seed_mode") != _seed_mode
                         or _family_cache.get("plants_len") != _plants_len):
                     # plants_len check: a new sibling could have been
                     # archived to this same family while this window
@@ -4972,7 +6046,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                                 _cs_old["card_canvas"].destroy()
                             except Exception:
                                 pass
-                    _family_cache = {"mid": mid, "fid": fid,
+                    _family_cache = {"mid": mid, "fid": fid, "seed_mode": _seed_mode,
                                       "plants_len": _plants_len, "cards": {}}
                     pods_row_frame._pod_family_cache = _family_cache
 
@@ -5000,7 +6074,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                         # increment — it's already correctly sized.
                         cs = _fam_cards[pidx]
                         try:
-                            cs["card_canvas"].pack(side="left", padx=10, pady=8, fill="y")
+                            cs["card_canvas"].pack(side="left", padx=4 if (self._pods_icon_small and not is_combo) else 10, pady=8, fill="y")
                         except Exception:
                             pass
                         self._refresh_pod_card_values(
@@ -5060,11 +6134,17 @@ class TraitInheritanceExplorer(tk.Toplevel):
         except Exception:
             pass
 
+        _unknown_total = grand_counter.pop("?", 0)
+        _notes = []
+        if _unsown_total:
+            _notes.append(f"incl. {_unsown_total} harvested seed{'s' if _unsown_total != 1 else ''} "
+                          "not sown (dashed)")
         if is_combo:
             ordered_combo = sorted(grand_counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
             self._render_ratio_box(self.combo_ratio_frame, _sib_trait_key, ordered_combo,
                                    sum(grand_counter.values()), law_parts, compact=True,
-                                   title="Sibling ratio")
+                                   title="Sibling ratio", unknown=_unknown_total, notes=_notes,
+                                   plants=[sn for lst in pods.values() for _c, sn in lst])
         else:
             # Pods tab: render ratio inline in pods_row, right after the last pod card
             try:
@@ -5085,7 +6165,15 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 ratio_inline.pack(side="left", padx=(16, 10), pady=8, anchor="n")
                 pods_row_frame._ratio_inline = ratio_inline
                 self._render_ratio_box(ratio_inline, _sib_trait_key, ordered_pods,
-                                       sum(grand_counter.values()), law_parts, compact=True)
+                                       sum(grand_counter.values()), law_parts, compact=True,
+                                       unknown=_unknown_total, notes=_notes,
+                                       plants=[sn for lst in pods.values() for _c, sn in lst])
+                # even margins all round (the tutorial outlines this box)
+                for _ch in ratio_inline.winfo_children():
+                    try:
+                        _ch.pack_configure(padx=10, pady=(4, 8))
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -5126,7 +6214,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     pass
             else:
                 # pod_total_w is only the card canvases; cap to ~5 cards for sane window sizing
-                self._pods_content_w = min(pod_total_w, 5 * 160 + 100)
+                self._pods_content_w = min(pod_total_w + 160, 5 * 190 + 260)  # room for the ratio box
                 self._pods_content_h = max_h + 160
                 # Propagate vertical scroll to all pod children
                 try:
@@ -5255,7 +6343,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             pil_img = Image.open(path).convert("RGBA")
             if sx != 1 or sy != 1:
                 w, h = pil_img.size
-                pil_img = pil_img.resize((max(1, int(w * sx)), max(1, int(h * sy))), Image.NEAREST)
+                pil_img = pil_img.resize((max(1, int(w * sx)), max(1, int(h * sy))), Image.LANCZOS)
             # Desaturate: convert to L then back to RGBA to preserve alpha
             r, g, b, a = pil_img.split()
             grey_rgb = ImageOps.grayscale(pil_img.convert("RGB"))
@@ -5267,9 +6355,27 @@ class TraitInheritanceExplorer(tk.Toplevel):
             cache[cache_key] = result
         return result
 
-    def _render_ratio_box(self, parent, tkey, ordered, total, law_parts, compact=False, title="Total ratio", font_scale=1.0):
-        """Render the full ratio box + icon/count row into `parent` frame."""
+    def _render_ratio_box(self, parent, tkey, ordered, total, law_parts, compact=False, title="Total ratio", font_scale=1.0,
+                          unknown=0, notes=(), plants=None):
+        """Render the full ratio box + icon/count row into `parent` frame.
+        `unknown`: plants left out because the trait isn't discovered yet."""
         def _fs(base): return int(round(base * font_scale))
+        ordered = [(v, c) for v, c in ordered if v not in ("?", "unknown", "none", "")]
+        # Pod colour pictures in the plants' own (most common, known) pod
+        # shape — like the pod cards — not a default shape
+        _shape_for = {}
+        if tkey == "pod_color" and plants:
+            _sc = {}
+            for _sn in plants:
+                try:
+                    _vt = self._visible_traits(_sn)
+                    _c = str(_vt.get("pod_color", "")).strip().lower()
+                    _s = str(_vt.get("pod_shape", "")).strip().lower()
+                    if _c and _s:
+                        _sc.setdefault(_c, Counter())[_s] += 1
+                except Exception:
+                    pass
+            _shape_for = {c_: cnt.most_common(1)[0][0] for c_, cnt in _sc.items()}
 
         counts = [c for _, c in ordered]
         if total > 0 and counts:
@@ -5310,18 +6416,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
                  bg=self.PANEL, fg=self.MUTED,
                  font=("Segoe UI", ttl_fs)).pack(pady=top_pad)
 
-        box = tk.Frame(grp, bg="#12303f",
-                       highlightthickness=2, highlightbackground="#2a5a7a")
+        box = tk.Frame(grp, bg="#fbf7ee",
+                       highlightthickness=2, highlightbackground="#e0dccf")
         box.pack(pady=(0, box_pad[1]), ipadx=box_ipad, ipady=box_ipady)
 
         tk.Label(box, text=ratio_str,
-                 bg="#12303f", fg=self.FG,
+                 bg="#fbf7ee", fg=self.FG,
                  font=("Segoe UI", ratio_fs, "bold"),
                  anchor="center").pack(pady=(2, 0))
 
         if pct_parts:
             tk.Label(box, text="  /  ".join(pct_parts),
-                     bg="#12303f", fg=self.MUTED,
+                     bg="#fbf7ee", fg=self.MUTED,
                      font=("Segoe UI", pct_fs),
                      anchor="center").pack(pady=(2, 4))
 
@@ -5339,6 +6445,9 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 cell.pack(side="left", padx=icon_pad)
                 if tkey == "pod_shape":
                     dummy = {"traits": {"pod_shape": val_name, "pod_color": "green"}}
+                elif tkey == "pod_color" and _shape_for.get(str(val_name).lower()):
+                    dummy = {"traits": {"pod_color": val_name,
+                                        "pod_shape": _shape_for[str(val_name).lower()]}}
                 else:
                     dummy = {"traits": {tkey: val_name}}
                 try:
@@ -5369,6 +6478,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 tk.Label(cell, text=str(count),
                          bg=self.PANEL, fg=self.FG,
                          font=("Segoe UI", cnt_fs, "bold")).pack(pady=(2, 0))
+
+        if unknown:
+            tk.Label(grp, text=f"{total} known of {total + unknown}",
+                     bg=self.PANEL, fg=self.FG,
+                     font=("Segoe UI", _fs(10), "bold")).pack(pady=(4, 0))
+            tk.Label(grp, text=f"{unknown} not yet discovered",
+                     bg=self.PANEL, fg=self.MUTED,
+                     font=("Segoe UI", _fs(9))).pack()
+        for nt in notes or ():
+            tk.Label(grp, text=nt, bg=self.PANEL, fg=self.MUTED,
+                     font=("Segoe UI", _fs(9)), wraplength=160,
+                     justify="center").pack(pady=(2, 0))
 
         for lp in law_parts:
             tk.Label(grp, text=lp,
@@ -5485,7 +6606,10 @@ class TraitInheritanceExplorer(tk.Toplevel):
             sig_f = _fam_sig(pf, gp_fm, gp_ff) if (gp_fm and gp_ff) else None
             if sig_m != fam_sig or sig_f != fam_sig: continue
 
-            # classify phenotype
+            # classify phenotype (undiscovered: left out, counted apart)
+            if self._trait_hidden(csnap, tkey):
+                self._seg_unknown = getattr(self, "_seg_unknown", 0) + 1
+                continue
             try:
                 ct = (csnap.get("traits", {}) if isinstance(csnap, dict)
                       else getattr(csnap, "traits", {}) or {})
@@ -5629,18 +6753,20 @@ class TraitInheritanceExplorer(tk.Toplevel):
         _rfs = 1.4 if getattr(self, "_ratio_font_large", False) else 1.0
         def _fs(base): return int(round(base * _rfs))
 
-        SEP_BG     = "#1e3a4a"
+        SEP_BG     = "#e0dccf"
         HDR_FONT   = ("Segoe UI", _fs(11), "bold")
         NOTE_FONT  = ("Segoe UI", _fs(10))
         MONO_FONT  = ("Consolas", _fs(10))
-        GREEN_NOTE = "#6dbf67"
+        GREEN_NOTE = "#4f7a2a"
 
         def _sep():
             tk.Frame(inner, height=1, bg=SEP_BG).pack(fill="x", padx=12, pady=8)
 
         # Collect pooled data up front (needed by both families and pooled sections)
+        self._seg_unknown = 0
         dom_pheno, rec_pheno, sci_dom, sci_rec, families = \
             self._collect_segregation_contributors(pid, tkey)
+        _pool_unknown = int(getattr(self, "_seg_unknown", 0) or 0)
         sci_total = sci_dom + sci_rec
 
         # ── Section 1: Direct siblings (same parents only) ────────────────
@@ -5656,6 +6782,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                  wraplength=460, justify="left").pack(anchor="w", pady=(2, 4))
 
         counter = Counter()
+        _sib_snaps = []
         for cid, csnap in (plants.items() if isinstance(plants, dict) else []):
             cm = (csnap.get("mother_id") if isinstance(csnap, dict)
                   else getattr(csnap, "mother_id", None))
@@ -5668,12 +6795,30 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 def _g2(s, k):
                     t = s.get("traits", {}) if isinstance(s, dict) else getattr(s, "traits", {}) or {}
                     return t.get(k) or (s.get(k) if isinstance(s, dict) else getattr(s, k, None))
-                val = str(_g2(csnap, tkey) or "unknown").lower()
+                _sib_snaps.append(csnap)
+                if self._trait_hidden(csnap, tkey):
+                    val = "?"
+                else:
+                    val = str(_g2(csnap, tkey) or "unknown").lower()
                 counter[val] += 1
+        # Seed colour / shape: harvested seeds that were never sown count too
+        _sib_notes = []
+        if tkey in SEED_TRAITS:
+            try:
+                _extra = self._unsown_seed_snaps(mid, fid, _sib_snaps)
+            except Exception:
+                _extra = []
+            for sn in _extra:
+                counter[str(sn["traits"].get(tkey) or "unknown").lower()] += 1
+            if _extra:
+                _sib_notes.append(f"incl. {len(_extra)} harvested seed"
+                                  f"{'s' if len(_extra) != 1 else ''} not sown")
+        _sib_unknown = counter.pop("?", 0)
         sib_total = sum(counter.values())
         sib_ordered = sorted(counter.items(), key=lambda kv: (-kv[1], str(kv[0])))
         self._render_ratio_box(sec1, tkey, sib_ordered, sib_total, [],
-                               compact=True, title="Sibling ratio", font_scale=_rfs)
+                               compact=True, title="Sibling ratio", font_scale=_rfs,
+                               unknown=_sib_unknown, notes=_sib_notes, plants=_sib_snaps)
 
         _sep()
 
@@ -5728,7 +6873,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 tbl.columnconfigure(ci, minsize=minw, weight=1 if stretch else 0)
 
             # header row
-            hdr_bg = "#0a1e2a"
+            hdr_bg = "#e8dfc9"
             for ci, (hdr_txt, anc, _, _) in enumerate(COLS):
                 tk.Label(tbl, text=hdr_txt, bg=hdr_bg, fg=self.MUTED,
                          font=HDR_ROW_FONT, anchor=anc,
@@ -5737,7 +6882,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
             # data rows
             for ri, fam in enumerate(families):
-                row_bg = self.CARD if ri % 2 == 0 else "#0d1f2e"
+                row_bg = self.CARD if ri % 2 == 0 else "#fbf7ee"
                 if fam["rec"] > 0:
                     ratio_str = f"{fam['dom'] / fam['rec']:.2f}:1".replace(".", ",")
                 elif fam["dom"] > 0:
@@ -5763,7 +6908,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             last_data_row = len(families) + 1
 
             # thin white separator spanning all columns
-            sep = tk.Frame(tbl, height=1, bg="#c8d8e0")
+            sep = tk.Frame(tbl, height=1, bg="#d9cdb4")
             sep.grid(row=last_data_row, column=0, columnspan=len(COLS),
                      sticky="ew", pady=(2, 0))
 
@@ -5774,7 +6919,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             elif sci_dom > 0:
                 tot_ratio_str = "all dom."
 
-            tot_bg  = "#0a2030"
+            tot_bg  = "#e8dfc9"
             tot_vals = [
                 "Total",
                 "",
@@ -5785,7 +6930,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 tot_ratio_str,
             ]
             for ci, (val, (_, anc, _, _)) in enumerate(zip(tot_vals, COLS)):
-                tk.Label(tbl, text=val, bg=tot_bg, fg="#e8f0f5",
+                tk.Label(tbl, text=val, bg=tot_bg, fg="#3b2a1a",
                          font=TOT_ROW_FONT, anchor=anc,
                          padx=6, pady=5
                          ).grid(row=last_data_row + 1, column=ci, sticky="ew")
@@ -5806,7 +6951,8 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # N = x line with ? button
         n_row = tk.Frame(sec3, bg=self.PANEL)
         n_row.pack(anchor="w", pady=(4, 2))
-        tk.Label(n_row, text=f"N = {sci_total}",
+        tk.Label(n_row, text=(f"N = {sci_total}" + (f"  ({sci_total} known of {sci_total + _pool_unknown})"
+                                                    if _pool_unknown else "")),
                  bg=self.PANEL, fg=self.MUTED, font=NOTE_FONT).pack(side="left")
 
         def _show_pool_help():
@@ -5844,8 +6990,8 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
         help_btn = tk.Button(n_row, text="?", command=_show_pool_help,
                              font=("Segoe UI", 9, "bold"),
-                             bg="#1e3a4a", fg=self.MUTED,
-                             activebackground="#2a4a5a", activeforeground=self.FG,
+                             bg="#e0dccf", fg=self.MUTED,
+                             activebackground="#d0c8b7", activeforeground=self.FG,
                              relief="flat", bd=0, padx=5, pady=0, cursor="hand2")
         help_btn.pack(side="left", padx=(8, 0))
 
@@ -5865,7 +7011,16 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 pass
             self._render_ratio_box(sec3, tkey, sci_ordered, sci_total,
                                    sci_law_parts, compact=True, title="Pooled Ratio",
-                                   font_scale=_rfs)
+                                   font_scale=_rfs,
+                                   plants=list(plants.values()) if isinstance(plants, dict) else None)
+            # a pooled ratio of exactly 3,00 : 1 over more than 300 plants is
+            # an achievement (see GardenApp._on_pooled_ratio)
+            try:
+                _hook = getattr(self.app, "_on_pooled_ratio", None)
+                if _hook is not None:
+                    _hook(tkey, int(sci_dom), int(sci_rec))
+            except Exception:
+                pass
         else:
             msg = ("Not enough data for this trait in the verified pool yet." if tkey in
                    {"flower_color", "pod_color", "seed_color", "seed_shape", "plant_height"}
@@ -5898,28 +7053,20 @@ class TraitInheritanceExplorer(tk.Toplevel):
         if pid is None:
             return
         try:
-            tab_idx = self.tie_notebook.index(self.tie_notebook.select())
+            tab_idx = self._active_tab()
         except Exception:
             tab_idx = 0
         self._switch_tab_frame(tab_idx)
         # Hide the shared trait toolbar on Punnett Square (it has its own title selectors)
         try:
-            if tab_idx == 1:  # Punnett Square
+            if tab_idx in (0, 1):  # Pod Seeds has its own line, Punnett Square its title
                 self._shared_toolbar.pack_forget()
             else:
                 self._shared_toolbar.pack(side="top", fill="x",
                                           padx=self.PAD, pady=(6, 4),
-                                          after=self.tie_notebook)
-                # Show tab-specific size toggle button
-                if tab_idx == 0:   # Pod Seeds
-                    self._pods_size_btn.pack(side="left", padx=(12, 0))
-                    self._ratio_size_btn.pack_forget()
-                elif tab_idx == 2:  # Trait Ratio
-                    self._ratio_size_btn.pack(side="left", padx=(12, 0))
-                    self._pods_size_btn.pack_forget()
-                else:
-                    self._pods_size_btn.pack_forget()
-                    self._ratio_size_btn.pack_forget()
+                                          before=self._tab_content)
+                # Trait Ratio: its text-size button
+                self._ratio_size_btn.pack(side="left", padx=(12, 0))
         except Exception:
             pass
         # Use preview node (clicked ancestor) as pods_pid when available,
@@ -5997,7 +7144,10 @@ class TraitInheritanceExplorer(tk.Toplevel):
             # cause of "the right side doesn't get recalculated
             # correctly depending on branches" — the window itself was
             # quietly too narrow to begin with.
-            LEFT_W      = self._desired_left_panel_w()
+            st = getattr(self, "_sections", None) or dict(self._SECTIONS_DEFAULT)
+            show_left = bool(st.get("plant") or st.get("archive"))
+            show_tree = bool(st.get("tree"))
+            LEFT_W      = self._desired_left_panel_w() if show_left else 0
             # Lineage pane width: driven by the ACTUAL tree content width
             # (measured per-selection in _draw_canvas_family — already
             # includes appropriate padding for node circles + their
@@ -6020,20 +7170,27 @@ class TraitInheritanceExplorer(tk.Toplevel):
             # breathing room between the content and the pane's actual
             # right border) — the pane was reading as uncomfortably
             # tight against the tree with none at all.
-            LINEAGE_W   = max(340, getattr(self, "_tree_content_w", 0)) + 50
+            LINEAGE_W   = (max(340, getattr(self, "_tree_content_w", 0)) + 50) if show_tree else 0
             CHROME      = 36
             PAD         = 60
             TAB_BAR     = 36
             TOGGLES     = 34
             RATIO_H     = 36
             CHROME_V    = 80
-            MAX_H       = 1024
+            MAX_H       = min(1024, int(getattr(self, "_max_h_cap", 1024) or 1024))
+            HEADER_H    = 0
+            try:
+                for _w in self.winfo_children():
+                    if isinstance(_w, tk.Frame) and _w.winfo_manager() == "pack":
+                        HEADER_H += _w.winfo_reqheight() + 6
+            except Exception:
+                HEADER_H = 110
 
             screen_w = self.winfo_screenwidth()
             screen_h = self.winfo_screenheight()
 
             try:
-                tab_idx = self.tie_notebook.index(self.tie_notebook.select())
+                tab_idx = self._active_tab()
             except Exception:
                 tab_idx = 0
 
@@ -6043,7 +7200,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 pw_canvas = getattr(self, "_punnett_content_w", 0)
                 ph_canvas = getattr(self, "_punnett_content_h", 0)
                 notebook_w = max(820, pw_canvas + PAD + 30)
-                notebook_h = max(700, ph_canvas + TAB_BAR + CROSS_CTRL_H + CHROME_V)
+                notebook_h = max(420, ph_canvas + CROSS_CTRL_H + HEADER_H + 60)
             elif tab_idx == 0:
                 # Pod Seeds: measure pods_row live after update_idletasks so
                 # _redraw_card has already run and card canvases have correct sizes
@@ -6054,9 +7211,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 except Exception:
                     row_w = getattr(self, "_pods_content_w", 0)
                     row_h = getattr(self, "_pods_content_h", 0)
-                notebook_w = max(700, row_w + PAD)
-                notebook_h = max(600, row_h + TAB_BAR + TOGGLES + RATIO_H + CHROME_V)
-            else:
+                try:
+                    head_w = self._pods_head.winfo_reqwidth()
+                except Exception:
+                    head_w = 200
+                notebook_w = max(420, row_w + PAD, head_w + PAD)
+                # exactly as tall as the pods need (their line + the cards)
+                try:
+                    head_h = self._pods_head.winfo_reqheight() + 8
+                except Exception:
+                    head_h = 34
+                notebook_h = row_h + head_h + HEADER_H + 40
+            elif tab_idx == 2:
                 # Trait Ratio: use cached content size
                 pods_w = getattr(self, "_pods_content_w", 0)
                 pods_h = getattr(self, "_pods_content_h", 0) + TAB_BAR + TOGGLES + RATIO_H + CHROME_V
@@ -6064,6 +7230,35 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 notebook_w = max(700, pods_w + PAD, _prev_w)
                 notebook_h = max(600, pods_h)
 
+            else:
+                notebook_w = notebook_h = 0          # none of the three views is open
+            # what the other open sections need in height
+            need_h = notebook_h
+            if show_tree:
+                need_h = max(need_h, int(getattr(self, "_tree_content_h", 0) or 0) + HEADER_H + 60)
+            # the left column: the traits (if open) and at least 5 rows of
+            # the archive list (if open)
+            left_h = 0
+            if st.get("plant"):
+                try:
+                    left_h += self._traits_box.winfo_reqheight() + self.PAD
+                except Exception:
+                    left_h += 300
+            if st.get("archive"):
+                try:
+                    row_h = tkfont.Font(font=self.listbox.cget("font")).metrics("linespace") + 1
+                except Exception:
+                    row_h = 20
+                left_h += 5 * row_h + 60          # 5 plants + the frame's title and padding
+            if left_h:
+                need_h = max(need_h, HEADER_H + left_h + 30)
+            notebook_h = need_h
+            # the header rows must fit too
+            try:
+                head_w = max(w.winfo_reqwidth() for w in self.winfo_children()
+                             if isinstance(w, tk.Frame) and w.winfo_manager() == "pack") + 2 * self.PAD
+            except Exception:
+                head_w = 600
             maximized = self._is_maximized()
 
             if maximized:
@@ -6075,11 +7270,35 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 total_h = max(self.winfo_height(), 600)
             else:
                 total_w = LEFT_W + LINEAGE_W + notebook_w + CHROME
-                total_w = max(900, min(total_w, screen_w - 20))
-                total_h = max(600, min(notebook_h, MAX_H, screen_h - 60))
+                total_w = max(420, head_w, min(total_w, screen_w - 20))
+                total_w = min(total_w, screen_w - 20)
+                total_h = max(320, min(notebook_h, MAX_H, screen_h - 80))
 
-                cur_x = self.winfo_x()
-                cur_y = self.winfo_y()
+                if not getattr(self, "_placed", False):
+                    # first time: where the Inspect window opens — its top
+                    # left corner on the garden's first plot, below the
+                    # message line (where Abbot Cyril speaks) — and only as
+                    # tall as fits from there to the bottom of the screen
+                    self._placed = True
+                    try:
+                        cur_x, cur_y = self.app._inspector_home_pos(total_w, total_h)
+                        t0 = self.app.tiles[0]
+                        y0 = int(t0.winfo_rooty())
+                        if t0.winfo_ismapped() and y0 > 0:
+                            cur_y = y0
+                            total_h = max(320, min(total_h, screen_h - cur_y - 60))
+                        cur_x = max(0, min(cur_x, screen_w - total_w - 4))
+                    except Exception:
+                        cur_x = max(0, screen_w - total_w - 12)
+                        cur_y = 10
+                else:
+                    cur_x = self.winfo_x()
+                    cur_y = self.winfo_y()
+                    # the window grows to the left where the screen ends,
+                    # and never further down than the screen
+                    if cur_x + total_w > screen_w - 4:
+                        cur_x = max(0, screen_w - total_w - 4)
+                    total_h = max(320, min(total_h, screen_h - cur_y - 60))
                 self.geometry(f"{total_w}x{total_h}+{cur_x}+{cur_y}")
                 self.update_idletasks()
 
@@ -6136,8 +7355,12 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 if isinstance(w, ttk.Panedwindow):
                     outer = w
                     break
-            if outer is not None:
+            st = getattr(self, "_sections", None) or {}
+            if (outer is not None and len(outer.panes()) > 1 and left_w):
                 outer.sashpos(0, left_w)
+            if not (self._pane_in(self._right_split, self._lineage_pane)
+                    and self._pane_in(self._right_split, self._tabs_pane)):
+                return                               # only one of them: no sash to place
             self._set_right_split_sash(lineage_w)
 
             actual = self._get_right_split_sash()
@@ -6175,7 +7398,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # Lineage is always visible — always draw it
         self._draw_canvas_family(g('id', pid))
         try:
-            tab_idx = self.tie_notebook.index(self.tie_notebook.select())
+            tab_idx = self._active_tab()
         except Exception:
             tab_idx = 0
         if tab_idx == 0:    # Pod Seeds
@@ -6191,22 +7414,22 @@ class TraitInheritanceExplorer(tk.Toplevel):
     # Trait meta: key → (dom_allele, rec_allele, dom_phenotype, rec_phenotype, display_name)
     # Allele letters match the Genotype Viewer / Garden-of-Inheritance locus names exactly.
     _CROSS_TRAIT_META = {
-        "flower_color":    ("A",  "a",  "purple",   "white",       "Flower Color"),
-        "flower_position": ("Fa", "fa", "axial",    "terminal",    "Flower Position"),
-        "pod_color":       ("Gp", "gp", "green",    "yellow",      "Pod Color"),
-        "pod_shape":       ("P",  "p",  "inflated", "constricted", "Pod Shape"),
-        "seed_color":      ("I",  "i",  "yellow",   "green",       "Seed Color"),
-        "seed_shape":      ("R",  "r",  "round",    "wrinkled",    "Seed Shape"),
-        "plant_height":    ("Le", "le", "tall",     "short",       "Plant Height"),
+        "flower_color":    ("A",  "a",  "purple",   "white",       "Flower color"),
+        "flower_position": ("Fa", "fa", "axial",    "terminal",    "Flower position"),
+        "pod_color":       ("Gp", "gp", "green",    "yellow",      "Pod color"),
+        "pod_shape":       ("P",  "p",  "inflated", "constricted", "Pod shape"),
+        "seed_color":      ("I",  "i",  "yellow",   "green",       "Seed color"),
+        "seed_shape":      ("R",  "r",  "round",    "wrinkled",    "Seed shape"),
+        "plant_height":    ("Le", "le", "tall",     "dwarf",       "Plant height"),
     }
 
     # 4 phenotype-class colours (dom/dom, dom/rec, rec/dom, rec/rec)
-    _PUNNETT_COLORS = ["#17543a", "#1a3f6b", "#4a2468", "#6b1f2a"]
+    _PUNNETT_COLORS = ["#cfe3c0", "#c9d9ec", "#ddcde9", "#efc9c9"]
     # mono: dominant, recessive
-    _PUNNETT_COLORS_MONO = ["#17543a", "#6b1f2a"]
+    _PUNNETT_COLORS_MONO = ["#cfe3c0", "#efc9c9"]
     # dimmed versions when count == 0
-    _PUNNETT_DIM = ["#0e2e20", "#0e2238", "#271342", "#381018"]
-    _PUNNETT_DIM_MONO = ["#0e2e20", "#381018"]
+    _PUNNETT_DIM = ["#eaf1e3", "#e6edf5", "#efe7f3", "#f6e6e6"]
+    _PUNNETT_DIM_MONO = ["#eaf1e3", "#f6e6e6"]
 
     def _on_cross_settings_changed(self, _skip_render=False):
         pid = getattr(self, "current_pid", None)
@@ -6229,7 +7452,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         if pid is None:
             return
         try:
-            tab_idx = self.tie_notebook.index(self.tie_notebook.select())
+            tab_idx = self._active_tab()
         except Exception:
             tab_idx = -1
         if tab_idx == 1:
@@ -6274,6 +7497,8 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
         def _tv(snap, key):
             try:
+                if self._trait_hidden(snap, key):
+                    return ""       # not discovered yet
                 t = snap.get("traits", {}) if isinstance(snap, dict)                     else getattr(snap, "traits", {}) or {}
                 return str(t.get(key, "")).strip().lower()
             except Exception:
@@ -6482,8 +7707,11 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
         def _tv(snap_obj, key):
             try:
+                if self._trait_hidden(snap_obj, key):
+                    return ""       # not discovered yet: left out
                 t = snap_obj.get("traits", {}) if isinstance(snap_obj, dict) else getattr(snap_obj, "traits", {}) or {}
-                return str(t.get(key, "")).strip().lower()
+                v = str(t.get(key, "")).strip().lower()
+                return "dwarf" if v == "short" else v
             except Exception:
                 return ""
 
@@ -6508,6 +7736,15 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 "Select a plant with known parents to see the cross diagram.\n\n"
                 "↺  Try another plant")
             return
+
+        # Seed colour / shape: harvested seeds that were never sown count too
+        if tk1 in SEED_TRAITS and (not is_dihybrid or tk2 in SEED_TRAITS):
+            try:
+                siblings = siblings + self._unsown_seed_snaps(mid, fid, siblings)
+            except Exception:
+                pass
+        # "N known of M" — M = all siblings, N = those whose trait(s) are known
+        self._cross_all_n = len(siblings)
 
         meta1 = self._CROSS_TRAIT_META[tk1]
         d1, r1, dom1, rec1, name1 = meta1
@@ -6586,18 +7823,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
         for ci, gam in enumerate(gametes):
             cx = ML + ci * CELL + CELL // 2
             c.create_rectangle(ML + ci * CELL, MT - 38, ML + (ci + 1) * CELL, MT,
-                                fill="#12303f", outline="#2a5060")
+                                fill="#fbf7ee", outline="#c8bfa8")
             c.create_text(cx, MT - 19, text=gam, fill=FG, font=FONT_G)
 
         # Row headers
         for ri, gam in enumerate(gametes):
             ry = MT + ri * CELL + CELL // 2
             c.create_rectangle(ML - 44, MT + ri * CELL, ML, MT + (ri + 1) * CELL,
-                                fill="#12303f", outline="#2a5060")
+                                fill="#fbf7ee", outline="#c8bfa8")
             c.create_text(ML - 22, ry, text=gam, fill=FG, font=FONT_G)
 
         # Diagonal corner header
-        c.create_rectangle(ML - 44, MT - 38, ML, MT, fill="#0a1e2a", outline="#2a5060")
+        c.create_rectangle(ML - 44, MT - 38, ML, MT, fill="#e8dfc9", outline="#c8bfa8")
         c.create_text(ML - 22, MT - 19, text="×", fill=MUTED, font=FONT)
 
         # Cells
@@ -6616,7 +7853,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 has_data = observed > 0
                 bg = self._PUNNETT_COLORS_MONO[cls_idx] if has_data else self._PUNNETT_DIM_MONO[cls_idx]
 
-                c.create_rectangle(x0, y0, x1, y1, fill=bg, outline="#2a5060", width=2)
+                c.create_rectangle(x0, y0, x1, y1, fill=bg, outline="#c8bfa8", width=2)
 
                 # Trait icon — centred in cell
                 try:
@@ -6652,7 +7889,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             c.create_text(ML - 44, ly + 36,
                           text="No sibling data yet — showing expected structure.\n"
                                "Try another plant or grow more seeds.",
-                          fill="#c08040", font=("Segoe UI", 10), anchor="nw",
+                          fill="#8B4226", font=("Segoe UI", 10), anchor="nw",
                           width=W - (ML - 44) - 8)
 
     # ── Dihybrid 4×4 ─────────────────────────────────────────────────────────
@@ -6736,18 +7973,18 @@ class TraitInheritanceExplorer(tk.Toplevel):
         for ci, gl in enumerate(gam_labels):
             cx = ML + ci * CELL + CELL // 2
             c.create_rectangle(ML + ci * CELL, MT - 46, ML + (ci+1)*CELL, MT,
-                                fill="#12303f", outline="#2a5060")
+                                fill="#fbf7ee", outline="#c8bfa8")
             c.create_text(cx, MT - 23, text=gl, fill=FG, font=FONT_G)
 
         # Row headers
         for ri, gl in enumerate(gam_labels):
             ry = MT + ri * CELL + CELL // 2
             c.create_rectangle(ML - 52, MT + ri * CELL, ML, MT + (ri+1)*CELL,
-                                fill="#12303f", outline="#2a5060")
+                                fill="#fbf7ee", outline="#c8bfa8")
             c.create_text(ML - 26, ry, text=gl, fill=FG, font=FONT_G)
 
         # Corner
-        c.create_rectangle(ML - 52, MT - 46, ML, MT, fill="#0a1e2a", outline="#2a5060")
+        c.create_rectangle(ML - 52, MT - 46, ML, MT, fill="#e8dfc9", outline="#c8bfa8")
         c.create_text(ML - 26, MT - 23, text="×", fill=MUTED, font=FONT)
 
         # Cells
@@ -6771,7 +8008,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 has_data  = observed > 0
 
                 bg = self._PUNNETT_COLORS[cls_idx] if has_data else self._PUNNETT_DIM[cls_idx]
-                c.create_rectangle(x0, y0, x1, y1, fill=bg, outline="#2a5060", width=1)
+                c.create_rectangle(x0, y0, x1, y1, fill=bg, outline="#c8bfa8", width=1)
 
                 mid_x = x0 + CELL // 2
                 pheno1 = dom1 if is_dom_t1 else rec1
@@ -6816,7 +8053,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 # Observed count
                 n_text = f"n = {observed}" if has_data else "n = 0"
                 c.create_text(mid_x, y1 - int(8 * _scale), text=n_text,
-                               fill=FG if has_data else "#7a9aaa",
+                               fill=FG if has_data else "#a09a8c",
                                font=("Segoe UI", _fs_n), anchor="center")
 
         # ── Legend aligned beside the grid ────────────────────────────────────
@@ -6865,7 +8102,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             c.create_text(ML - 52, cy_summary + 36, anchor="nw",
                           text="No sibling data yet — showing expected structure. "
                                "Try another plant or grow more seeds.",
-                          fill="#c08040", font=("Segoe UI", 10),
+                          fill="#8B4226", font=("Segoe UI", 10),
                           width=ML + GRID_W + 52)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
@@ -6879,17 +8116,26 @@ class TraitInheritanceExplorer(tk.Toplevel):
         except Exception:
             w, h = 500, 300
         c.configure(scrollregion=(0, 0, w, h))
+        # keep the trait buttons on top, so another trait can be chosen
+        c.delete("punnett_title_win")
+        try:
+            c.create_window(w // 2, 6, anchor="n", window=self._cross_title_frame,
+                            tags="punnett_title_win")
+        except Exception:
+            pass
         c.create_text(w // 2, h // 2, text=text, fill=self.MUTED,
                       font=("Segoe UI", 13), justify="center", anchor="center")
 
     def _cross_ratio_str(self, counts, labels):
         """Format observed counts as a ratio string."""
         total = sum(counts)
+        m_all = int(getattr(self, "_cross_all_n", 0) or 0)
+        known = (f"  —  {total} known of {m_all}" if m_all > total else "")
         if total == 0:
-            return "Observed ratio: — (no data)"
+            return "Observed ratio: — (no data)" + known
         parts = [f"{c}" for c in counts]
         ratio = " : ".join(parts)
         pct = "  |  " + "  /  ".join(
             f"{labels[i]}: {counts[i]/total*100:.0f}%"
             for i in range(len(counts)) if counts[i] > 0)
-        return f"Observed ratio: {ratio}{pct}  (N={total})"
+        return f"Observed ratio: {ratio}{pct}  (N={total}){known}"

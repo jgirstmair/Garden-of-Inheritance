@@ -57,7 +57,8 @@ class PollinationDialog(tk.Toplevel):
     Player must click on the stigma (center) to apply pollen.
     """
     
-    def __init__(self, parent, flower_color="purple", is_emasculated=False, pollen_source=None, callback=None):
+    def __init__(self, parent, flower_color="purple", is_emasculated=False, pollen_source=None, callback=None,
+                 highlight_stigma=False):
         """
         Initialize the pollination dialog.
         
@@ -74,6 +75,8 @@ class PollinationDialog(tk.Toplevel):
         self.callback = callback
         self.flower_color = flower_color
         self.is_emasculated = is_emasculated
+        # (the tutorial: the stigma swells and shrinks gently to show it)
+        self.highlight_stigma = bool(highlight_stigma)
         self.pollen_source = pollen_source
         self.completed = False
         # anthers of an unemasculated flower brushed by the brush (their
@@ -191,6 +194,7 @@ class PollinationDialog(tk.Toplevel):
             # Scale factor for coordinates
             self.scale_factor = self.display_scale
             
+            self._flower_pil = img
             self.flower_image = ImageTk.PhotoImage(img)
             self.canvas_width = display_width
             self.canvas_height = display_height
@@ -252,6 +256,8 @@ class PollinationDialog(tk.Toplevel):
         
         # Create invisible stigma clickable area
         self._create_stigma_target()
+        if self.highlight_stigma:
+            self._start_stigma_pulse()
         
         # Bind events
         self.canvas.bind("<Button-1>", self._on_canvas_click)
@@ -427,6 +433,55 @@ class PollinationDialog(tk.Toplevel):
         
         print(f"Created stigma target at ({stigma_x:.1f}, {stigma_y:.1f}) - invisible until hover")
     
+    def _start_stigma_pulse(self, radius=17, grow=0.45, n=14, ms=70):
+        """Lets the stigma grow slightly and shrink again (a magnified copy
+        of that spot of the picture, soft at its edge), until pollen is on it."""
+        img = getattr(self, "_flower_pil", None)
+        if img is None:
+            return
+        try:
+            from PIL import ImageDraw, ImageFilter
+            sx, sy = int(self.stigma_scaled_x), int(self.stigma_scaled_y)
+            r = int(radius)
+            patch = img.convert("RGBA").crop((sx - r, sy - r, sx + r, sy + r))
+            frames = []
+            for i in range(n):
+                f = 1.0 + grow * (0.5 - 0.5 * math.cos(2 * math.pi * i / n))
+                size = max(2, int(round(2 * r * f)))
+                big = patch.resize((size, size), Image.Resampling.LANCZOS)
+                mask = Image.new("L", (size, size), 0)
+                ImageDraw.Draw(mask).ellipse((2, 2, size - 3, size - 3), fill=255)
+                mask = mask.filter(ImageFilter.GaussianBlur(max(1, size // 10)))
+                big.putalpha(Image.composite(big.getchannel("A"), mask, mask))
+                frames.append(ImageTk.PhotoImage(big))
+        except Exception as e:
+            print(f"Stigma pulse unavailable: {e}")
+            return
+        self._pulse_frames = frames
+        self._pulse_item = self.canvas.create_image(sx, sy, image=frames[0], tags="stigma_pulse")
+        if self.cursor_icon:
+            self.canvas.tag_raise(self.cursor_icon)
+        self._pulse_i = 0
+
+        def _step():
+            self._pulse_job = None
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+            if getattr(self, "_pollen_applied", False):
+                try:
+                    self.canvas.delete("stigma_pulse")
+                except Exception:
+                    pass
+                return
+            self._pulse_i = (self._pulse_i + 1) % len(self._pulse_frames)
+            self.canvas.itemconfig(self._pulse_item, image=self._pulse_frames[self._pulse_i])
+            self._pulse_job = self.after(ms, _step)
+
+        self._pulse_job = self.after(ms, _step)
+
     def _on_mouse_move(self, event):
         """Handle mouse movement to show hover effects."""
         if self.completed:

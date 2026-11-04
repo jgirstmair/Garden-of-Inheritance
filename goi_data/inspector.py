@@ -211,6 +211,23 @@ class InspectorMixin:
         except Exception:
             pass
 
+    def _note_inspected(self, plant):
+        """Remembers which traits were seen on this plant in the inspection
+        window (or Traits only) — missions.py's »The Magnificent Seven«
+        counts only those. Saved with the garden."""
+        if plant is None:
+            return
+        try:
+            seen = self.__dict__.setdefault("_inspected_traits", {})
+            keys = set((getattr(plant, "revealed_traits", None) or {}).keys())
+            keys |= {"seed_shape", "seed_color"}          # the pea it grew from
+            cur = seen.setdefault(str(getattr(plant, "id", "")), [])
+            for k in keys:
+                if k not in cur:
+                    cur.append(k)
+        except Exception:
+            pass
+
     def _refresh_inspector_if_open(self):
         """
         If the plant inspector is currently open, refresh it to reflect
@@ -270,6 +287,7 @@ class InspectorMixin:
             except Exception:
                 pass
         self._inspector_last_selected_idx = idx
+        self._note_inspected(plant)
 
         # Health/water are updated in-place here, unconditionally,
         # regardless of whether anything else below triggers a full
@@ -787,6 +805,7 @@ class InspectorMixin:
         pods, traits being discovered, harvested-seed counts — the window
         is not rebuilt for those.
         """
+        self._note_inspected(plant)
         BG = "#f5f0e6"
         existing = getattr(self, "_inspector_win", None)
         reuse = False
@@ -803,15 +822,12 @@ class InspectorMixin:
             win = tk.Toplevel(self.root)
             win.withdraw()   # hidden until fully built and positioned — see below
             self._inspector_win = win
-            # the harvest shortcuts work here too (S: one pod, Shift+S: all);
-            # not while typing (e.g. in the note box)
-            def _key(e, k):
-                if isinstance(e.widget, (tk.Entry, tk.Text)):
-                    return
-                act = self._on_harvest_selected if k == "s" else self._on_harvest_all_selected
-                self._harvest_by_key(k, act)
-            win.bind("<s>", lambda e: _key(e, "s"))
-            win.bind("<S>", lambda e: _key(e, "S"))
+            # the garden's shortcuts work here too (S / Shift+S harvest,
+            # W water, E, C, P ...); not while typing (e.g. in the note box)
+            try:
+                self._forward_hotkeys(win)
+            except Exception:
+                pass
         self._insp_live = []
         self._flower_panel_live = None
         self._inspector_flower_trait_lbls = []
@@ -1132,8 +1148,20 @@ class InspectorMixin:
             bottom_row, "Close", win.destroy, bg="#e0dccf", fg="#333333",
             font=("Segoe UI", 14, "bold"))               # the tutorial points at it
         self._inspector_close_btn.pack(side="left", padx=6)
-        self._make_flat_button(bottom_row, "Genotype Explorer", self._on_genetics, bg="#e0dccf", fg="#333333",
-                               font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
+        def _open_genetics():
+            # In the tutorial the Inspect window closes first, so the
+            # Genotype Explorer (and Cyril's lines about it) are in view.
+            if getattr(self, "_tutorial_active", False):
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+            self._on_genetics()
+
+        self._inspector_genotype_btn = self._make_flat_button(
+            bottom_row, "Genotype Explorer", _open_genetics, bg="#e0dccf", fg="#333333",
+            font=("Segoe UI", 14, "bold"))            # the tutorial lets it glow
+        self._inspector_genotype_btn.pack(side="left", padx=6)
 
         def _open_tie_close_inspector_first():
             try:
@@ -1142,10 +1170,12 @@ class InspectorMixin:
                 pass
             self._open_tie_for_selected()
 
-        if not getattr(self, "_tutorial_active", False):
-            self._make_flat_button(bottom_row, "TIE", _open_tie_close_inspector_first,
-                                   bg="#e0dccf", fg="#333333",
-                                   font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
+        self._inspector_tie_btn = None
+        if self._tie_allowed():
+            self._inspector_tie_btn = self._make_flat_button(
+                bottom_row, "TIE", _open_tie_close_inspector_first,
+                bg="#e0dccf", fg="#333333", font=("Segoe UI", 14, "bold"))
+            self._inspector_tie_btn.pack(side="left", padx=6)
 
         def _open_law_wizard_close_inspector_first():
             try:
@@ -1352,6 +1382,10 @@ class InspectorMixin:
             pass
         self._traits_only_win = tw
         self._traits_only_sig = None
+        try:
+            self._forward_hotkeys(tw)        # the garden's shortcuts work here too
+        except Exception:
+            pass
         top = tk.Frame(tw, bg=BG, padx=10, pady=6)
         top.pack(fill="x")
 
@@ -1505,6 +1539,7 @@ class InspectorMixin:
             except Exception:
                 pass
         self._traits_only_last_idx = idx
+        self._note_inspected(plant)
         revealed = dict(getattr(plant, "revealed_traits", {}) or {}) if plant else {}
         counts = dict(getattr(plant, "_seed_color_counts", None) or {}) if plant else {}
         counts.update(dict(getattr(plant, "_seed_shape_counts", None) or {}) if plant else {})
@@ -1621,7 +1656,7 @@ class InspectorMixin:
             last["clicked"] = lbl           # this exact pod icon goes away
             self._suppress_inspector_refresh = True
             try:
-                pod_record = self._on_harvest_selected()
+                pod_record = self._on_harvest_selected(getattr(lbl, "_flower_k", None))
             except Exception:
                 pod_record = None
             finally:
@@ -1641,10 +1676,15 @@ class InspectorMixin:
             fls = self._plant_flowers(plant)
             harvested = sum(1 for f in fls if f.get("harvested"))
             # one entry per pod still on the plant: ripe (harvestable) or not
-            pod_list = [plant.pod_is_ripe(f) for f in fls
-                        if plant.flower_sets_pod(f) and not f.get("harvested")] if stage >= 6 else []
+            # (pods form one after another, from late flowering on)
+            _sts = self._flower_states(plant) if stage >= 5 else []
+            pod_ks = [k for k, f in enumerate(fls)
+                      if k < len(_sts) and _sts[k] in ("pod", "ripe")
+                      and plant.flower_sets_pod(f) and not f.get("harvested")]
+            pod_list = [plant.pod_is_ripe(fls[k]) for k in pod_ks]
             ripe = sum(1 for r in pod_list if r)
-            key = (stage >= 6, tuple(pod_list), harvested, bool(getattr(plant, "fully_harvested", False)))
+            key = (stage >= 6, tuple(pod_list), tuple(pod_ks), harvested,
+                   bool(getattr(plant, "fully_harvested", False)))
             if key == last["key"]:
                 return
             # A pod (or a few) harvested and nothing else changed: take that
@@ -1664,14 +1704,22 @@ class InspectorMixin:
                     rest = [x for x in ripe_labs if x not in gone]
                     need = (old_ripe - ripe) - len(gone)
                     if need > 0:
-                        gone += random.sample(rest, need)   # harvested elsewhere: random ones
+                        # harvested elsewhere (S key, Harvest All): exactly
+                        # those pods whose flower is gone now
+                        exact = [x for x in rest if getattr(x[0], "_flower_k", None) not in pod_ks]
+                        gone += exact[:need]
+                        need -= len(exact[:need])
+                    if need > 0:
+                        rest = [x for x in ripe_labs if x not in gone]
+                        gone += random.sample(rest, need)
                     for x in gone:
                         # leave an empty slot exactly where the pod was, so
                         # the others don't slide left (with identical icons
                         # that would look like the rightmost one vanished)
                         cell = x[0].master
                         cw, ch = cell.winfo_width(), cell.winfo_height()
-                        x[0].destroy()
+                        for _w in list(cell.winfo_children()):
+                            _w.destroy()           # the pod and its »P« badge
                         if cw > 1 and ch > 1:
                             cell.configure(width=cw, height=ch)
                             cell.pack_propagate(False)
@@ -1684,6 +1732,7 @@ class InspectorMixin:
                     pass
             last["key"] = key
             last["labels"] = []
+            self._inspector_cross_pod_lbls = []     # (the tutorial glows them)
             self._inspector_pod_labels = last["labels"]   # the tutorial lets them glow
             last["growing"] = growing_now
             last["stage6"] = stage >= 6
@@ -1693,7 +1742,7 @@ class InspectorMixin:
             head = tk.Frame(box, bg=BG)
             head.pack(anchor="w")
             tk.Label(head, text="Pods", font=("Segoe UI", 14, "bold"), bg=BG).pack(side="left", padx=(0, 10))
-            if stage < 6:
+            if stage < 6 and not pod_list:
                 tk.Label(head, text="No pods yet — they form after flowering.",
                          font=("Segoe UI", 12, "italic"), bg=BG, fg="#888").pack(side="left")
                 return
@@ -1722,7 +1771,23 @@ class InspectorMixin:
                     icon_path = None
             prow = tk.Frame(box, bg=BG)
             prow.pack(anchor="w", pady=(4, 0))
-            for can in sorted(pod_list, reverse=True):       # ripe ones first
+            # pod info on hover (which flower, emasculated / crossed with whom)
+            info = tk.Label(box, text="", font=("Segoe UI", 11), bg=BG, fg="#5a4a20",
+                            justify="left", anchor="w")
+            hint_txt = ("Click a ripe pod to harvest it and reveal its seed colors." if ripe
+                        else "Seeds aren't mature yet.")
+
+            def _pod_hover(k, on):
+                try:
+                    if on and k is not None:
+                        info.configure(text=self._flower_info_text(
+                            plant, [k], self._flower_states(plant)))
+                    else:
+                        info.configure(text="")
+                except Exception:
+                    pass
+
+            for can, k in sorted(zip(pod_list, pod_ks), key=lambda t: (not t[0], t[1])):  # ripe first
                 img = None
                 if icon_path:
                     try:
@@ -1737,12 +1802,25 @@ class InspectorMixin:
                                cursor="hand2" if can else "arrow")
                 lbl.image = img
                 lbl.pack()
+                lbl._flower_k = k
+                # pollinated by hand (a cross): the same »P« badge as on
+                # the garden plots
+                try:
+                    if fls[k].get("pollen"):
+                        self.__dict__.setdefault("_inspector_cross_pod_lbls", []).append(lbl)
+                        tk.Label(pcell, text="P", font=("Segoe UI", 8, "bold"),
+                                 bg="#FFD54F", fg="#000000", bd=1, relief="solid",
+                                 padx=2, pady=0).place(relx=1.0, rely=0.0, anchor="ne")
+                except Exception:
+                    pass
+                lbl.bind("<Enter>", lambda e, k=k: _pod_hover(k, True), add="+")
+                lbl.bind("<Leave>", lambda e, k=k: _pod_hover(k, False), add="+")
                 last["labels"].append((lbl, can))
                 if can:
                     lbl.bind("<Button-1>", lambda e, l=lbl: _harvest_one(l))
-            tk.Label(box, text=("Click a ripe pod to harvest it and reveal its seed colors." if ripe
-                                else "Seeds aren't mature yet."),
+            tk.Label(box, text=hint_txt,
                      font=("Segoe UI", 12, "italic"), fg="#888", bg=BG).pack(anchor="w", pady=(2, 0))
+            info.pack(anchor="w")
 
         def _upd_and_fit():
             before = last["key"]
@@ -1797,6 +1875,18 @@ class InspectorMixin:
         sel = selmap.setdefault(pid, set())
         SEL_BG, CELL_BG = "#f2d48a", BG
 
+        def _blend(c1, c2, a):
+            try:
+                r1, g1, b1 = (int(c1[i:i + 2], 16) for i in (1, 3, 5))
+                r2, g2, b2 = (int(c2[i:i + 2], 16) for i in (1, 3, 5))
+                return "#%02x%02x%02x" % (round(r1 * a + r2 * (1 - a)),
+                                          round(g1 * a + g2 * (1 - a)),
+                                          round(b1 * a + b2 * (1 - a)))
+            except Exception:
+                return "#f6e2b0"
+        # hovered bud / flower: the selection colour, a little fainter
+        HOVER_BG = _blend(SEL_BG, str(BG), 0.7)
+
         box = tk.Frame(win, bg=BG, padx=16)
         box.pack(fill="x")
         inner = tk.Frame(box, bg=BG, pady=2)
@@ -1819,40 +1909,242 @@ class InspectorMixin:
         info.pack(anchor="w", pady=(2, 0))
 
         st_ = {"cells": [], "looks": [], "pollen_key": None, "shown": False,
-               "states": [], "fl": [], "can_poll": False}
+               "states": [], "fl": [], "can_poll": False, "hover": None}
 
         def can_emasc(k):
             stage = int(getattr(plant, "stage", 0) or 0)
-            return (stage in (4, 5) and st_["states"][k] in ("bud", "open")
+            return (stage in (4, 5, 6) and st_["states"][k] in ("bud", "open")
                     and not st_["fl"][k].get("emasc"))
 
         def can_pol(k):
             return st_["can_poll"] and st_["states"][k] == "open"
 
+        def _hover(k, leaving=None):
+            if k is None and st_.get("hover") != leaving:
+                return              # already over another one
+            if st_.get("hover") != k:
+                st_["hover"] = k
+                update()
+
         def toggle(k):
-            # one flower at a time
-            was = k in sel
-            sel.clear()
-            if not was:
+            # add it to the selection, or take it out again
+            if k in sel:
+                sel.discard(k)
+            else:
                 sel.add(k)
             update()
+
+        # the inspection window itself (the panel sits in one of its sections)
+        top = win.winfo_toplevel()
+
+        def _multi_mod(e):
+            # Shift, Control (or ⌘ on the Mac) held
+            st = int(getattr(e, "state", 0) or 0)
+            return bool(st & 0x0001 or st & 0x0004 or st & 0x0008 or st & 0x0010)
+
+        def _flower_of(w):
+            while w is not None:
+                if hasattr(w, "_flower_k"):
+                    return w._flower_k
+                w = getattr(w, "master", None)
+            return None
+
+        def _press(e):
+            # anywhere in the inspection window (not in a text box or on a
+            # scroll bar): a click on a bud / flower, or the start of a drag
+            if isinstance(e.widget, (tk.Entry, tk.Text, tk.Scrollbar, tk.Scale, tk.Spinbox)):
+                st_.pop("drag", None)
+                return
+            try:
+                if not box.winfo_exists():
+                    return
+            except Exception:
+                return
+            st_["drag"] = {"start": _flower_of(e.widget), "moved": False,
+                           "add": _multi_mod(e), "base": set(sel),
+                           "x0": e.x_root, "y0": e.y_root}
+
+        # the blue drag rectangle, like the one over the garden's plots:
+        # four thin bars (a Tk frame can't be see-through)
+        def _show_band(x1, y1, x2, y2):
+            edges = st_.get("band")
+            if not edges or not all(b.winfo_exists() for b in edges):
+                edges = st_["band"] = [tk.Frame(top, bg="#4FC3F7") for _ in range(4)]
+            try:
+                wx, wy = top.winfo_rootx(), top.winfo_rooty()
+            except Exception:
+                return
+            l, t = min(x1, x2) - wx, min(y1, y2) - wy
+            w, h = max(1, abs(x2 - x1)), max(1, abs(y2 - y1))
+            th = 3
+            for b, (bx, by, bw, bh) in zip(edges, ((l, t, w, th), (l, t + h - th, w, th),
+                                                   (l, t, th, h), (l + w - th, t, th, h))):
+                try:
+                    b.place(x=bx, y=by, width=max(1, bw), height=max(1, bh))
+                    b.lift()
+                except Exception:
+                    pass
+
+        def _hide_band():
+            for b in st_.get("band") or []:
+                try:
+                    b.place_forget()
+                except Exception:
+                    pass
+
+        def _drag(e):
+            d = st_.get("drag")
+            if not d:
+                return
+            x0, y0, x1, y1 = d["x0"], d["y0"], e.x_root, e.y_root
+            if not d["moved"] and abs(x1 - x0) < 5 and abs(y1 - y0) < 5:
+                return                      # still a click, not a drag
+            d["moved"] = True
+            _show_band(x0, y0, x1, y1)
+            # every bud / flower the rectangle touches
+            lx, rx, ty, by = min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1)
+            span = set()
+            for k, (cell, _ic) in (st_.get("cells") or {}).items():
+                try:
+                    cx, cy = cell.winfo_rootx(), cell.winfo_rooty()
+                    cw, ch = cell.winfo_width(), cell.winfo_height()
+                except Exception:
+                    continue
+                if cx <= rx and cx + cw >= lx and cy <= by and cy + ch >= ty:
+                    span.add(k)
+            new = (d["base"] | span) if d["add"] else span
+            if new != sel:
+                sel.clear()
+                sel.update(new)
+                update()
+
+        def _release(e):
+            d = st_.pop("drag", None)
+            _hide_band()
+            if not d or d["moved"]:
+                return
+            k = d["start"]
+            if k is None:
+                return                       # a click beside the flowers
+            if d and d["add"]:
+                toggle(k)                    # Shift + click: add / remove
+            elif sel == {k}:
+                sel.clear()                  # click the only selected one: off
+                update()
+            else:
+                sel.clear()                  # click: just this one
+                sel.add(k)
+                update()
+
+
+        # bound once per window; each new flower panel (another plant, or
+        # the window rebuilt) takes over the handlers
+        top._flower_drag = {"press": _press, "drag": _drag, "release": _release}
+        if not getattr(top, "_flower_drag_bound", False):
+            top._flower_drag_bound = True
+            for _seq, _name in (("<Button-1>", "press"), ("<B1-Motion>", "drag"),
+                                ("<ButtonRelease-1>", "release")):
+                top.bind(_seq, lambda e, n=_name: (getattr(top, "_flower_drag", None) or {})
+                         .get(n, lambda _e: None)(e), add="+")
+
+        def _ask(title, text, yes_text="Yes", yes_icon=None):
+            # the game's own question window (like Save / Load), Yes / Cancel;
+            # Enter = Yes, Escape = Cancel
+            try:
+                return bool(self._ask_confirm(title, text, yes_text=yes_text, parent=win,
+                                              yes_icon=yes_icon))
+            except Exception:
+                return True
+
+        def _several(kind, targets):
+            """Several flowers for one action: Realistic goes one after the
+            other (each its own window), the other difficulties do them
+            simultaneously (one window counts for all). Returns "seq",
+            "all" or None (cancelled)."""
+            n = len(targets)
+            act, noun = (("Emasculate", "emasculation") if kind == "emasc"
+                         else ("Pollinate", "pollination"))
+            what = "buds / flowers" if kind == "emasc" else "flowers"
+            if not bool(self.show_breed_dialogs.get()):
+                return "all"
+            if str(getattr(self, "_season_mode", "off")) == "enforce":
+                ok = _ask(act, f"{act} the {n} selected {what} one after the other?",
+                          yes_text=f"Yes \u2014 each {noun} in its own window")
+                return "seq" if ok else None
+            ok = _ask(act, f"{act} the {n} selected {what} simultaneously?",
+                      yes_text=f"Yes \u2014 one {noun} counts for all of them")
+            return "all" if ok else None
 
         def run(kind):
             ks = sorted(sel)
             if not ks:
                 self._toast("Select a flower first (click its icon).", level="info")
                 return
+            states = st_["states"]
+            if kind == "emasc":
+                # buds and open flowers alike
+                targets = [k for k in ks if can_emasc(k)] or ks[:1]
+            elif kind == "pollen":
+                ready = [k for k in ks if self._flower_anthers_ready(plant, k, states)]
+                targets = (ready or ks)[:1]          # one flower's anthers per brush
+            else:
+                targets = [k for k in ks if can_pol(k)] or ks[:1]
             # Check everything BEFORE the window closes for the dialog, so
             # a refusal leaves the Inspect window open.
-            if not self._flower_action_ok(plant, ks[0], kind, st_["states"]):
+            if not self._flower_action_ok(plant, targets[0], kind, states):
                 return
             self._flower_queue = None
             if kind == "emasc":
-                run_close_first(lambda: self._on_emasculate_selected(ks[0] + 1))
+                if len(targets) > 1:
+                    how = _several("emasc", targets)
+                    if how is None:
+                        return
+                    rest = list(targets[1:])
+                    if how == "all":
+                        sel.clear()
+                        if not bool(self.show_breed_dialogs.get()):
+                            self._emasculate_many(plant, targets)
+                            update()
+                            return
+                        run_close_first(lambda: self._on_emasculate_selected(
+                            targets[0] + 1, also=rest))
+                        return
+                    self._flower_queue = {"kind": "emasc", "pid": pid, "ks": rest}
+                run_close_first(lambda: self._on_emasculate_selected(targets[0] + 1))
             elif kind == "pollen":
-                run_close_first(lambda: self._on_collect_pollen(ks[0] + 1))
+                run_close_first(lambda: self._on_collect_pollen(targets[0] + 1))
             else:
-                run_close_first(lambda: self._on_pollinate(ks[0] + 1))
+                if len(targets) > 1:
+                    how = _several("poll", targets)
+                    if how is None:
+                        return
+                    rest = list(targets[1:])
+                    if how == "all":
+                        sel.clear()
+                        run_close_first(lambda: self._on_pollinate(targets[0] + 1, also=rest))
+                        return
+                    self._flower_queue = {"kind": "poll", "pid": pid, "ks": rest}
+                run_close_first(lambda: self._on_pollinate(targets[0] + 1))
+
+        def remove_selected():
+            ks = [k for k in sorted(sel) if k < len(st_["states"])
+                  and st_["states"][k] in ("bud", "open")]
+            if not ks:
+                self._toast("Select the buds or flowers to remove first.", level="info")
+                return
+            nb = sum(1 for k in ks if st_["states"][k] == "bud")
+            no = len(ks) - nb
+            parts = ([f"{nb} bud{'s' if nb != 1 else ''}"] if nb else []) + \
+                    ([f"{no} flower{'s' if no != 1 else ''}"] if no else [])
+            if not _ask("Remove", f"Remove {' and '.join(parts)}?\n\n"
+                                  "They will not become pods.", yes_text="Remove",
+                        yes_icon="remove.png"):
+                return
+            n = self._remove_flowers(plant, ks)
+            sel.clear()
+            if n:
+                self._toast(f"Removed {' and '.join(parts)}.")
+            update()
 
         def action_btn(names, fallback, tip, cmd, padl, parent=None, label=None):
             img = self._action_icon(names)
@@ -1876,6 +2168,11 @@ class InspectorMixin:
         btn_p = action_btn(("pollinate.png",), "Pollinate",
                            "Pollinate flower (morning / noon)",
                            lambda: run("poll"), 4, parent=tools_p, label="Pollinate")
+        # bin: pick off the selected buds / flowers (after the crossing tools)
+        btn_r = action_btn(("remove.png", "bin.png", "trash.png"), "Remove",
+                           "Remove the selected buds / flowers", remove_selected, 14,
+                           parent=tools_p)
+        self._inspector_remove_flower_btn = btn_r
         # the tutorial points at these (forceps, Pollinate, the flower cells,
         # "Collect Pollen")
         self._inspector_emasc_btn = btn_e
@@ -1935,7 +2232,16 @@ class InspectorMixin:
                     ic = tk.Label(cell, bg=CELL_BG, cursor="hand2")
                     ic.pack()
                     for w in (cell, ic):
-                        w.bind("<Button-1>", lambda e, k=k: toggle(k))
+                        w._flower_k = k
+                        # like the garden's plots: click = this one, Shift
+                        # (Ctrl / ⌘) + click = add or remove it, drag across
+                        # several = all of them
+                        # (press, drag and release: see _press / _drag /
+                        # _release, bound on the whole window)
+                        for _seq in ("<Shift-Button-3>", "<Shift-Button-2>"):
+                            w.bind(_seq, lambda e, k=k: toggle(k))
+                        w.bind("<Enter>", lambda e, k=k: _hover(k))
+                        w.bind("<Leave>", lambda e, k=k: _hover(None, k))
                     st_["cells"][k] = (cell, ic)
                     st_["looks"][k] = None
                 if not vis:
@@ -1952,20 +2258,38 @@ class InspectorMixin:
                     ic.configure(image=img or "", text="" if img else "\u2022")
                     ic.image = img
                     st_["looks"][k] = look
-                bgc = SEL_BG if k in sel else CELL_BG
+                bgc = (SEL_BG if k in sel else
+                       HOVER_BG if k == st_.get("hover") else CELL_BG)
                 if str(cell.cget("bg")) != bgc:
                     cell.configure(bg=bgc)
                     ic.configure(bg=bgc)
             if grew and fit:
                 self.root.after_idle(fit)
             ks = sorted(sel)
-            txt = (self._flower_info_text(plant, ks, states) if ks else
-                   "Click a flower to select it (click again to deselect).")
+            # details of the bud / flower under the mouse (not of the selection)
+            hv = st_.get("hover")
+            if hv is not None and hv not in vis:
+                hv = st_["hover"] = None
+            _today_ = self._today()
+            _note = ("No flower has ripe anthers today."
+                     if ("open" in states
+                         and getattr(plant, "last_anther_check_day", None) == _today_
+                         and not bool(getattr(plant, "anthers_available_today", False)))
+                     else "")
+            if hv is not None:
+                txt = self._flower_info_text(plant, [hv], states)
+                if _note:
+                    txt += "   \u00b7   " + _note
+            else:
+                txt = (_note if _note else "" if ks else
+                       "Click a bud or flower to select it; Shift + click, or drag across them, "
+                       "to select several.")
             if info.cget("text") != txt:
                 info.configure(text=txt)
             en_e = any(can_emasc(k) for k in ks)
             en_p = any(can_pol(k) for k in ks)
-            for btn, en in ((btn_e, en_e), (btn_p, en_p)):
+            en_r = any(k < len(states) and states[k] in ("bud", "open") for k in ks)
+            for btn, en in ((btn_e, en_e), (btn_p, en_p), (btn_r, en_r)):
                 # always clickable (a click explains why not), only dimmed
                 btn.configure(bg="#e8e0cf" if en else "#ece8de",
                               fg="#3b2a1a" if en else "#a09a8c")
@@ -2005,10 +2329,7 @@ class InspectorMixin:
                     except Exception:
                         pass
                     st_["pollen_btn"] = pbn
-                    if pk != "collect":
-                        tk.Label(pollen_note, text="no flower has ripe anthers today",
-                                 font=("Segoe UI", 11, "italic"), bg=BG,
-                                 fg="#888").pack(side="left", padx=(6, 0))
+                    # (no ripe anthers today: said in the info line below)
             if st_.get("pollen_btn") is not None:
                 st_["pollen_btn"].configure(bg="#7A9A3C" if (ok_pollen and pk == "collect") else "#c9cfbd")
 

@@ -377,6 +377,8 @@ class Plant:
     def flower_sets_pod(f):
         """A flower becomes a pod unless it was emasculated, got no pollen
         and had not already pollinated itself before."""
+        if f.get("removed"):
+            return False                  # picked off by the gardener
         if f.get("no_fruit"):
             return False                  # plant that sets no fruit (Realistic)
         e = f.get("emasc")
@@ -428,6 +430,8 @@ class Plant:
         n = 0
         st = int(getattr(self, "stage", 0) or 0)
         for f in self.ensure_flowers():
+            if f.get("removed"):
+                continue
             ph = self.late_flower_phase(f)
             if ph in ("bud", "open"):
                 n += 1

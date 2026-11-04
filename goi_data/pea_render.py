@@ -508,6 +508,8 @@ def render(plant, age, phase=0.0, pods_visible=None, sickness=0.0, flowers_max=N
         if node > n or age < start:
             continue
         mk = (marks[j] if marks is not None and j < len(marks) else None) or {}
+        if mk.get("removed"):                    # picked off (bud or flower)
+            continue
         if age - start >= OPEN_AFTER + FLOWER_DAYS:
             if mk.get("gone"):                   # dropped (no pod) or already harvested
                 continue
@@ -753,30 +755,25 @@ def _draw_pod(d, plant, fx, fy, side, g, dry):
     d.line(back[2:-2], fill=seam, width=max(1, SS - 1))
     # dry pods: a few darker wrinkles
     if dry > 0.3:
+        # (inside the pod's outline: from just below its back to just above
+        # its belly, following the same bend and width as the pod there)
+        def _edge(u):
+            curve = math.sin(u * math.pi) * 1.8 * SS * g * -side
+            w = math.sin(math.pi * min(1.0, u * 1.06)) ** 0.45 * W
+            if plant.constricted:
+                bump = 0.5 - 0.5 * math.cos(2 * math.pi * n_seeds * u)
+                w *= 0.74 + 0.26 * bump
+            top = curve - W * 0.28
+            return top, w
+        lw = max(1, SS - 1)
         for u in (0.25, 0.45, 0.65, 0.82):
-            a_ = P(u * L, -W * 0.1)
-            b_ = P(u * L + 1.5 * SS, W * 0.45)
-            d.line([a_, b_], fill=mix(col, POD_DRY_OUT, 0.5 * dry), width=max(1, SS - 1))
+            u2 = min(0.95, u + 1.5 * SS / max(1.0, L))
+            t1, w1 = _edge(u)
+            t2, w2 = _edge(u2)
+            a_ = P(u * L, t1 + w1 * 0.22 + lw * 0.5)
+            b_ = P(u2 * L, t2 + w2 * 0.78 - lw * 0.5)
+            d.line([a_, b_], fill=mix(col, POD_DRY_OUT, 0.5 * dry), width=lw)
     _calyx(d, _local(fx, fy, hang), 0.95, col=mix(CALYX, POD_DRY, dry))
-
-
-THREAD = (200, 40, 40, 255)        # red thread: emasculated flower
-TAG = (250, 248, 236, 255)          # small paper tag: pollinated (crossed) flower
-
-
-def _draw_marks(d, nx, ny, fx, fy, mk):
-    """The gardener's marks on a flower stalk, which stay on the pod: a red
-    thread for an emasculated flower, a little white tag for a pollinated
-    one."""
-    mx, my = nx + (fx - nx) * 0.45, ny + (fy - ny) * 0.45
-    if mk.get("e"):
-        r = 1.6 * SS
-        d.ellipse((mx - r, my - r, mx + r, my + r), outline=THREAD, width=SS)
-    if mk.get("p"):
-        tx, ty = mx + 1.5 * SS, my + 1.0 * SS
-        d.line((mx, my, tx, ty), fill=OUT, width=1)
-        w, h = 3.2 * SS, 4.2 * SS
-        d.rectangle((tx - w / 2, ty, tx + w / 2, ty + h), fill=TAG, outline=OUT, width=max(1, SS - 1))
 
 
 def _flower_or_pod(d, plant, fx, fy, t, ang):
@@ -1111,7 +1108,7 @@ def _cache_key(traits, seed, args, size):
         # before the buds, flower and pod traits don't show: share pictures
         purple, pod_y, constr = True, False, False
     seed_y = f["seed_yellow"] if age < GERMINATE + 3 else None
-    mk = tuple((bool(m.get("e")), bool(m.get("p")), bool(m.get("gone")))
+    mk = tuple((bool(m.get("gone")), bool(m.get("removed")))
                for m in (args.get("marks") or ()) if isinstance(m, dict))
     late = tuple(tuple(x) if isinstance(x, (list, tuple)) else (x,)
                  for x in (args.get("late") or ()))
@@ -1205,3 +1202,34 @@ def model_age(stage, frac, days_in_stage7=0.0):
         return STAGE_AGE[7] + min(28.0, max(0.0, days_in_stage7) * 0.8)
     a0, a1 = STAGE_AGE[stage], STAGE_AGE[stage + 1]
     return a0 + (a1 - a0) * max(0.0, min(1.0, frac))
+
+
+def flower_icon(purple=True, size=64, painterly=False):
+    """One pea flower (seen from the side, as in the garden drawings) as a
+    size x size RGBA picture — for windows that show a flower in the
+    drawn plant styles (e.g. the pollen chooser)."""
+    global SS
+    import types as _types
+    _saved = SS
+    try:
+        big = int(size) * 4
+        SS = 4
+        img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        k = big / (24.0 * SS)
+        fake = _types.SimpleNamespace(purple=bool(purple), rseed=3)
+        _draw_flower(d, fake, big * 0.30, big * 0.58, 0.0, k, 0.0)
+        bb = img.getbbox()
+        if bb:
+            img = img.crop(bb)
+        w, h = img.size
+        sc = (size * 0.94) / float(max(w, h, 1))
+        img = img.resize((max(1, int(w * sc)), max(1, int(h * sc))), Image.LANCZOS)
+        if painterly:
+            r, g, b, a = img.split()
+            img = Image.merge("RGBA", (r.point(_LUT_WARM_R), g, b.point(_LUT_WARM_B), a))
+        out = Image.new("RGBA", (int(size), int(size)), (0, 0, 0, 0))
+        out.paste(img, ((size - img.width) // 2, (size - img.height) // 2), img)
+        return out
+    finally:
+        SS = _saved

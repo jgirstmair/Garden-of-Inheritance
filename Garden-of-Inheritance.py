@@ -336,7 +336,7 @@ def _play_sound(filename):
         pass
 
 
-def _play_sound_variant(pattern):
+def _play_sound_variant(pattern, volume=None):
     """
     Same as _play_sound(), but picks randomly among every file in
     SOUNDS_DIR matching `pattern` (a glob pattern, e.g. "water*.ogg")
@@ -358,7 +358,9 @@ def _play_sound_variant(pattern):
         if snd is None:
             snd = pygame.mixer.Sound(path)
             _sound_cache[key] = snd
-        snd.set_volume(_sfx_volume)
+        # volume: a fixed loudness (e.g. the achievement bell, always full),
+        # else the sound-effects volume
+        snd.set_volume(_sfx_volume if volume is None else float(volume))
         snd.play()
     except Exception:
         pass
@@ -372,6 +374,7 @@ def _play_sound_variant(pattern):
 # "play once, right now".
 _rain_channel = None
 _rain_active = False
+_rain_sound = None          # the rain Sound itself (stopped by Sound, not by channel)
 
 
 def _update_rain_sound(is_raining):
@@ -406,7 +409,7 @@ def _update_rain_sound(is_raining):
     Falls back gracefully to whichever variant(s) actually exist; does
     nothing if none are present yet.
     """
-    global _rain_channel, _rain_active
+    global _rain_channel, _rain_active, _rain_sound
     if not _mixer_ready:
         return
     if not _music_enabled:
@@ -429,10 +432,26 @@ def _update_rain_sound(is_raining):
             if snd is None:
                 snd = pygame.mixer.Sound(path)
                 _sound_cache[key] = snd
+            if _rain_sound is not None:
+                try:
+                    _rain_sound.stop()          # never two rain loops at once
+                except Exception:
+                    pass
             _rain_channel = _play_on_channel(snd, _music_volume * 0.5, 1500)
+            _rain_sound = snd
             _rain_active = True
-        elif not is_raining and _rain_active:
-            if _rain_channel is not None:
+        elif not is_raining and (_rain_active or (_rain_sound is not None
+                                                  and _rain_sound.get_num_channels() > 0)):
+            # Fade the rain Sound wherever it plays: its channel may have
+            # been taken over meanwhile (another sound claimed it), and
+            # fading "the channel" then left the rain running elsewhere.
+            if _rain_sound is not None:
+                try:
+                    _rain_sound.fadeout(1500)
+                except Exception:
+                    pass
+                _rain_sound = None          # fading: don't restart the fade each tick
+            elif _rain_channel is not None:
                 _rain_channel.fadeout(1500)
             _rain_channel = None
             _rain_active = False
@@ -1784,7 +1803,8 @@ def _make_flat_button_raw(parent, text, command, bg="#7A9A3C", fg="white",
     return lbl
 
 
-def _silent_dialog_raw(owner, title, message, kind="info"):
+def _silent_dialog_raw(owner, title, message, kind="info", yes_text="Yes", no_text="No",
+                       font_size=10, wrap=380, yes_note="", on_top=False, yes_icon=None):
     """
     Minimal modal message dialog that never triggers Windows' automatic
     notification sound the way tkinter.messagebox does. On Windows,
@@ -1815,7 +1835,8 @@ def _silent_dialog_raw(owner, title, message, kind="info"):
     body = tk.Frame(win, bg="#f0f0f0", padx=20, pady=16)
     body.pack(fill="both", expand=True)
     tk.Label(body, text=message, bg="#f0f0f0", justify="left",
-             font=("Segoe UI", 10), wraplength=380).pack(anchor="w")
+             font=("Segoe UI", font_size), wraplength=wrap).pack(anchor="w")
+    _bfont = ("Segoe UI", max(9, font_size - 1), "bold")
 
     btn_row = tk.Frame(win, bg="#f0f0f0", padx=16, pady=12)
     btn_row.pack(fill="x")
@@ -1829,16 +1850,39 @@ def _silent_dialog_raw(owner, title, message, kind="info"):
         # the default button in a native dialog), No on the right as the
         # plain secondary one — opposite .pack() sides so they land at
         # opposite ends of the row instead of clustered together.
-        _make_flat_button_raw(btn_row, "Yes", lambda: _close(True), width=10
-                               ).pack(side="left")
-        _make_flat_button_raw(btn_row, "No", lambda: _close(False),
-                               bg="#e0dccf", fg="#333333", width=10
-                               ).pack(side="right")
+        _yb = _make_flat_button_raw(btn_row, yes_text, lambda: _close(True),
+                                    width=(10 if len(yes_text) <= 10 else None), font=_bfont)
+        _yb.pack(side="left")
+        if yes_icon:
+            # a picture instead of the word (e.g. the bin for "Remove")
+            try:
+                _im = Image.open(yes_icon).convert("RGBA")
+                _im.thumbnail((30, 30), Image.LANCZOS)
+                _ph = ImageTk.PhotoImage(_im)
+                _yb.configure(image=_ph, text="", width=0, padx=14, pady=2)
+                _yb.image = _ph
+            except Exception:
+                pass
+        if yes_note:
+            # what "Yes" means, in brackets, plain text next to the button
+            tk.Label(btn_row, text=f"({yes_note})", bg="#f0f0f0", fg="#555555",
+                     font=("Segoe UI", max(9, font_size - 1))).pack(side="left", padx=(8, 0))
+        _make_flat_button_raw(btn_row, no_text, lambda: _close(False),
+                               bg="#e0dccf", fg="#333333",
+                               width=(10 if len(no_text) <= 10 else None), font=_bfont
+                               ).pack(side="right", padx=(16, 0))
         win.protocol("WM_DELETE_WINDOW", lambda: _close(False))
+        # Enter = Yes, Escape = No
+        win.bind("<Return>", lambda e: _close(True))
+        win.bind("<KP_Enter>", lambda e: _close(True))
+        win.bind("<Escape>", lambda e: _close(False))
     else:
         _make_flat_button_raw(btn_row, "OK", lambda: _close(True), width=10
                                ).pack(side="right")
         win.protocol("WM_DELETE_WINDOW", lambda: _close(None))
+        # Enter (or Escape) = OK
+        for _k in ("<Return>", "<KP_Enter>", "<Escape>"):
+            win.bind(_k, lambda e: _close(True))
 
     win.update_idletasks()
     # Set the geometry explicitly using ONLY values that don't depend on
@@ -1866,7 +1910,8 @@ def _silent_dialog_raw(owner, title, message, kind="info"):
         win.unbind("<Map>")
         win.lift()
         win.attributes("-topmost", True)
-        win.after(10, lambda: win.attributes("-topmost", False))
+        if not on_top:
+            win.after(10, lambda: win.attributes("-topmost", False))
         win.focus_force()
         # grab_set() can raise "grab failed: window not viewable" if called
         # before the window is actually mapped — safe here since we're
@@ -1879,6 +1924,20 @@ def _silent_dialog_raw(owner, title, message, kind="info"):
               f"geometry={win.geometry()}, viewable={win.winfo_viewable()}")
 
     win.bind("<Map>", _on_map)
+    if on_top:
+        # stays the top window until answered
+        def _keep_top():
+            try:
+                if win.winfo_exists():
+                    win.attributes("-topmost", True)
+                    win.after(500, _keep_top)
+            except Exception:
+                pass
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
+        win.after(500, _keep_top)
     win.deiconify()
 
     win.wait_window(win)
@@ -2167,6 +2226,8 @@ class GardenApp(InspectorMixin):
          "Completed tutorial part 3: from the first buds to the first harvest."),
         ("tutorial_5", "Crossing",
          "Completed tutorial part 4: through the winter, then emasculated, pollinated and harvested a first cross by hand."),
+        ("tutorial_6", "The Hidden Elements",
+         "Completed tutorial part 5: followed a cross into the second generation with the Genotype Viewer and the TIE."),
         ("read_beehive", "Bees and Peas",
          "Read the beehive's story to the very last page."),
         ("read_station", "Weather Watcher",
@@ -2193,6 +2254,37 @@ class GardenApp(InspectorMixin):
          "Crossed two different plants by hand in Mendel's garden (outside the tutorial)."),
         ("self_by_hand", "By One's Own Hand",
          "Pollinated a flower with pollen from the very same plant: a self-pollination by hand."),
+        ("pooled_three", "Three to One, Exactly",
+         "A pooled ratio of exactly 3,00 : 1 in the TIE, over more than 300 plants."),
+        ("mission_pure_line", "Pure Lines",
+         "Mission (easy): found two pure lines of one trait, one for each form."),
+        ("mission_seven", "The Magnificent Seven",
+         "Mission (easy): found both forms of all seven of Mendel's characters in your own harvest."),
+        ("mission_islands", "White Islands",
+         "Mission (easy): three white-flowering plants, each completely surrounded by purple "
+         "ones, all in flower at once."),
+        ("mission_reciprocal", "Equal Partners",
+         "Mission (medium): showed with reciprocal crosses that mother and father contribute "
+         "equally to their offspring."),
+        ("mission_three_to_one", "Three to One",
+         "Mission (medium): the hidden form came back in the grandchildren, about 3 : 1, "
+         "and the Law of Segregation was unlocked with it."),
+        ("mission_test_cross", "The Test Cross",
+         "Mission (medium): a hybrid crossed with a recessive plant gave about 1 : 1."),
+        ("mission_hidden_seven", "The Hidden Seven",
+         "Mission (medium): bred one plant showing all seven recessive forms."),
+        ("mission_roulette", "Plant Roulette",
+         "Mission (medium): predicted three traits of a plant's offspring from its family tree."),
+        ("mission_close_ratio", "Mendel's Numbers",
+         "Mission (hard): more than 100 grandchildren counted, between 2.9 : 1 and 3.1 : 1."),
+        ("mission_true_to_type", "True to Type",
+         "Mission (hard): bred a pure line with three traits drawn at random."),
+        ("mission_six_generations", "Six Generations",
+         "Mission (hard): followed a line from a cross to a flowering plant of the F6."),
+        ("mission_dihybrid", "Two Traits at Once",
+         "Mission (hard): two traits inherited independently, about 9 : 3 : 3 : 1."),
+        ("storm_watcher", "Weathering the Storm",
+         "Waited out a thunderstorm: three flashes of lightning and their thunder, in one storm."),
         ("temp_day", "Three Readings",
          "Took all three temperature readings of one day yourself (6:00, 14:00 and 22:00)."),
         ("temp_week", "A Week of Readings",
@@ -2205,16 +2297,22 @@ class GardenApp(InspectorMixin):
 
     # How the achievements hall groups them (anything not listed: "Other")
     ACHIEVEMENT_GROUPS = (
-        ("Tutorial", ("tutorial_1", "tutorial_2", "tutorial_3", "tutorial_5")),
+        ("Tutorial", ("tutorial_1", "tutorial_2", "tutorial_3", "tutorial_5", "tutorial_6")),
         ("Laws of Inheritance", ("law_dominance", "law_segregation", "law_independent",
-                                 "law_complementary", "law_epistasis")),
+                                 "law_complementary", "law_epistasis", "pooled_three")),
         ("Breeding", ("first_cross", "self_by_hand")),
-        ("Weather Observer", ("temp_day", "temp_week", "temp_month", "temp_year")),
+        ("Missions", ("mission_pure_line", "mission_seven", "mission_islands",
+                      "mission_reciprocal", "mission_three_to_one", "mission_test_cross",
+                      "mission_hidden_seven", "mission_roulette",
+                      "mission_close_ratio", "mission_true_to_type", "mission_six_generations",
+                      "mission_dihybrid")),
+        ("Weather Observer", ("temp_day", "temp_week", "temp_month", "temp_year",
+                              "storm_watcher")),
         ("Garden Visitors", ("pea_weevil", "species_3", "species_all", "all_on_one")),
         ("Abbey Grounds", ("read_beehive", "read_station")),
     )
 
-    # (flag on the app, achievement key, what Friar Cyril says)
+    # (flag on the app, achievement key, what Abbot Cyril says)
     LAW_ACHIEVEMENTS = (
         ("law1_ever_discovered", "law_dominance",
          "Remarkable, Gregor! When two pure lines are crossed, only one form shows "
@@ -2233,10 +2331,30 @@ class GardenApp(InspectorMixin):
          "Nature hides her laws inside one another, Gregor."),
     )
 
+    POOLED_PERFECT_MIN_N = 301
+
+    def _on_pooled_ratio(self, trait, n_dom, n_rec):
+        """The TIE shows a pooled ratio: exactly 3,00 : 1 (as it is shown,
+        two decimals) with more than 300 plants is an achievement."""
+        if getattr(self, "_tutorial_active", False) or n_rec <= 0:
+            return
+        n = n_dom + n_rec
+        if n < self.POOLED_PERFECT_MIN_N or f"{round(n_dom / n_rec, 2):.2f}" != "3.00":
+            return
+        if self._award_achievement("pooled_three"):
+            name = str(trait).replace("_", " ")
+            self.root.after(400, lambda: self._show_cyril_congrats(
+                "Three to One, Exactly",
+                f"{n_dom} to {n_rec}: three to one, to the second decimal, over {n} plants "
+                f"({name})! Mendel himself never came closer than 2.98. Nature rarely "
+                "agrees so perfectly, Gregor; enjoy it."))
+
     def _check_law_achievements(self):
         """Each unlocked law is an achievement. A newly unlocked one is
-        celebrated by Friar Cyril — except right after starting or loading
+        celebrated by Abbot Cyril — except right after starting or loading
         a garden, when earlier discoveries are just recorded quietly."""
+        if getattr(self, "_tutorial_active", False):
+            return              # laws found in Abbot Cyril's practice garden don't count
         quiet = time.time() < float(getattr(self, "_law_ach_quiet_until", 0) or 0)
         titles = {k: t for k, t, _d in self.ACHIEVEMENTS}
         delay = 400
@@ -2400,7 +2518,7 @@ class GardenApp(InspectorMixin):
 
     def _on_species_identified(self, key, typed):
         """Correct name typed: remember it, maybe award an achievement, and
-        Friar Cyril confirms with a smile."""
+        Abbot Cyril confirms with a smile."""
         common, latin, _genus, _names = self.SPECIES[key]
         ids = self._save_species_id(key, typed)
         new_ach = []
@@ -2428,6 +2546,11 @@ class GardenApp(InspectorMixin):
     def _award_achievement(self, key):
         """Records an achievement (for good, across all gardens). True if it
         is new."""
+        # Once the genotype was revealed (the alleles shown) in this garden,
+        # nothing more is earned there — only the tutorial's own parts.
+        if (getattr(self, "_genotype_revealed", False)
+                and not str(key).startswith("tutorial")):
+            return False
         data = self._load_achievements()
         if key in data:
             return False
@@ -2442,21 +2565,23 @@ class GardenApp(InspectorMixin):
         self._ring_bell()
         return True
 
-    def _ring_bell(self):
+    def _ring_bell(self, full=True):
         """Rings one of the monastery bells (sounds/bell1.ogg or bell2.ogg,
         picked at random): opening the monastery, an achievement, a law unlocked in
         the wizard. Rings at most once per 2 s, so a law that also brings
-        an achievement doesn't ring twice."""
+        an achievement doesn't ring twice. full: at full loudness whatever
+        the sound-effects volume (achievements and laws); opening the
+        monastery rings at the normal volume."""
         import time as _time
         now = _time.monotonic()
         if now - getattr(self, "_last_bell_t", -99.0) < 2.0:
             return
         self._last_bell_t = now
-        _play_sound_variant("bell[12].ogg")
+        _play_sound_variant("bell[12].ogg", volume=(1.0 if full else None))
 
     def _award_read_to_end(self, win, key, title, text):
         """An info window (beehive, measuring station) read to its last
-        page: the achievement (bell) now, Friar Cyril's congratulation
+        page: the achievement (bell) now, Abbot Cyril's congratulation
         once the window is closed."""
         if not self._award_achievement(key):
             return
@@ -2471,7 +2596,7 @@ class GardenApp(InspectorMixin):
     def _after_bruchus_catch(self, beetle_img):
         win = self._show_bruchus_popup(beetle_img)
         if self._award_achievement("pea_weevil") and win is not None:
-            # First catch ever: Friar Cyril comes by once "Good catch!" closes.
+            # First catch ever: Abbot Cyril comes by once "Good catch!" closes.
             def _on_close(e):
                 if e.widget is win:
                     self.root.after(150, lambda: self._show_cyril_congrats(
@@ -2482,8 +2607,8 @@ class GardenApp(InspectorMixin):
             win.bind("<Destroy>", _on_close, add="+")
 
     def _show_cyril_congrats(self, title, text, header="\u2605  Achievement unlocked",
-                             extra=None):
-        """Friar Cyril, smiling, congratulates (achievement, named species)."""
+                             extra=None, button_text="Thank you, Father"):
+        """Abbot Cyril, smiling, congratulates (achievement, named species)."""
         BG = self.INSPECTOR_BG
         INK = "#3b2a1a"
         win = tk.Toplevel(self.root)
@@ -2515,7 +2640,7 @@ class GardenApp(InspectorMixin):
         tk.Label(col, text=header, font=("Segoe UI", 11, "bold"),
                  bg=BG, fg="#B8860B").pack(anchor="w")
         tk.Label(col, text=title, font=("Segoe UI", 16, "bold"), bg=BG, fg=INK).pack(anchor="w")
-        tk.Label(col, text="Friar Cyril", font=("Segoe UI", 10, "italic"), bg=BG,
+        tk.Label(col, text="Abbot Cyril", font=("Segoe UI", 10, "italic"), bg=BG,
                  fg="#6b5a44").pack(anchor="w", pady=(10, 0))
         tk.Label(col, text=f"\u201c{text}\u201d", font=("Segoe UI", 12), bg=BG, fg=INK,
                  wraplength=340, justify="left").pack(anchor="w")
@@ -2528,7 +2653,7 @@ class GardenApp(InspectorMixin):
             pass
         bar = tk.Frame(outer, bg=BG)
         bar.pack(fill="x", pady=(14, 0))
-        _make_flat_button_raw(bar, "Thank you, Father", win.destroy, bg="#7A9A3C", fg="white",
+        _make_flat_button_raw(bar, button_text, win.destroy, bg="#7A9A3C", fg="white",
                               font=("Segoe UI", 11, "bold")).pack(side="right")
         win.bind("<Escape>", lambda e: win.destroy())
         self._center_on_screen(win)
@@ -2541,15 +2666,84 @@ class GardenApp(InspectorMixin):
         # always the top layer while it is open (other always-on-top windows
         # like the inspection window can't come over it)
         self._keep_congrats_on_top(win)
+        # ...and it takes the input too: a dialog that holds the mouse and
+        # keyboard (a modal window, e.g. pollination) would otherwise leave
+        # it on top but unclickable. The grab goes back to that window once
+        # Abbot Cyril is thanked.
+        self._congrats_take_grab(win)
         return win
+
+    def _congrats_take_grab(self, win):
+        self._congrats_wins = [w for w in getattr(self, "_congrats_wins", [])
+                               if w.winfo_exists()] + [win]
+        try:
+            prev = win.grab_current()
+        except Exception:
+            prev = None
+        # (an earlier congratulation holding it: the window before that one)
+        prev = getattr(prev, "_congrats_prev", prev)
+        win._congrats_prev = prev
+        if prev is not None and prev is not win:
+            try:
+                prev.grab_release()
+            except Exception:
+                pass
+
+        def _grab():
+            try:
+                if win.winfo_exists() and win.winfo_viewable():
+                    win.grab_set()
+                    win.focus_force()
+                elif win.winfo_exists():
+                    win.after(50, _grab)
+            except Exception:
+                pass
+        _grab()
+
+        def _give_back(e):
+            if e.widget is not win:
+                return
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            if prev is None or prev is win:
+                return
+
+            def _restore():
+                # another congratulation still open keeps the input
+                others = [w for w in getattr(self, "_congrats_wins", [])
+                          if w is not win and w.winfo_exists()]
+                target = others[-1] if others else prev
+                try:
+                    if target is not None and target.winfo_exists():
+                        target.grab_set()
+                        target.focus_force()
+                except Exception:
+                    pass
+            try:
+                self.root.after(10, _restore)
+            except Exception:
+                _restore()
+        win.bind("<Destroy>", _give_back, add="+")
 
     def _keep_congrats_on_top(self, win):
         def _tick():
             try:
                 if not win.winfo_exists():
                     return
-                top = win.tk.call("wm", "stackorder", ".")
-                last = str(top[-1]) if top else ""
+                top = [str(t) for t in (win.tk.call("wm", "stackorder", ".") or ())]
+                # the tutorial's glow bars and arrows (borderless helper
+                # windows) don't count — lifting over them made the windows
+                # take turns in front, flickering with every glow pulse
+                real = []
+                for t in top:
+                    try:
+                        if not win.nametowidget(t).overrideredirect():
+                            real.append(t)
+                    except Exception:
+                        real.append(t)
+                last = real[-1] if real else ""
                 if last != str(win):          # something else came over it
                     win.attributes("-topmost", True)
                     win.lift()
@@ -2560,6 +2754,57 @@ class GardenApp(InspectorMixin):
             win.after(400, _tick)
         except Exception:
             pass
+
+    def _refresh_mission_indicator(self):
+        """The active mission, shown at the top of the side bar, centred
+        above Mendel's portrait: "Mission" (hovered: the mission's name);
+        clicking it opens that mission's card. Nothing without a mission."""
+        old = getattr(self, "_mission_badge", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except Exception:
+                pass
+            self._mission_badge = None
+        panel = getattr(self, "left_panel", None)
+        if panel is None:
+            return
+        try:
+            import missions as _ms
+            m = _ms.active_mission(self)
+        except Exception:
+            m = None
+        if m is None:
+            return
+        name = m.get("short") or m["title"]
+        BG_, ON_ = "#FBF3D9", "#4f7d3a"
+        badge = tk.Label(panel, text="\u2691 Mission", font=("Segoe UI", 12, "bold"),
+                         bg=BG_, fg=ON_, padx=12, pady=3, cursor="hand2",
+                         highlightbackground=ON_, highlightthickness=2)
+        badge.place(relx=0.5, y=2, anchor="n")
+        badge.lift()
+        self._mission_badge = badge
+
+        def _enter(e):
+            badge.configure(text=name, highlightbackground="#D9A520")
+
+        def _leave(e):
+            badge.configure(text="\u2691 Mission", highlightbackground=ON_)
+
+        def _open(e=None, k=m["key"]):
+            self._open_missions(focus=k, tab="Progress")
+        badge.bind("<Enter>", _enter)
+        badge.bind("<Leave>", _leave)
+        badge.bind("<Button-1>", _open)
+
+    def _open_missions(self, focus=None, tab=None):
+        """The missions board (see missions.py)."""
+        try:
+            import missions as _ms
+            _ms.open_board(self, focus=focus, tab=tab)
+        except Exception as e:
+            logging.error(f"Missions board failed: {e}", exc_info=True)
+            self._toast("Could not open the missions.", level="warn")
 
     def _open_achievements_window(self):
         """All achievements, grouped (tutorial, laws, breeding, visitors):
@@ -4228,6 +4473,18 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass
 
+    def _set_portrait_weather_anim(self, enabled):
+        """Game Settings > Animate rain and snow in Mendel's picture (off:
+        a still rainy picture — less work for the computer, mostly
+        noticeable on a Mac)."""
+        enabled = bool(enabled)
+        self._portrait_weather_anim = enabled
+        try:
+            self._portrait_weather_var.set(enabled)
+        except Exception:
+            pass
+        _save_portrait_weather_anim(enabled)
+
     def _set_health_hearts_enabled(self, enabled):
         """
         Switch each tile's health display between the horizontal fill bar
@@ -4435,6 +4692,7 @@ class GardenApp(InspectorMixin):
         if self.garden.weather != "⛈" or getattr(self, "fast_forward", False):
             self._lt_seq = None
             self._lt_next = None
+            self._storm_thunders = 0         # a new storm starts counting anew
             return False
         if getattr(self, "_lt_next", None) is None:
             self._lt_next = now + random.uniform(4, 12)
@@ -4463,6 +4721,15 @@ class GardenApp(InspectorMixin):
         if getattr(self.garden, "weather", None) != "\u26c8" or getattr(self, "fast_forward", False):
             return
         _play_sound_variant("thunder_*.ogg")
+        # Waiting out a storm: three thunderclaps in one storm (no Fast
+        # Forward in between) is an achievement.
+        self._storm_thunders = int(getattr(self, "_storm_thunders", 0) or 0) + 1
+        if (self._storm_thunders >= 3 and not getattr(self, "_tutorial_active", False)
+                and self._award_achievement("storm_watcher")):
+            self.root.after(2500, lambda: self._show_cyril_congrats(
+                "Weathering the Storm",
+                "Three claps of thunder, and you stood your ground, Gregor! The peas don't "
+                "mind a storm, and neither, it seems, do you."))
 
     def _apply_daynight_to_tiles(self):
         # ── Update season cache once per frame ──────────────────────────────
@@ -4796,7 +5063,7 @@ class GardenApp(InspectorMixin):
         return n - opened, opened
 
     def _drawn_flower_marks(self, plant, n_drawn):
-        """Marks for the drawn flowers (a tile shows fewer flowers than the
+        """Which drawn flowers are gone (a tile shows fewer flowers than the
         plant has): drawn flower j covers real flowers
         [j*n/n_drawn, (j+1)*n/n_drawn)."""
         try:
@@ -4808,10 +5075,9 @@ class GardenApp(InspectorMixin):
         for j in range(max(0, int(n_drawn or 0))):
             grp = fl[(j * n) // n_drawn:((j + 1) * n) // n_drawn] if n else []
             out.append({
-                "e": any(f.get("emasc") for f in grp),
-                "p": any(f.get("pollen") for f in grp),
                 "gone": bool(grp) and all(f.get("harvested") or not plant.flower_sets_pod(f)
                                           for f in grp),
+                "removed": bool(grp) and all(f.get("removed") for f in grp),
             })
         return out
 
@@ -4824,6 +5090,36 @@ class GardenApp(InspectorMixin):
             return plant.ensure_flowers()
         except Exception:
             return list(getattr(plant, "flowers", None) or [])
+
+    def _first_flower_timing(self, plant):
+        """(eff_day, th5, len5, open_days, n_first): when the plant's first
+        flowers open and how long each stays open. Flower k opens during
+        flowering in order and turns into a pod open_days later — so the
+        first pods form while the last flowers are still open (also on
+        into pod development)."""
+        try:
+            from plant import get_lifecycle_settings, LATE_OPEN_DAYS as _LOD
+            th = (plant.stage_thresholds() if hasattr(plant, "stage_thresholds")
+                  else get_lifecycle_settings(getattr(plant, "difficulty", "off"))["base_thresholds"])
+        except Exception:
+            th, _LOD = [0, 0, 4, 8, 13, 18, 25, 30], 4
+        eff = (float(getattr(plant, "days_since_planting", 0) or 0)
+               - float(getattr(plant, "germination_delay", 0) or 0))
+        len5 = max(1.0, float(th[6] - th[5]))
+        len6 = max(1.0, float(th[7] - th[6]))
+        open_days = min(max(float(_LOD), 0.4 * len5), 0.8 * len6)
+        try:
+            n_first = sum(1 for f in plant.ensure_flowers() if f.get("born") is None)
+        except Exception:
+            n_first = 0
+        n_first = n_first or int(getattr(plant, "pods_total", 0) or 0) or 1
+        return eff, float(th[5]), len5, open_days, n_first
+
+    def _first_flower_open_day(self, timing, k0):
+        """Plant day on which first flower k0 opens."""
+        eff, th5, len5, open_days, n = timing
+        f_k = max(0.0, min(1.0, ((k0 + 1) / float(n) - 0.2) / 0.8))
+        return th5 + f_k * len5
 
     def _flower_states(self, plant):
         """State of each flower (in opening order): 'not yet', 'bud',
@@ -4839,17 +5135,23 @@ class GardenApp(InspectorMixin):
             return []
         bf = self._bud_flower_counts(plant) or (0, 0)
         buds, opened = bf
+        timing = self._first_flower_timing(plant) if stage in (5, 6) else None
         out = []
         k0 = 0                      # index among the plant's first flowers
         for f in fl:
             late = plant.late_flower_phase(f) if hasattr(plant, "late_flower_phase") else None
             if late is None:
-                if stage >= 6:
-                    late = "pod7" if stage >= 7 else "pod"
+                if stage >= 7:
+                    late = "pod7"
                 elif stage == 4:
                     late = "bud" if k0 < buds else "not yet"
+                elif stage == 5 and k0 >= opened:
+                    late = "bud"
                 else:
-                    late = "open" if k0 < opened else "bud"
+                    # open, then a pod some days later — one after another,
+                    # in the order the flowers opened (into pod development)
+                    pod_day = self._first_flower_open_day(timing, k0) + timing[3]
+                    late = "open" if timing[0] < pod_day else "pod"
                 k0 += 1
             if late in ("pod", "pod7", "ripe"):
                 if f.get("harvested"):
@@ -4858,6 +5160,8 @@ class GardenApp(InspectorMixin):
                     late = "dropped"
                 else:
                     late = "ripe" if late in ("pod7", "ripe") else "pod"
+            if f.get("removed"):
+                late = "removed"          # picked off by the gardener
             out.append(late)
         return out
 
@@ -4879,10 +5183,9 @@ class GardenApp(InspectorMixin):
             L = max(1.0, float(th[6] - th[5]))
         except Exception:
             L = 7.0
-        n = max(1, int(getattr(plant, "pods_total", 1) or 1))
-        f_now = self._stage_fraction(plant)
-        f_k = max(0.0, ((k + 1) / n - 0.2) / 0.8)       # when flower k opened (stage fraction)
-        days_open = max(0.0, (f_now - f_k) * L)
+        timing = self._first_flower_timing(plant)
+        k0 = sum(1 for f in fl[:k] if f.get("born") is None)
+        days_open = max(0.0, timing[0] - self._first_flower_open_day(timing, k0))
         if days_open < 1:
             base = 0.05
         elif days_open < 2:
@@ -4946,7 +5249,8 @@ class GardenApp(InspectorMixin):
             # many refreshes in between.
             fsig = tuple((f.get("born"), bool(f.get("emasc")),
                           bool(isinstance(f.get("emasc"), dict) and f["emasc"].get("selfed_before")),
-                          bool(f.get("pollen")), bool(f.get("harvested"))) for f in _fls)
+                          bool(f.get("pollen")), bool(f.get("harvested")),
+                          bool(f.get("removed"))) for f in _fls)
             # (the drawing only uses whole game days — see _grown_model_age)
             qsig = (stage, math.floor(float(getattr(plant, "days_since_planting", 0) or 0)),
                     float(getattr(plant, "germination_delay", 0) or 0),
@@ -4971,12 +5275,13 @@ class GardenApp(InspectorMixin):
                 late = tuple((round(_pr.late_model_age(max(0, _dq - int(f.get("born") or 0))) * 2) / 2.0,
                               int(f.get("i", 0)))
                              for f in _fls if f.get("born") is not None and not f.get("harvested")
+                             and not f.get("removed")
                              and (plant.flower_sets_pod(f) or plant.late_flower_phase(f) in ("bud", "open")))
-                # Each drawn flower stands for a group of real flowers: marked
-                # (red thread = emasculated, white tag = pollinated) if any of
-                # them is, and gone once all of them dropped or were harvested.
+                # Each drawn flower stands for a group of real flowers: gone
+                # once all of them dropped or were harvested (or picked off).
+                # (Emasculation and pollination are not drawn on the plant.)
                 marks = self._drawn_flower_marks(plant, fl_vis)
-                pods_vis = tuple((m["e"], m["p"], m["gone"]) for m in marks)
+                pods_vis = tuple((m["gone"], m.get("removed", False)) for m in marks)
                 plant.__dict__["_grown_qcache"] = (qsig, (age, fl_vis, late, marks, pods_vis))
             bucket = age
             _style = getattr(self, "_plant_style", DEFAULT_PLANT_STYLE)
@@ -5224,8 +5529,16 @@ class GardenApp(InspectorMixin):
                 if photo is None:
                     a2 = dict(args, tframe=new)
                     pil = _pr.final_image(tr, seed, a2, _pr.TILE, getattr(p, "health", 100), draw=False)
-                    # the helpers draw the tile pictures; a bent-tendril
-                    # frame is small extra work, drawn here (one per tick)
+                    # not drawn yet: the helper processes draw it (shown on a
+                    # later tick) — only without helpers is it drawn here
+                    if pil is None:
+                        pool = getattr(self, "_render_pool", None)
+                        if pool is not None and pool.ok:
+                            pend = p.__dict__.setdefault("_tframe_pending", set())
+                            if (key, new) not in pend and pool.submit(
+                                    p, key, a2, _pr.TILE, tr, extra=("tframe", new)):
+                                pend.add((key, new))
+                            continue
                     if pil is None and direct_left > 0:
                         direct_left -= 1
                         try:
@@ -5251,7 +5564,23 @@ class GardenApp(InspectorMixin):
                 job = pool.jobs.pop(jid, None)
                 if job is None:
                     continue
-                plant, key, args = job
+                plant, key, args, extra = (tuple(job) + (None,))[:4]
+                if extra and extra[0] == "tframe":
+                    # a bent-tendril frame, drawn by a helper: into the
+                    # plant's frame cache (shown at the next tendril tick)
+                    pend = plant.__dict__.get("_tframe_pending")
+                    if pend:
+                        pend.discard((key, extra[1]))
+                    if err or data is None:
+                        continue
+                    try:
+                        cache = plant.__dict__.get("_tframe_photos")
+                        if cache is None or cache.get("key") != key:
+                            cache = plant.__dict__["_tframe_photos"] = {"key": key}
+                        cache[extra[1]] = ImageTk.PhotoImage(Image.frombytes("RGBA", size, data))
+                    except Exception:
+                        pass
+                    continue
                 if plant.__dict__.get("_want_key") != key:
                     continue                      # outdated: a newer picture is coming
                 plant._want_key = None
@@ -5270,8 +5599,8 @@ class GardenApp(InspectorMixin):
                 changed.add(id(plant))
             if not pool.ok:
                 # a helper stopped: everything still waiting is drawn here instead
-                for plant, _k, _a in list(pool.jobs.values()):
-                    plant._want_key = None
+                for _job in list(pool.jobs.values()):
+                    _job[0]._want_key = None
                 pool.jobs.clear()
                 self._render_pool_failed = True
                 self._render_pool = None
@@ -5659,6 +5988,7 @@ class GardenApp(InspectorMixin):
         self._plant_redraw = _load_plant_redraw()
         self._plant_info_visible = _load_plant_info_visible()
         self._health_hearts_enabled = _load_health_hearts_enabled()
+        self._portrait_weather_anim = _load_portrait_weather_anim()
         self._build_ui()
         self._update_temp_button_state()
 
@@ -5788,11 +6118,12 @@ class GardenApp(InspectorMixin):
         )
         self._toast(random.choice(greetings))
 
-        # Periodic season polling to apply lethal/stress without day change
-        def _season_poll_loop():
-            self._season_poll()
-            self.root.after(1200, _season_poll_loop)
-        _season_poll_loop()
+        # Periodic season polling (_season_poll schedules itself again —
+        # started once here). It used to be started anew every 1.2 s by an
+        # extra loop around it, so a new endless chain of polls was added
+        # each time: after an hour of play thousands of them ran at once,
+        # which made the game slower and slower (and Fast Forward too).
+        self._season_poll()
 
     
     def _confirm_remove_all(self):
@@ -5997,7 +6328,7 @@ class GardenApp(InspectorMixin):
         """What happened to the selected flower(s), in a line or two."""
         fl = plant.ensure_flowers()
         name = {"not yet": "not formed yet", "dropped": "dropped, no pod",
-                "pod": "pod growing", "ripe": "ripe pod"}
+                "pod": "pod growing", "ripe": "ripe pod", "removed": "removed"}
         parts = []
         for k in ks[:4]:
             f = fl[k]
@@ -6033,6 +6364,47 @@ class GardenApp(InspectorMixin):
             parts.append(f"\u2026 and {len(ks) - 4} more selected")
         return "\n".join(parts)
 
+    def _remove_flowers(self, plant, ks):
+        """Pick off buds / open flowers ks (0-based): they set no pod and
+        give no pollen. Returns how many were removed."""
+        states = self._flower_states(plant)
+        fl = plant.ensure_flowers()
+        n = 0
+        for k in ks:
+            if 0 <= k < len(fl) and k < len(states) and states[k] in ("bud", "open") \
+                    and not fl[k].get("removed"):
+                fl[k]["removed"] = {"day": int(getattr(self.garden, "day", 0)),
+                                    "when": self._sim_when(), "as": states[k]}
+                n += 1
+        if n:
+            try:
+                plant.sync_reproduction()
+            except Exception:
+                pass
+            for attr in ("img_obj", "_icon_key"):
+                try:
+                    setattr(plant, attr, None)
+                except Exception:
+                    pass
+            plant.__dict__.pop("_grown_qcache", None)
+            self.render_all()
+        return n
+
+    def _emasculate_many(self, plant, ks, extra=0):
+        """Emasculate several buds / flowers at once, without the dialog.
+        extra: ones already done just before (counted in the message)."""
+        done = 0
+        for k in ks:
+            fl = plant.ensure_flowers()
+            if 0 <= k < len(fl) and not fl[k].get("emasc"):
+                self._on_emasculate_selected(k + 1, instant=True, quiet=True)
+                if fl[k].get("emasc"):
+                    done += 1
+        if done:
+            n = done + int(extra or 0)
+            self._toast(f"{n} buds / flowers emasculated at once.")
+        return done
+
     def _flower_action_ok(self, plant, k, kind, states=None):
         """All checks for emasculating / pollinating flower k, with a toast
         saying why not. Nothing is changed."""
@@ -6057,6 +6429,10 @@ class GardenApp(InspectorMixin):
                 return False
             return True
         if kind == "pollen":
+            # only while Gregor is out in the garden (not at night, not
+            # once he has gone indoors because of rain)
+            if not self._night_gate("collecting pollen") or not self._rain_gate():
+                return False
             if fl[k].get("emasc") or int(fl[k].get("anthers_removed", 0) or 0) >= 10:
                 self._toast("This flower has no anthers left.")
                 return False
@@ -6164,7 +6540,11 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass
 
-    def _on_emasculate_selected(self, flower_no=None):
+    def _on_emasculate_selected(self, flower_no=None, instant=False, quiet=False, also=None):
+        """instant: no dialog (several at once); quiet: no toast;
+        also: further flowers (0-based) this one forceps window counts for."""
+        if also:
+            quiet = True        # one message for all (see _emasculate_many)
         if flower_no is None:
             self._ask_pick_flower("emasculate")
             return
@@ -6219,7 +6599,9 @@ class GardenApp(InspectorMixin):
                     plant.last_anther_check_day = None
                     plant.anthers_collected_day = None
                 plant.anthers_removed_progress = 0
-                self._toast(f"Flower {k + 1} emasculated (as a {state}) - selfing ~{int(100 * frac)}%")
+                if not quiet:
+                    self._toast(f"Flower {k + 1} emasculated (as {'a bud' if state == 'bud' else 'an open flower'})"
+                                f" - selfing ~{int(100 * frac)}%")
                 self.render_all()
             else:
                 # Remember how many anthers were already removed from this
@@ -6231,6 +6613,11 @@ class GardenApp(InspectorMixin):
                 else:
                     self._toast("Emasculation cancelled")
 
+            if instant:
+                return          # part of an all-at-once batch: caller goes on
+            if success and also:
+                # one window for all selected: the others are done as well
+                self._emasculate_many(plant, [j for j in also if j != k], extra=1)
             # Next selected flower, if several were chosen.
             if success and self._next_in_flower_queue("emasc", plant):
                 return
@@ -6246,7 +6633,7 @@ class GardenApp(InspectorMixin):
         try:
             flower_color = plant.traits.get("flower_color", "purple")
             starting_removed = int(f.get("anthers_removed", 0) or 0)
-            if not self.show_breed_dialogs.get():
+            if instant or not self.show_breed_dialogs.get():
                 on_emasculation_complete(True)
             else:
                 EmasculationDialog(self.root, flower_color, on_emasculation_complete,
@@ -7086,24 +7473,33 @@ class GardenApp(InspectorMixin):
             self.root.focus_set()
         except Exception:
             pass
+        # Every shortcut is also kept in self._hotkeys, so other windows
+        # (the inspection window, Traits only) can pass it on: see
+        # _forward_hotkeys.
+        self._hotkeys = {}
+
+        def _hk(seq, fn):
+            self.root.bind(seq, fn)
+            self._hotkeys[seq] = fn
+
         # Action mappings
-        self.root.bind('<w>', lambda e: self._on_water_selected())
-        self.root.bind('<W>', lambda e: self._on_water_all())
-        self.root.bind('<Shift-X>', lambda e: self._confirm_remove_all())
-        self.root.bind('<h>', lambda e: self._show_help())
-        self.root.bind('<i>', lambda e: self._on_inspect_unified())
-        self.root.bind('<I>', lambda e: self._on_inspect_unified())
-        self.root.bind('<Return>', lambda e: self._on_inspect_unified())
-        self.root.bind('<H>', lambda e: self._show_help())
-        self.root.bind('<f>', lambda e: self._on_fast_forward())
-        self.root.bind('<F>', lambda e: self._on_fast_forward())
+        _hk('<w>', lambda e: self._on_water_selected())
+        _hk('<W>', lambda e: self._on_water_all())
+        _hk('<Shift-X>', lambda e: self._confirm_remove_all())
+        _hk('<h>', lambda e: self._show_help())
+        _hk('<i>', lambda e: self._on_inspect_unified())
+        _hk('<I>', lambda e: self._on_inspect_unified())
+        _hk('<Return>', lambda e: self._on_inspect_unified())
+        _hk('<H>', lambda e: self._show_help())
+        _hk('<f>', lambda e: self._on_fast_forward())
+        _hk('<F>', lambda e: self._on_fast_forward())
         # P key now used for pollination (pause remains on Spacebar only)
-        self.root.bind('<p>', lambda e: self._on_pollinate())
-        self.root.bind('<P>', lambda e: self._on_pollinate())
+        _hk('<p>', lambda e: self._on_pollinate())
+        _hk('<P>', lambda e: self._on_pollinate())
         # A → quick pollen/Anther availability check on the selected
         # plant, without opening the full inspector window
-        self.root.bind('<a>', lambda e: self._on_check_pollen_quick())
-        self.root.bind('<A>', lambda e: self._on_check_pollen_quick())
+        _hk('<a>', lambda e: self._on_check_pollen_quick())
+        _hk('<A>', lambda e: self._on_check_pollen_quick())
 
         # 1 / 2 → switch plots. <Key-1> specifically, NOT <1> — the latter
         # is a mouse-button-1 (left click) event in Tkinter, not the "1"
@@ -7116,28 +7512,40 @@ class GardenApp(InspectorMixin):
                 return
             self._switch_to_plot(plot_idx)
         for _n in range(1, self.NUM_PLOTS + 1):
-            self.root.bind(f'<Key-{_n}>', lambda e, p=_n - 1: _switch_plot_key(e, p))
+            _hk(f'<Key-{_n}>', lambda e, p=_n - 1: _switch_plot_key(e, p))
 
-        self.root.bind('<s>', lambda e: self._harvest_by_key("s", self._on_harvest_selected))
-        # Shift+S → harvest ALL pods on selected plant
-        self.root.bind('<S>', lambda e: self._harvest_by_key("S", self._on_harvest_all_selected))
+        # S → one pod, Shift+S → ALL pods of the selected plant. Decided by
+        # the Shift key itself, not by the letter's case: with Caps Lock on,
+        # Shift+S arrives as a small "s" (and S alone as a capital), which
+        # used to harvest just one pod.
+        def _s_key(e):
+            shift = bool(int(getattr(e, "state", 0) or 0) & 0x0001)
+            if shift:
+                self._harvest_by_key("S", self._on_harvest_all_selected)
+            else:
+                self._harvest_by_key("s", self._on_harvest_selected)
+        _hk('<s>', _s_key)
+        _hk('<S>', _s_key)
         # Note: <g>/<G> removed — conflicted with Wildlife submenu on Windows
-        self.root.bind('<F10>', lambda e: self._toggle_climate_mode())
-        self.root.bind('<F3>', lambda e: self._toggle_fps_meter())
+        _hk('<F10>', lambda e: self._toggle_climate_mode())
+        _hk('<F3>', lambda e: self._toggle_fps_meter())
+        # Shift+F3: records 20 seconds of normal play and writes what took
+        # the time to performance_report.txt (to find slowdowns on a Mac)
+        _hk('<Shift-F3>', lambda e: self._performance_report())
 
         # Navigation
 
         # Plain arrows: move single selection
-        self.root.bind('<Left>',  lambda e: self._move_selection(0, -1, extend=False))
-        self.root.bind('<Right>', lambda e: self._move_selection(0,  1, extend=False))
-        self.root.bind('<Up>',    lambda e: self._move_selection(-1, 0, extend=False))
-        self.root.bind('<Down>',  lambda e: self._move_selection(1,  0, extend=False))
+        _hk('<Left>',  lambda e: self._move_selection(0, -1, extend=False))
+        _hk('<Right>', lambda e: self._move_selection(0,  1, extend=False))
+        _hk('<Up>',    lambda e: self._move_selection(-1, 0, extend=False))
+        _hk('<Down>',  lambda e: self._move_selection(1,  0, extend=False))
 
         # Shift+Arrows: extend selection as row/column stripe
-        self.root.bind('<Shift-Left>',  lambda e: self._move_selection(0, -1, extend=True))
-        self.root.bind('<Shift-Right>', lambda e: self._move_selection(0,  1, extend=True))
-        self.root.bind('<Shift-Up>',    lambda e: self._move_selection(-1, 0, extend=True))
-        self.root.bind('<Shift-Down>',  lambda e: self._move_selection(1,  0, extend=True))
+        _hk('<Shift-Left>',  lambda e: self._move_selection(0, -1, extend=True))
+        _hk('<Shift-Right>', lambda e: self._move_selection(0,  1, extend=True))
+        _hk('<Shift-Up>',    lambda e: self._move_selection(-1, 0, extend=True))
+        _hk('<Shift-Down>',  lambda e: self._move_selection(1,  0, extend=True))
 
         # Ctrl+Left/Right step the simulation speed up/down, through the
         # exact same presets as the Simulation Speed dialog's buttons
@@ -7146,8 +7554,8 @@ class GardenApp(InspectorMixin):
         # using Shift here would fire both at once. Control+Arrow has no
         # existing binding, so this one replaces nothing and, unlike the
         # Shift bindings, never moves or extends the selection.
-        self.root.bind('<Control-Right>', lambda e: self._step_game_speed(faster=True))
-        self.root.bind('<Control-Left>',  lambda e: self._step_game_speed(faster=False))
+        _hk('<Control-Right>', lambda e: self._step_game_speed(faster=True))
+        _hk('<Control-Left>',  lambda e: self._step_game_speed(faster=False))
         # macOS reserves Ctrl+Left/Right for Mission Control (the app
         # never sees them), so Ctrl with the "<" / ">" keys works too.
         # One catch-all key handler (rather than per-key sequences, which
@@ -7160,32 +7568,64 @@ class GardenApp(InspectorMixin):
             # Cocoa swallows Ctrl+Arrow (Mission Control) and doesn't
             # deliver Ctrl+punctuation reliably, so on a Mac the Command
             # key (⌘) works as well: ⌘+Left / ⌘+Right.
-            self.root.bind('<Command-Right>', lambda e: self._step_game_speed(faster=True))
-            self.root.bind('<Command-Left>',  lambda e: self._step_game_speed(faster=False))
+            _hk('<Command-Right>', lambda e: self._step_game_speed(faster=True))
+            _hk('<Command-Left>',  lambda e: self._step_game_speed(faster=False))
 
-        self.root.bind('<space>',  lambda e: self._toggle_run())
+        _hk('<space>',  lambda e: self._toggle_run())
 
-        self.root.bind('<Delete>', lambda e: self._on_remove_selected())
-        self.root.bind('<x>', lambda e: self._on_remove_selected())
-        self.root.bind('<X>', lambda e: self._on_remove_selected())
+        _hk('<Delete>', lambda e: self._on_remove_selected())
+        _hk('<x>', lambda e: self._on_remove_selected())
+        _hk('<X>', lambda e: self._on_remove_selected())
         
         # Pollination auxiliaries & lab operations
-        self.root.bind('<e>', lambda e: self._on_emasculate_selected())
-        self.root.bind('<E>', lambda e: self._on_emasculate_selected())
-        self.root.bind('<c>', lambda e: self._on_collect_pollen())
-        self.root.bind('<C>', lambda e: self._on_collect_pollen())
+        _hk('<e>', lambda e: self._on_emasculate_selected())
+        _hk('<E>', lambda e: self._on_emasculate_selected())
+        _hk('<c>', lambda e: self._on_collect_pollen())
+        _hk('<C>', lambda e: self._on_collect_pollen())
         
         
         # Quick open Genotype window
-        self.root.bind('<Shift-G>', lambda e: self._on_genetics())
+        _hk('<Shift-G>', lambda e: self._on_genetics())
         
         # Select all tiles (plants + empty + dead)
-        self.root.bind('<Control-a>', lambda e: self._on_select_all())
-        self.root.bind('<Control-A>', lambda e: self._on_select_all())
+        _hk('<Control-a>', lambda e: self._on_select_all())
+        _hk('<Control-A>', lambda e: self._on_select_all())
         if sys.platform == "darwin":   # ⌘A on the Mac
-            self.root.bind('<Command-a>', lambda e: self._on_select_all())
-            self.root.bind('<Command-A>', lambda e: self._on_select_all())
+            _hk('<Command-a>', lambda e: self._on_select_all())
+            _hk('<Command-A>', lambda e: self._on_select_all())
 
+
+    # keys a window keeps for itself (not passed on to the garden)
+    _HOTKEYS_NOT_FORWARDED = ("<Return>",)
+
+    def _forward_hotkeys(self, win):
+        """The garden's keyboard shortcuts work in `win` too (e.g. S to
+        harvest while the inspection window has the focus) — except while
+        typing in a text box, and for keys `win` binds itself."""
+        hk = getattr(self, "_hotkeys", None) or {}
+        try:
+            own = set(win.bind())
+        except Exception:
+            own = set()
+
+        def _make(fn):
+            def _fwd(e):
+                if isinstance(e.widget, (tk.Entry, tk.Text, tk.Spinbox)):
+                    return
+                try:
+                    if str(e.widget.winfo_class()) in ("TEntry", "TCombobox", "TSpinbox"):
+                        return
+                except Exception:
+                    pass
+                return fn(e)
+            return _fwd
+        for seq, fn in hk.items():
+            if seq in self._HOTKEYS_NOT_FORWARDED or seq in own:
+                continue
+            try:
+                win.bind(seq, _make(fn))
+            except Exception:
+                pass
 
     def _move_selection(self, drow, dcol, extend=False):
         """Move plant selection in the grid.
@@ -7399,7 +7839,19 @@ class GardenApp(InspectorMixin):
                 return False
             pid = self._next_id()
             traits = self._starter_traits_for_next_seed()
+            if getattr(self, "_tutorial_active", False):
+                # Tutorial: purple and white in turn, both true-breeding
+                # (AA / aa), so the crossing lessons work out
+                n_ = int(getattr(self, "_tut_starter_n", 0) or 0)
+                self._tut_starter_n = n_ + 1
+                traits["flower_color"] = "purple" if n_ % 2 == 0 else "white"
+                # seeds Abbot Cyril handed over for a missing colour
+                _q = getattr(self, "_tut_starter_colours", None)
+                if _q:
+                    traits["flower_color"] = _q.pop(0)
             geno = infer_genotype_from_traits(traits, random)
+            if getattr(self, "_tutorial_active", False):
+                geno["A"] = ("A", "A") if traits["flower_color"] == "purple" else ("a", "a")
             p = Plant(id=pid, env=self.garden, stage=1, generation="F0", traits=traits)
             p.germination_delay = random.randint(1, 3)
             try:
@@ -7416,8 +7868,10 @@ class GardenApp(InspectorMixin):
             self.tiles[index].plant = p
             self.available_seeds -= 1
             self._force_tile_soil(index)
-            self._toast(f"Starter seed planted. ({self.available_seeds} left)")
-            self.render_all()
+            if not getattr(self, "_batch_planting", False):
+                # (several at once: one toast and one redraw after the batch)
+                self._toast(f"Starter seed planted. ({self.available_seeds} left)")
+                self.render_all()
             if not getattr(self, "_suppress_plant_sound", False):
                 _play_sound("plant.ogg")
                 self._mendel_planting()
@@ -7465,21 +7919,44 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass
 
-        # UI feedback
-        try:
-            remaining_of_kind = sum(1 for s in self.harvest_inventory if match_fn(s))
-        except Exception:
-            remaining_of_kind = None
-        if remaining_of_kind is not None:
-            self._toast(f"Planted → {p.generation} ({remaining_of_kind} left)")
-        else:
-            self._toast(f"Planted → {p.generation}")
-        self.render_all()
+        # UI feedback (several at once: one toast and one redraw after the batch)
+        if not getattr(self, "_batch_planting", False):
+            try:
+                remaining_of_kind = sum(1 for s in self.harvest_inventory if match_fn(s))
+            except Exception:
+                remaining_of_kind = None
+            if remaining_of_kind is not None:
+                self._toast(f"Planted → {p.generation} ({remaining_of_kind} left)")
+            else:
+                self._toast(f"Planted → {p.generation}")
+            self.render_all()
         if not getattr(self, "_suppress_plant_sound", False):
             _play_sound("plant.ogg")
             self._mendel_planting()
 
         return True
+
+    def _begin_batch_planting(self):
+        """Many seeds sown in one go: the per-seed redraw, toast and
+        archive pass are skipped and done once at the end (each of them
+        goes over the whole garden — per seed that made sowing a full
+        garden take seconds)."""
+        self._batch_planting = True
+        self._batch_needs_backfill = False
+
+    def _end_batch_planting(self, render=True):
+        self._batch_planting = False
+        if getattr(self, "_batch_needs_backfill", False):
+            self._batch_needs_backfill = False
+            try:
+                self._eager_seed_and_backfill()
+            except Exception:
+                pass
+        if render:
+            try:
+                self.render_all()
+            except Exception:
+                pass
 
     def _neighbors4(self, idx):
         cols = getattr(self.garden, "cols", TILES_PER_ROW)
@@ -7625,6 +8102,7 @@ class GardenApp(InspectorMixin):
         # (and the "Harvest All" fix this mirrors) — suppress plant.ogg
         # per seed here too, playing it once for the whole area afterward.
         self._suppress_plant_sound = True
+        self._begin_batch_planting()
         try:
             for slot in region:
                 if planted >= avail: break
@@ -7638,6 +8116,7 @@ class GardenApp(InspectorMixin):
                         planted += 1
         finally:
             self._suppress_plant_sound = False
+            self._end_batch_planting()
 
         if planted > 0:
             _play_sound("plant.ogg")
@@ -7759,6 +8238,7 @@ class GardenApp(InspectorMixin):
             label="Meteorological Observatory…",
             command=_open_observatory
         )
+        view_menu.add_command(label="Missions…", command=self._open_missions)
 
         # Attach the View menu
         self.menubar.add_cascade(label=" View", menu=view_menu)
@@ -7967,6 +8447,12 @@ class GardenApp(InspectorMixin):
             label="Health: show as hearts",
             variable=self._health_hearts_var,
             command=lambda: self._set_health_hearts_enabled(self._health_hearts_var.get())
+        )
+        self._portrait_weather_var = tk.BooleanVar(value=getattr(self, "_portrait_weather_anim", True))
+        game_menu.add_checkbutton(
+            label="Animate rain and snow in Mendel's picture",
+            variable=self._portrait_weather_var,
+            command=lambda: self._set_portrait_weather_anim(self._portrait_weather_var.get())
         )
 
         # ═══ Garden Setup — structural, rarely changed ═══
@@ -8319,6 +8805,9 @@ class GardenApp(InspectorMixin):
             self.monastery_btn.configure(anchor="center")
         except Exception:
             pass
+        # The active mission (see missions.py): a badge at the top of the
+        # side bar, shown only while one is accepted.
+        self._refresh_mission_indicator()
         # Plant (moved here from the top bar), directly above Water.
         self.plant_seeds_btn = make_icon_button(self.left_actions, "Plant", "shovel.png", self._on_plant_seed_quick)
 
@@ -9030,6 +9519,67 @@ class GardenApp(InspectorMixin):
     # single frame (a hitch you'd feel), and how long a garden refresh
     # takes. Lower-right corner of the window.
     # ------------------------------------------------------------------
+    def _performance_report(self, seconds=20):
+        """Shift+F3: measures where the time goes while the game runs
+        normally for `seconds`, then writes performance_report.txt next to
+        the game (with the garden's size, the computer and Python)."""
+        if getattr(self, "_perf_prof", None) is not None:
+            return
+        import cProfile
+        self._perf_prof = cProfile.Profile()
+        self._perf_t0 = time.perf_counter()
+        self._perf_frames = [0, 0.0]          # frames, slowest gap
+        self._toast(f"Recording performance for {seconds} s — keep playing normally…", level="info")
+
+        def _frame(last=[time.perf_counter()]):
+            if getattr(self, "_perf_prof", None) is None:
+                return
+            now = time.perf_counter()
+            self._perf_frames[0] += 1
+            self._perf_frames[1] = max(self._perf_frames[1], now - last[0])
+            last[0] = now
+            self.root.after(16, _frame)
+        self.root.after(16, _frame)
+        self._perf_prof.enable()
+        self.root.after(int(seconds * 1000), self._performance_report_done)
+
+    def _performance_report_done(self):
+        prof = getattr(self, "_perf_prof", None)
+        if prof is None:
+            return
+        prof.disable()
+        self._perf_prof = None
+        try:
+            import io, pstats, platform as _pf, gc
+            dur = time.perf_counter() - self._perf_t0
+            frames, worst = self._perf_frames
+            plants = [t.plant for t in self._all_plot_tiles() if t.plant is not None]
+            pool = getattr(self, "_render_pool", None)
+            lines = [
+                "Garden of Inheritance - performance report",
+                f"computer: {_pf.platform()}  ({os.cpu_count()} cores)",
+                f"Python {sys.version.split()[0]}, Tk {self.root.tk.call('info', 'patchlevel')}",
+                f"recorded {dur:.1f} s: {frames / max(dur, 0.01):.1f} FPS, slowest frame {worst * 1000:.0f} ms",
+                f"plant style: {getattr(self, '_plant_style', '?')}, "
+                f"helpers: {'%s on' % getattr(pool, 'n', '?') if pool is not None and pool.ok else 'off'}",
+                f"plants on the plots: {len(plants)}, harvested seeds: {len(self.harvest_inventory)}, "
+                f"archived plants: {len(((self.archive or {}).get('plants') or {}))}",
+                f"Python objects: {len(gc.get_objects())}",
+                f"open windows: {[w.title() for w in self.root.winfo_children() if isinstance(w, tk.Toplevel)]}",
+                "",
+            ]
+            for key, title in (("cumulative", "TIME INCLUDING CALLS"), ("tottime", "TIME IN THE FUNCTION ITSELF")):
+                buf = io.StringIO()
+                pstats.Stats(prof, stream=buf).sort_stats(key).print_stats(40)
+                lines += [f"===== {title} =====", buf.getvalue()]
+            path = os.path.join(_SIM_DIR, "performance_report.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            self._toast(f"Performance report written: {path}", level="info", duration=8000)
+            print(f"[performance] report written to {path}")
+        except Exception:
+            logging.error("Performance report failed", exc_info=True)
+
     def _toggle_fps_meter(self):
         lbl = getattr(self, "_fps_label", None)
         if lbl is not None:
@@ -9065,8 +9615,15 @@ class GardenApp(InspectorMixin):
                        else "  ·  refresh –")
                 nred = getattr(self, "_fps_redraws", 0)
                 self._fps_redraws = 0
+                pool = getattr(self, "_render_pool", None)
+                if pool is not None and getattr(pool, "ok", False):
+                    helpers = f"helpers {getattr(pool, 'n', '?')} on"
+                elif pool is not None or getattr(self, "_render_pool_failed", False):
+                    helpers = "helpers OFF"
+                else:
+                    helpers = "helpers not started yet"
                 lbl.config(text=f"{fps:3.0f} FPS  ·  slowest frame {self._fps_worst * 1000:.0f} ms{ref}"
-                                f"  ·  plant redraws {nred}")
+                                f"  ·  plant redraws {nred}  ·  {helpers}")
                 lbl.lift()
                 self._fps_t0, self._fps_frames, self._fps_worst = now, 0, 0.0
                 self._fps_render_ms = []
@@ -9493,7 +10050,7 @@ class GardenApp(InspectorMixin):
 # ============================================================================
 # Event Handlers
 # ============================================================================
-    def _on_pollinate(self, flower_no=None):
+    def _on_pollinate(self, flower_no=None, also=None):
         """
         Pollinates one open flower (chosen in the Inspect window's flower
         list). If exactly one viable pollen source exists today, it is
@@ -9516,6 +10073,8 @@ class GardenApp(InspectorMixin):
             self._toast(f"Flower {k + 1} is not open — only open flowers can be pollinated.")
             return
         self._pollinate_target = (getattr(plant, "id", None), k)
+        # also: further open flowers the same brush stroke counts for
+        self._pollinate_also = (getattr(plant, "id", None), list(also or []))
 
         today = self._today()
 
@@ -9769,6 +10328,10 @@ class GardenApp(InspectorMixin):
             self._toast(f"Flower {k + 1} is not open any more.")
             return False
         flower = fl[k]
+        _also = getattr(self, "_pollinate_also", None)
+        self._pollinate_also = None
+        also = [j for j in ((_also[1] if _also and _also[0] == getattr(plant, "id", None) else []) or [])
+                if j != k]
 
         # --- All checks passed, now show interactive pollination dialog ---
         
@@ -9843,6 +10406,22 @@ class GardenApp(InspectorMixin):
                 "day": getattr(self.garden, "day", None),
                 "when": self._sim_when(),
             })
+            # one pollination for all selected flowers: the others get
+            # pollen from the same brush (each its own grain, by weight)
+            extra_done = 0
+            if also:
+                st_now = self._flower_states(plant)
+                for j in also:
+                    if 0 <= j < len(fl) and j < len(st_now) and st_now[j] == "open":
+                        d2 = random.choices(cur_mix, weights=[max(0.0, m["weight"]) for m in cur_mix])[0]
+                        g2 = d2.get("genotype") or infer_genotype_from_traits(d2.get("traits", {}), random)
+                        fl[j].setdefault("pollen", []).append({
+                            "donor_id": d2.get("source_id", "?"),
+                            "donor_genotype": dict(g2),
+                            "day": getattr(self.garden, "day", None),
+                            "when": self._sim_when(),
+                        })
+                        extra_done += 1
             plant.sync_reproduction()     # plant-level summary (P badge, pods)
             self._pollinate_target = None
 
@@ -9885,6 +10464,8 @@ class GardenApp(InspectorMixin):
                         "Your first cross in your own garden, Gregor! Two parents of "
                         "your choosing. Now patience: the pod must ripen, and then "
                         "the children will tell us what they inherited."))
+            if extra_done:
+                self._toast(f"{extra_done + 1} flowers of #{plant.id} pollinated at once with the brush.")
             self.render_all()
             # Next selected flower, if several were chosen.
             if self._next_in_flower_queue("poll", plant):
@@ -9897,17 +10478,21 @@ class GardenApp(InspectorMixin):
                 # Dialogs disabled — pollinate immediately without the interactive step
                 on_pollination_complete(True)
             else:
-                dialog = PollinationDialog(
-                    self.root,
-                    flower_color=flower_color,
-                    is_emasculated=is_emasculated,
-                    pollen_source=pollen_source_name,
-                    callback=on_pollination_complete
-                )
+                _kw = dict(flower_color=flower_color, is_emasculated=is_emasculated,
+                           pollen_source=pollen_source_name, callback=on_pollination_complete)
+                try:
+                    import inspect as _insp
+                    if "highlight_stigma" in _insp.signature(PollinationDialog.__init__).parameters:
+                        _kw["highlight_stigma"] = bool(getattr(self, "_tutorial_active", False))
+                except Exception:
+                    pass        # (an older pollination_dialog.py: no glowing stigma yet)
+                dialog = PollinationDialog(self.root, **_kw)
                 dlg_holder[0] = dialog
         except Exception as e:
             # Fallback if dialog fails - apply directly
-            print(f"Pollination dialog failed: {e}, applying directly")
+            import traceback as _tb
+            print(f"Pollination dialog failed: {e!r}, applying directly")
+            _tb.print_exc()
             on_pollination_complete(True)
 
         # All validation passed and we handed off to (or bypassed) the
@@ -9918,8 +10503,8 @@ class GardenApp(InspectorMixin):
     # ---------- Events ----------
     def _open_tie_for_selected(self, event=None):
         """Open Trait Inheritance Explorer for the currently selected plant."""
-        if getattr(self, "_tutorial_active", False):
-            return          # not available during the tutorial
+        if not self._tie_allowed():
+            return          # not available during the tutorial (until part 5)
         idx = getattr(self, "selected_index", None)
         plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
         if not plant:
@@ -10000,6 +10585,22 @@ class GardenApp(InspectorMixin):
                 self._genotype_viewer_idx = None
             win.destroy()
         win.protocol("WM_DELETE_WINDOW", _on_genotype_viewer_close)
+        try:
+            win.bind("<Escape>", lambda e: _on_genotype_viewer_close())
+        except Exception:
+            pass
+
+        # Close button at the bottom, like the inspection window's (packed
+        # first so the notebook can never squeeze it out of view)
+        _gv_bottom = tk.Frame(win)
+        _gv_bottom.pack(side="bottom", pady=(0, 12))
+        try:
+            self._gv_close_btn = self._make_flat_button(
+                _gv_bottom, "Close", _on_genotype_viewer_close, bg="#e0dccf", fg="#333333",
+                font=("Segoe UI", 14, "bold"))
+        except Exception:
+            self._gv_close_btn = tk.Button(_gv_bottom, text="Close", command=_on_genotype_viewer_close)
+        self._gv_close_btn.pack()
 
         nb = ttk.Notebook(win)
         nb.pack(fill="both", expand=True, padx=12, pady=(4, 12))
@@ -10008,6 +10609,9 @@ class GardenApp(InspectorMixin):
 
         def _reveal_alleles():
             """Reveal all hidden allele labels in this Genetics window."""
+            if not self._confirm_genotype_reveal(parent=win):
+                return
+
             def _walk(widget):
                 # "?" trait icons turn into the real icons
                 if hasattr(widget, "_icon_real"):
@@ -10089,8 +10693,9 @@ class GardenApp(InspectorMixin):
             # Prefer the dedicated browser, else fall back to History viewer in archive-only mode
             self.open_history_archive_browser(self.root, default_pid=_pid)
             
-        # Not offered inside the tutorial (only the "?" explanations stay).
-        if not getattr(self, "_tutorial_active", False):
+        # Not offered inside the tutorial until part 5 (only the "?"
+        # explanations stay).
+        if self._tie_allowed():
             btn = tk.Button(
                 toolbar,
                 text="  Reveal Genotype  ",
@@ -10099,6 +10704,7 @@ class GardenApp(InspectorMixin):
             )
             self._apply_hover(btn)
             btn.pack(side="left", padx=(0,6))
+            self._gv_reveal_btn = btn          # the tutorial lets it glow
             btn = tk.Button(
                 toolbar,
                 text=" TIE ",
@@ -10187,8 +10793,9 @@ class GardenApp(InspectorMixin):
             if _icon_unlocked(_row_plant[0], _tkey):
                 icon_lbl.config(image=img); icon_lbl.image = img
             else:
+                # as large as in the TIE: ~70 % of the icon's height (pixels)
                 icon_lbl.config(image="", text="?", fg="#888888",
-                                font=("Segoe UI", 18, "bold"))
+                                font=("Segoe UI", -max(18, int(_ih * 0.72)), "bold"))
 
             # Chromosome column (new)
             chrom_lbl = tk.Label(tbl, text=str(chrom_text or ""), font=("Segoe UI", 12))
@@ -10398,6 +11005,182 @@ class GardenApp(InspectorMixin):
             btn_how_header.grid(row=0, column=3, sticky="w", padx=6)
 
             rowi = 1
+
+            # --------------------------------------------------------
+            # Seed shape (R)
+            # --------------------------------------------------------
+            sd_shape = ph.get("seed_shape", "")
+            icon_sd_shape = trait_icon_path("seed_shape", sd_shape)
+            alle_sd_shape = _allele_str(geno, ["R"])
+
+            base_row = rowi
+            rowi = _table_row(
+                tbl, rowi,
+                "Seed shape",
+                icon_sd_shape,
+                "3",  # Chromosome 3 (R locus)
+                alle_sd_shape,
+                ""
+            )
+
+            short_sd_shape = "Seed shape is controlled by R, which affects starch production."
+            expl_long_sd_shape = (
+                "The R gene controls how starch fills the developing seed. Plants with at least one "
+                "R allele (R/R or R/r) produce normal starch, giving round seeds. Plants with r/r "
+                "produce less starch, causing seeds to wrinkle when they dry."
+            )
+            summary_sd_shape = [
+                ("R/_", "round",    ("seed_shape", "round")),
+                ("r/r", "wrinkled", ("seed_shape", "wrinkled")),
+            ]
+
+            def _show_sdshape_expl():
+                popup = tk.Toplevel(win)
+                popup.title("Seed shape genetics")
+                popup.transient(win)
+                popup.withdraw()
+
+                outer = tk.Frame(popup, bd=2, relief="groove", padx=14, pady=14)
+                outer.pack(fill="both", expand=True)
+
+                tk.Label(
+                    outer,
+                    text=short_sd_shape,
+                    font=("Segoe UI", 12, "bold"),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 8))
+
+                tk.Label(
+                    outer,
+                    text=expl_long_sd_shape,
+                    font=("Segoe UI", 12),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 10))
+
+                tk.Label(
+                    outer, text="In short:", font=("Segoe UI", 12, "bold"),
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 4))
+                for geno_txt, pheno_txt, (trait_key, trait_val) in summary_sd_shape:
+                    self._popup_icon_summary_row(
+                        outer,
+                        trait_icon_path(trait_key, trait_val),
+                        f"{geno_txt}  →  {pheno_txt}",
+                    )
+
+                self._popup_close_bar(outer, popup)
+                self._fit_popup_to_content(popup, win)
+
+            lbl_sd_shape = tk.Label(
+                tbl,
+                text=short_sd_shape,
+                font=("Segoe UI", 12),
+                justify="left",
+                anchor="w",
+                wraplength=350,
+            )
+            lbl_sd_shape.grid(row=base_row, column=3, sticky="w", padx=6)
+            lbl_sd_shape.grid_remove()
+            _how_it_works_widgets.append(lbl_sd_shape)
+
+            btn_sdshape = self._make_flat_button(
+                tbl, "?", _show_sdshape_expl,
+                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
+            btn_sdshape.grid(row=base_row, column=4, sticky="w", padx=6)
+            btn_sdshape.grid_remove()
+            _how_it_works_widgets.append(btn_sdshape)
+
+            # --------------------------------------------------------
+            # Seed color (I)
+            # --------------------------------------------------------
+            sd_color = ph.get("seed_color", "")
+            icon_sd_color = trait_icon_path("seed_color", sd_color)
+            alle_sd_color = _allele_str(geno, ["I"])
+
+            base_row = rowi
+            rowi = _table_row(
+                tbl, rowi,
+                "Seed color",
+                icon_sd_color,
+                "2",  # Chromosome 2 (I locus)
+                alle_sd_color,
+                ""
+            )
+
+            short_sd_color = "Seed color is regulated by I, which controls chlorophyll breakdown."
+            expl_long_sd_color = (
+                "The I gene determines how much chlorophyll remains in the seed as it matures. "
+                "Plants with at least one I allele (I/I or I/i) break down chlorophyll and turn yellow. "
+                "Seeds with the recessive genotype i/i retain chlorophyll and stay green."
+            )
+            summary_sd_color = [
+                ("I/_", "yellow", ("seed_color", "yellow")),
+                ("i/i", "green",  ("seed_color", "green")),
+            ]
+
+            def _show_sdcolor_expl():
+                popup = tk.Toplevel(win)
+                popup.title("Seed color genetics")
+                popup.transient(win)
+                popup.withdraw()
+
+                outer = tk.Frame(popup, bd=2, relief="groove", padx=14, pady=14)
+                outer.pack(fill="both", expand=True)
+
+                tk.Label(
+                    outer,
+                    text=short_sd_color,
+                    font=("Segoe UI", 12, "bold"),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 8))
+
+                tk.Label(
+                    outer,
+                    text=expl_long_sd_color,
+                    font=("Segoe UI", 12),
+                    wraplength=580,
+                    justify="left",
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 10))
+
+                tk.Label(
+                    outer, text="In short:", font=("Segoe UI", 12, "bold"),
+                    anchor="w",
+                ).pack(fill="x", pady=(0, 4))
+                for geno_txt, pheno_txt, (trait_key, trait_val) in summary_sd_color:
+                    self._popup_icon_summary_row(
+                        outer,
+                        trait_icon_path(trait_key, trait_val),
+                        f"{geno_txt}  →  {pheno_txt}",
+                    )
+
+                self._popup_close_bar(outer, popup)
+                self._fit_popup_to_content(popup, win)
+
+            lbl_sd_color = tk.Label(
+                tbl,
+                text=short_sd_color,
+                font=("Segoe UI", 12),
+                justify="left",
+                anchor="w",
+                wraplength=350,
+            )
+            lbl_sd_color.grid(row=base_row, column=3, sticky="w", padx=6)
+            lbl_sd_color.grid_remove()
+            _how_it_works_widgets.append(lbl_sd_color)
+
+            btn_sdcolor = self._make_flat_button(
+                tbl, "?", _show_sdcolor_expl,
+                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
+            btn_sdcolor.grid(row=base_row, column=4, sticky="w", padx=6)
+            btn_sdcolor.grid_remove()
+            _how_it_works_widgets.append(btn_sdcolor)
 
             # --------------------------------------------------------
             # Flower color (A)
@@ -10793,182 +11576,6 @@ class GardenApp(InspectorMixin):
             btn_pod_color.grid(row=base_row + 2, column=4, sticky="w", padx=6)
             btn_pod_color.grid_remove()
             _how_it_works_widgets.append(btn_pod_color)
-
-            # --------------------------------------------------------
-            # Seed shape (R)
-            # --------------------------------------------------------
-            sd_shape = ph.get("seed_shape", "")
-            icon_sd_shape = trait_icon_path("seed_shape", sd_shape)
-            alle_sd_shape = _allele_str(geno, ["R"])
-
-            base_row = rowi
-            rowi = _table_row(
-                tbl, rowi,
-                "Seed shape",
-                icon_sd_shape,
-                "3",  # Chromosome 3 (R locus)
-                alle_sd_shape,
-                ""
-            )
-
-            short_sd_shape = "Seed shape is controlled by R, which affects starch production."
-            expl_long_sd_shape = (
-                "The R gene controls how starch fills the developing seed. Plants with at least one "
-                "R allele (R/R or R/r) produce normal starch, giving round seeds. Plants with r/r "
-                "produce less starch, causing seeds to wrinkle when they dry."
-            )
-            summary_sd_shape = [
-                ("R/_", "round",    ("seed_shape", "round")),
-                ("r/r", "wrinkled", ("seed_shape", "wrinkled")),
-            ]
-
-            def _show_sdshape_expl():
-                popup = tk.Toplevel(win)
-                popup.title("Seed shape genetics")
-                popup.transient(win)
-                popup.withdraw()
-
-                outer = tk.Frame(popup, bd=2, relief="groove", padx=14, pady=14)
-                outer.pack(fill="both", expand=True)
-
-                tk.Label(
-                    outer,
-                    text=short_sd_shape,
-                    font=("Segoe UI", 12, "bold"),
-                    wraplength=580,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x", pady=(0, 8))
-
-                tk.Label(
-                    outer,
-                    text=expl_long_sd_shape,
-                    font=("Segoe UI", 12),
-                    wraplength=580,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x", pady=(0, 10))
-
-                tk.Label(
-                    outer, text="In short:", font=("Segoe UI", 12, "bold"),
-                    anchor="w",
-                ).pack(fill="x", pady=(0, 4))
-                for geno_txt, pheno_txt, (trait_key, trait_val) in summary_sd_shape:
-                    self._popup_icon_summary_row(
-                        outer,
-                        trait_icon_path(trait_key, trait_val),
-                        f"{geno_txt}  →  {pheno_txt}",
-                    )
-
-                self._popup_close_bar(outer, popup)
-                self._fit_popup_to_content(popup, win)
-
-            lbl_sd_shape = tk.Label(
-                tbl,
-                text=short_sd_shape,
-                font=("Segoe UI", 12),
-                justify="left",
-                anchor="w",
-                wraplength=350,
-            )
-            lbl_sd_shape.grid(row=base_row, column=3, sticky="w", padx=6)
-            lbl_sd_shape.grid_remove()
-            _how_it_works_widgets.append(lbl_sd_shape)
-
-            btn_sdshape = self._make_flat_button(
-                tbl, "?", _show_sdshape_expl,
-                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
-            btn_sdshape.grid(row=base_row, column=4, sticky="w", padx=6)
-            btn_sdshape.grid_remove()
-            _how_it_works_widgets.append(btn_sdshape)
-
-            # --------------------------------------------------------
-            # Seed color (I)
-            # --------------------------------------------------------
-            sd_color = ph.get("seed_color", "")
-            icon_sd_color = trait_icon_path("seed_color", sd_color)
-            alle_sd_color = _allele_str(geno, ["I"])
-
-            base_row = rowi
-            rowi = _table_row(
-                tbl, rowi,
-                "Seed color",
-                icon_sd_color,
-                "2",  # Chromosome 2 (I locus)
-                alle_sd_color,
-                ""
-            )
-
-            short_sd_color = "Seed color is regulated by I, which controls chlorophyll breakdown."
-            expl_long_sd_color = (
-                "The I gene determines how much chlorophyll remains in the seed as it matures. "
-                "Plants with at least one I allele (I/I or I/i) break down chlorophyll and turn yellow. "
-                "Seeds with the recessive genotype i/i retain chlorophyll and stay green."
-            )
-            summary_sd_color = [
-                ("I/_", "yellow", ("seed_color", "yellow")),
-                ("i/i", "green",  ("seed_color", "green")),
-            ]
-
-            def _show_sdcolor_expl():
-                popup = tk.Toplevel(win)
-                popup.title("Seed color genetics")
-                popup.transient(win)
-                popup.withdraw()
-
-                outer = tk.Frame(popup, bd=2, relief="groove", padx=14, pady=14)
-                outer.pack(fill="both", expand=True)
-
-                tk.Label(
-                    outer,
-                    text=short_sd_color,
-                    font=("Segoe UI", 12, "bold"),
-                    wraplength=580,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x", pady=(0, 8))
-
-                tk.Label(
-                    outer,
-                    text=expl_long_sd_color,
-                    font=("Segoe UI", 12),
-                    wraplength=580,
-                    justify="left",
-                    anchor="w",
-                ).pack(fill="x", pady=(0, 10))
-
-                tk.Label(
-                    outer, text="In short:", font=("Segoe UI", 12, "bold"),
-                    anchor="w",
-                ).pack(fill="x", pady=(0, 4))
-                for geno_txt, pheno_txt, (trait_key, trait_val) in summary_sd_color:
-                    self._popup_icon_summary_row(
-                        outer,
-                        trait_icon_path(trait_key, trait_val),
-                        f"{geno_txt}  →  {pheno_txt}",
-                    )
-
-                self._popup_close_bar(outer, popup)
-                self._fit_popup_to_content(popup, win)
-
-            lbl_sd_color = tk.Label(
-                tbl,
-                text=short_sd_color,
-                font=("Segoe UI", 12),
-                justify="left",
-                anchor="w",
-                wraplength=350,
-            )
-            lbl_sd_color.grid(row=base_row, column=3, sticky="w", padx=6)
-            lbl_sd_color.grid_remove()
-            _how_it_works_widgets.append(lbl_sd_color)
-
-            btn_sdcolor = self._make_flat_button(
-                tbl, "?", _show_sdcolor_expl,
-                bg="#7A9A3C", fg="white", font=("Segoe UI", 10, "bold"))
-            btn_sdcolor.grid(row=base_row, column=4, sticky="w", padx=6)
-            btn_sdcolor.grid_remove()
-            _how_it_works_widgets.append(btn_sdcolor)
 
             # --------------------------------------------------------
             # Flower position (Fa + Mfa)  – your existing pattern
@@ -11806,20 +12413,45 @@ class GardenApp(InspectorMixin):
         if mid is None or fid is None:
             return
         drawn = []
+        sel_tile = self.tiles[idx]
         for t in self.tiles:
             p = getattr(t, "plant", None)
-            if p is None or t is self.tiles[idx]:
+            if p is None:
                 continue
             if getattr(p, "mother_id", None) == mid and getattr(p, "father_id", None) == fid:
                 try:
                     w, h = t.winfo_width(), t.winfo_height()
-                    t.create_rectangle(3, 3, w - 3, h - 3, outline="#FFE066", width=3,
-                                       tags="siblingpreview")
+                    if t is not sel_tile:
+                        t.create_rectangle(3, 3, w - 3, h - 3, outline="#FFE066", width=3,
+                                           tags="siblingpreview")
+                    # every sibling's number (the selected plant's too)
+                    self._draw_sibling_id(t, p, w)
                     t.tag_raise("siblingpreview")
                     drawn.append(t)
                 except Exception:
                     pass
+        if drawn == [sel_tile]:
+            drawn = []                       # no siblings: just the plant itself
+            try:
+                sel_tile.delete("siblingpreview")
+            except Exception:
+                pass
         self._sibling_outline_tiles = drawn
+        if drawn:
+            # (the tutorial waits for this)
+            self._sibling_preview_count = int(getattr(self, "_sibling_preview_count", 0) or 0) + 1
+
+    def _draw_sibling_id(self, t, p, w):
+        """"#id" on a dark tag at the top of the tile (while Alt is held)."""
+        txt = f"#{getattr(p, 'id', '?')}"
+        tid = t.create_text(w / 2, 13, text=txt, font=("Segoe UI", 10, "bold"),
+                            fill="#FFE066", tags="siblingpreview")
+        bb = t.bbox(tid)
+        if bb:
+            bg = t.create_rectangle(bb[0] - 4, bb[1] - 1, bb[2] + 4, bb[3] + 1,
+                                    fill="#3b2a1a", outline="#FFE066", width=1,
+                                    tags="siblingpreview")
+            t.tag_raise(tid, bg)
 
     def _plant_preview_refresh(self):
         """Redraws the shovel preview at the current mouse position (after
@@ -11880,6 +12512,7 @@ class GardenApp(InspectorMixin):
         # "Harvest All" had with harvest.ogg — suppressed here the same
         # way, with plant.ogg played once for the whole batch afterward.
         self._suppress_plant_sound = True
+        self._begin_batch_planting()
         try:
             for tidx in targets:
                 ok = self._plant_one_from_group(tidx, self._plant_cursor_kind, self._plant_cursor_match_fn)
@@ -11892,6 +12525,7 @@ class GardenApp(InspectorMixin):
                     break
         finally:
             self._suppress_plant_sound = False
+            self._end_batch_planting(render=False)     # (redrawn just below)
 
         if planted_count > 0:
             _play_sound("plant.ogg")
@@ -12502,9 +13136,10 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass
 
-        # Tutorial: only the plants Friar Cyril is pointing at can be picked.
+        # Tutorial: only the plants Abbot Cyril is pointing at can be picked
+        # (sowing with the seed cursor is not picking: it always works).
         only = getattr(self, "_tutorial_select_only", None)
-        if only and self.tiles[index] not in only:
+        if only and self.tiles[index] not in only and not self._plant_cursor_active:
             self._swallow_tile_release = True
             return
 
@@ -12689,7 +13324,7 @@ class GardenApp(InspectorMixin):
         return sel
 
     def _tut_filter(self, sel):
-        """While Friar Cyril points at certain plants in the tutorial, only
+        """While Abbot Cyril points at certain plants in the tutorial, only
         those can be selected."""
         only = getattr(self, "_tutorial_select_only", None)
         if not only:
@@ -13186,7 +13821,7 @@ class GardenApp(InspectorMixin):
         self._refresh_plot_switcher_buttons()
 
     def _plot_open(self, idx):
-        """In the tutorial only garden 1 is used until Friar Cyril opens
+        """In the tutorial only garden 1 is used until Abbot Cyril opens
         garden 2 (part 4, in spring); outside it every garden is open."""
         if idx == 0 or not getattr(self, "_tutorial_active", False):
             return True
@@ -13415,7 +14050,7 @@ class GardenApp(InspectorMixin):
         if idx == self.active_plot_index:
             return
         if not self._plot_open(idx):
-            self._toast("Friar Cyril will show you this part of the garden later.", level="info")
+            self._toast("Abbot Cyril will show you this part of the garden later.", level="info")
             return
 
         for tile in self._plot_tiles[self.active_plot_index]:
@@ -13685,6 +14320,10 @@ class GardenApp(InspectorMixin):
             self._set_soil_linger(self.tiles[idx])
             removed += 1
 
+        if removed:
+            # how many each press removed (the tutorial's lesson on
+            # removing several plants at once watches this)
+            self.__dict__.setdefault("_remove_log", []).append(removed)
         if removed == 1:
             self._toast("Plant removed.")
         elif removed > 1:
@@ -13947,7 +14586,9 @@ class GardenApp(InspectorMixin):
             if n > 0:
                 self.__dict__.setdefault("_key_harvest_log", []).append((key, n))
 
-    def _on_harvest_selected(self):
+    def _on_harvest_selected(self, flower_k=None):
+            """flower_k: harvest that flower's pod (a pod clicked in the
+            Inspect window), else the next ripe one."""
             if not self._night_gate("harvesting"):
                 return
             idx = self.selected_index
@@ -13955,11 +14596,53 @@ class GardenApp(InspectorMixin):
             if not plant or not plant.alive or plant.stage < 7:
                 self._toast("Plant is not ready to harvest.")
                 return
+            # a mission may need something first (Plant Roulette: the
+            # predictions before the first pod is opened)
+            try:
+                import missions as _ms
+                _sel = self.selected_index
+                if not _ms.before_harvest(
+                        self, plant,
+                        action=lambda _k=flower_k, _i=_sel: (
+                            setattr(self, "selected_index", _i),
+                            self._on_harvest_selected(_k))):
+                    return
+            except Exception:
+                pass
             
             # The next pod = the next flower that set one (per-flower
             # emasculation / pollination decide what's in it).
             plant.sync_reproduction()
-            flower = plant.next_pod_flower()
+            flower = None
+            if flower_k is not None:
+                try:
+                    _f = plant.ensure_flowers()[int(flower_k)]
+                    if (plant.flower_sets_pod(_f) and not _f.get("harvested")
+                            and plant.pod_is_ripe(_f)):
+                        flower = _f
+                except Exception:
+                    flower = None
+            # Tutorial (the pod of the first cross): only pods from hand
+            # pollinated flowers (»P«) can be harvested, so their seeds
+            # aren't mixed with the self-pollinated ones.
+            if getattr(self, "_tutorial_cross_pods_only", False):
+                def _is_cross(_f):
+                    return bool(_f.get("emasc")) and bool(_f.get("pollen"))
+                if flower is not None and not _is_cross(flower):
+                    self._toast("First only the pod of your cross: the one marked »P«.",
+                                level="warn")
+                    return None
+                if flower is None:
+                    flower = next((_f for _f in plant.ensure_flowers()
+                                   if _is_cross(_f) and plant.flower_sets_pod(_f)
+                                   and not _f.get("harvested") and plant.pod_is_ripe(_f)), None)
+                    if flower is None:
+                        if not getattr(self, "_tut_gate_quiet", False):
+                            self._toast("This plant has no ripe pod of your cross "
+                                        "(marked »P«).", level="warn")
+                        return None
+            if flower is None:
+                flower = plant.next_pod_flower()
             if flower is None:
                 if plant.next_pod_flower(ripe_only=False) is not None:
                     self._toast("The remaining pods aren't ripe yet.")
@@ -14251,6 +14934,20 @@ class GardenApp(InspectorMixin):
             # unaffected.
             if pod_record:
                 self._spend_task_minutes(self.HARVEST_MINUTES_PER_POD)
+                # Keep every harvested seed (planted or not) for the TIE:
+                # seed colour and shape are seen at harvest.
+                try:
+                    if not hasattr(self, "archive"):
+                        self.archive = {}
+                    lst = self.archive.setdefault("pod_seeds", {}).setdefault(str(plant.id), [])
+                    for _sd in pod_record.get("seeds", []):
+                        _tr = _sd.get("traits") or {}
+                        lst.append({"id": _sd.get("id"), "pod": _sd.get("pod_index"),
+                                    "donor": _sd.get("donor_id"),
+                                    "seed_color": _tr.get("seed_color"),
+                                    "seed_shape": _tr.get("seed_shape")})
+                except Exception:
+                    pass
             return pod_record
 
 
@@ -14267,6 +14964,16 @@ class GardenApp(InspectorMixin):
         if not plant or not getattr(plant, "alive", True) or getattr(plant, "stage", 0) < 7:
             self._toast("Plant is not ready to harvest.")
             return
+        try:
+            import missions as _ms
+            _sel = self.selected_index
+            if not _ms.before_harvest(
+                    self, plant,
+                    action=lambda _i=_sel: (setattr(self, "selected_index", _i),
+                                            self._on_harvest_all_selected())):
+                return
+        except Exception:
+            pass
 
         # Initial pods count (upper bound for iterations)
         try:
@@ -14321,7 +15028,13 @@ class GardenApp(InspectorMixin):
                     break
 
                 # Reuse existing single-pod harvest logic (includes seeds, archive, auto-removal)
-                pod_record = self._on_harvest_selected()
+                self._tut_gate_quiet = harvested_pods > 0
+                try:
+                    pod_record = self._on_harvest_selected()
+                finally:
+                    self._tut_gate_quiet = False
+                if pod_record is None and getattr(self, "_tutorial_cross_pods_only", False):
+                    break                   # (the tutorial: only the crossed pods)
                 # Was previously missing here, so "Harvest All" harvested
                 # everything correctly but silently left the inspector's
                 # seed-color tally unchanged.
@@ -14408,6 +15121,13 @@ class GardenApp(InspectorMixin):
                 fid_i = int(fid) if fid not in (None, "", -1) else None
             except Exception:
                 fid_i = None
+
+            # Which plant bore the seed and which gave the pollen — kept as
+            # they are (mother_id / father_id below are put in id order,
+            # so they can't tell a cross from its reverse; missions.py's
+            # reciprocal crosses need to)
+            p.seed_parent_id = mid_i if mid_i is not None else mid
+            p.pollen_parent_id = fid_i if fid_i is not None else fid
 
             # Canonicalize: mother_id is always the smaller id, father_id the larger id
             if mid_i is not None and fid_i is not None and mid_i != fid_i:
@@ -14569,11 +15289,15 @@ class GardenApp(InspectorMixin):
         _ensure_min(mid, "F0")
         _ensure_min(fid, "F0")
 
-
-        try:
-            self._eager_seed_and_backfill()
-        except Exception:
-            pass
+        # (it records every plant of the garden: when many seeds are sown
+        # at once it runs once after the batch instead, see _end_batch_planting)
+        if getattr(self, "_batch_planting", False):
+            self._batch_needs_backfill = True
+        else:
+            try:
+                self._eager_seed_and_backfill()
+            except Exception:
+                pass
 
         return p
 
@@ -14662,6 +15386,30 @@ class GardenApp(InspectorMixin):
                 cache[ck] = None
         return cache[ck]
 
+    def _seed_mother_flower(self, src):
+        """Flower colour of the plant seeds came from ("white" / "purple").
+        A plant that bore seeds has flowered, so its colour was seen even
+        if its record (e.g. an archive entry made before it flowered)
+        doesn't list it as discovered."""
+        if src in (None, "", -1):
+            return None
+        try:
+            live = next((t.plant for t in self._all_plot_tiles()
+                         if t.plant is not None and str(getattr(t.plant, "id", "")) == str(src)), None)
+        except Exception:
+            live = None
+        tr, rt = None, None
+        if live is not None:
+            tr, rt = getattr(live, "traits", None), getattr(live, "revealed_traits", None)
+        else:
+            snap = ((getattr(self, "archive", {}) or {}).get("plants", {}) or {}).get(str(src))
+            if isinstance(snap, dict):
+                tr, rt = snap.get("traits"), snap.get("revealed_traits")
+        if not isinstance(tr, dict):
+            return None
+        c = str(tr.get("flower_color", "")).lower()
+        return c if c in ("white", "purple") else None
+
     def _seed_group_colors(self, kind, match_fn):
         """"green", "yellow" or "mixed" for the seeds in a group (starter
         seeds are random founders, so "mixed"); None if unknown."""
@@ -14685,7 +15433,7 @@ class GardenApp(InspectorMixin):
     def choose_seed_for_tiles(self, tiles: List[TileCanvas]):
         """The Choose Seeds window: one card per seed group (a bag showing
         whether the seeds are green, yellow or both), with how many to sow
-        and the buttons to start planting. Paged, 3 x 3 cards per page."""
+        and the buttons to start planting. Paged, 3 x 2 cards per page."""
         # Opening this window always ends click-to-plant mode first.
         try:
             if getattr(self, "_plant_cursor_active", False):
@@ -14697,13 +15445,13 @@ class GardenApp(InspectorMixin):
             self._toast("You have no seeds to plant.")
             return
 
-        PER_PAGE = 9
+        PER_PAGE = 6                      # 3 x 2 cards per page
         BG = self.INSPECTOR_BG            # cream, like the other windows
         CARD = "#fbf7ee"
         EDGE = "#d9cdb4"
         INK = "#3b2a1a"
         MUTED = "#7a6a55"
-        CARD_W, CARD_H = 264, 234
+        CARD_W, CARD_H = 264, 256
 
         picker = Toplevel(self.root)
         picker.withdraw()
@@ -14713,6 +15461,7 @@ class GardenApp(InspectorMixin):
         self._force_window_not_maximized(picker)
         picker._seed_page = 0
         picker._img_refs = []
+        self._seed_picker_win = picker            # (the tutorial watches it)
 
         def _close_picker():
             try:
@@ -14743,27 +15492,26 @@ class GardenApp(InspectorMixin):
         pager = tk.Frame(header, bg=BG)
         pager.pack(side="right", anchor="e")
 
-        # Filters (tick boxes, can be combined): only seeds from crosses,
-        # only seeds from plants with a note.
+        # Filter (tick box): only seeds from plants with a note.
         filt_bar = tk.Frame(outer, bg=BG)
         filt_bar.pack(fill="x", pady=(8, 0))
         tk.Label(filt_bar, text="Show only:", font=("Segoe UI", 10), bg=BG,
                  fg=MUTED).pack(side="left", padx=(0, 8))
-        _f_crossed = tk.BooleanVar(value=bool(getattr(self, "_seed_filter_crossed", False)))
         _f_noted = tk.BooleanVar(value=bool(getattr(self, "_seed_filter_noted", False)))
 
         def _filters_changed():
-            self._seed_filter_crossed = bool(_f_crossed.get())
             self._seed_filter_noted = bool(_f_noted.get())
             picker._seed_page = 0
             _render()
 
-        for var, txt in ((_f_crossed, "Crossed seeds"), (_f_noted, "\u2691 Seeds of noted plants")):
-            tk.Checkbutton(filt_bar, text=txt, variable=var, command=_filters_changed,
-                           font=("Segoe UI", 10), bg=BG, fg=INK, activebackground=BG,
-                           activeforeground=INK, selectcolor="#FFFDF6",
-                           highlightthickness=0, bd=0, cursor="hand2"
-                           ).pack(side="left", padx=(0, 12))
+        self._seed_filter_cbs = {}
+        for key, var, txt in (("noted", _f_noted, "\u2691 Seeds of noted plants"),):
+            cb = tk.Checkbutton(filt_bar, text=txt, variable=var, command=_filters_changed,
+                                font=("Segoe UI", 10), bg=BG, fg=INK, activebackground=BG,
+                                activeforeground=INK, selectcolor="#FFFDF6",
+                                highlightthickness=0, bd=0, cursor="hand2")
+            cb.pack(side="left", padx=(0, 12))
+            self._seed_filter_cbs[key] = cb
         # Seed look (tick boxes): only round / wrinkled, only yellow / green
         # peas — what Mendel sorted his seeds by before sowing. Nothing
         # ticked in a pair = both.
@@ -14781,14 +15529,139 @@ class GardenApp(InspectorMixin):
             picker._seed_page = 0
             _render()
 
-        for key in ("round", "wrinkled", "yellow", "green"):
+        # the game's trait icons at half size (the word if an icon is missing)
+        def _half_icon(trait, value):
+            cache = getattr(self, "_seed_look_icons", None)
+            if cache is None:
+                cache = self._seed_look_icons = {}
+            if (trait, value) not in cache:
+                img = None
+                try:
+                    path = trait_icon_path(trait, value)
+                    if path:
+                        im = Image.open(path).convert("RGBA")
+                        bb = im.getbbox()
+                        if bb:
+                            im = im.crop(bb)
+                        im = im.resize((max(1, round(im.width * 0.5)), max(1, round(im.height * 0.5))),
+                                       Image.LANCZOS)
+                        img = ImageTk.PhotoImage(im, master=self.root)
+                except Exception:
+                    img = None
+                cache[(trait, value)] = img
+            return cache[(trait, value)]
+
+        for key, trait in (("round", "seed_shape"), ("wrinkled", "seed_shape"),
+                           ("yellow", "seed_color"), ("green", "seed_color")):
             v = tk.BooleanVar(value=key in _look)
             _look_vars[key] = v
-            tk.Checkbutton(look_bar, text=key.capitalize(), variable=v, command=_look_changed,
-                           font=("Segoe UI", 10), bg=BG, fg=INK, activebackground=BG,
-                           activeforeground=INK, selectcolor="#FFFDF6",
-                           highlightthickness=0, bd=0, cursor="hand2"
-                           ).pack(side="left", padx=(0, 12))
+            _ic = _half_icon(trait, key)
+            cb = tk.Checkbutton(look_bar, text=("" if _ic is not None else key.capitalize()),
+                                image=_ic if _ic is not None else "",
+                                variable=v, command=_look_changed,
+                                font=("Segoe UI", 10), bg=BG, fg=INK, activebackground=BG,
+                                activeforeground=INK, selectcolor="#FFFDF6",
+                                highlightthickness=0, bd=0, cursor="hand2")
+            cb.pack(side="left", padx=(0, 12))
+            try:
+                _attach_tooltip(cb, f"Only {key} seeds")
+            except Exception:
+                pass
+
+        # Seeds from crosses (radio), counted as Mendel did, from the cross:
+        # F1 = the seeds of a cross itself, F2 = the seeds of the plants
+        # grown from them, F3 = the next selfed generation, ...
+        gen_bar = tk.Frame(outer, bg=BG)
+        gen_bar.pack(fill="x", pady=(4, 0))
+        tk.Label(gen_bar, text="Seeds from crosses:", font=("Segoe UI", 10), bg=BG,
+                 fg=MUTED).pack(side="left", padx=(0, 8))
+        _gen_var = tk.StringVar(value=str(getattr(self, "_seed_filter_gen", "") or ""))
+
+        def _gen_changed():
+            self._seed_filter_gen = _gen_var.get() or None
+            picker._seed_page = 0
+            _render()
+
+        self._seed_gen_rbs = {}
+        _gen_tips = {"": "All seeds, from crosses or not",
+                     "F1": "F1: the seeds of a cross itself",
+                     "F2": "F2: seeds of the plants grown from a cross",
+                     "F3": "F3: one more selfed generation",
+                     "F4": "F4", "F5": "F5", "F6+": "F6 and later generations"}
+        for val, txt in (("", "All"), ("F1", "F1"), ("F2", "F2"), ("F3", "F3"),
+                         ("F4", "F4"), ("F5", "F5"), ("F6+", "F6+")):
+            rb = tk.Radiobutton(gen_bar, text=txt, value=val, variable=_gen_var,
+                                command=_gen_changed, font=("Segoe UI", 10), bg=BG, fg=INK,
+                                activebackground=BG, activeforeground=INK, selectcolor="#FFFDF6",
+                                highlightthickness=0, bd=0, cursor="hand2")
+            rb.pack(side="left", padx=(0, 10))
+            self._seed_gen_rbs[val or "all"] = rb
+            try:
+                _attach_tooltip(rb, _gen_tips.get(val, val))
+            except Exception:
+                pass
+
+        _filial_cache = {}
+
+        def _parents_of(pid):
+            """(mother_id, father_id) of a plant, living or archived."""
+            try:
+                for t in self._all_plot_tiles():
+                    p = getattr(t, "plant", None)
+                    if p is not None and str(getattr(p, "id", "")) == str(pid):
+                        return getattr(p, "mother_id", None), getattr(p, "father_id", None)
+                snap = ((self.archive or {}).get("plants") or {}).get(str(pid)) or {}
+                return snap.get("mother_id"), snap.get("father_id")
+            except Exception:
+                return None, None
+
+        def _plant_filial(pid, depth=0):
+            """Filial generation of a plant counted from the last cross in
+            its line (1 = grown from a crossed seed); None: no cross."""
+            key = str(pid)
+            if key in _filial_cache:
+                return _filial_cache[key]
+            _filial_cache[key] = None
+            if pid in (None, "", -1) or depth > 40:
+                return None
+            m, f = _parents_of(pid)
+            if m in (None, "", -1):
+                r = None
+            elif f not in (None, "", -1) and str(m) != str(f):
+                r = 1
+            else:
+                pm = _plant_filial(m, depth + 1)
+                r = None if pm is None else pm + 1
+            _filial_cache[key] = r
+            return r
+
+        def _seed_filial(sd):
+            """F-number of the plant a seed grows into, from the last cross
+            (1: a crossed seed); None for seeds without a cross in their line."""
+            src, d = sd.get("source_id"), sd.get("donor_id")
+            if d not in (None, "", -1) and str(d) != str(src):
+                return 1
+            pm = _plant_filial(src)
+            return None if pm is None else pm + 1
+
+        def _gen_ok(kind, match_fn):
+            want = getattr(self, "_seed_filter_gen", None)
+            if not want:
+                return True
+            if kind == "S":
+                return False
+            try:
+                for sd in self.harvest_inventory:
+                    if match_fn(sd):
+                        n = _seed_filial(sd)
+                        if n is None:
+                            return False
+                        if want == "F6+":
+                            return n >= 6
+                        return f"F{n}" == want
+            except Exception:
+                pass
+            return False
 
         def _look_ok(sd):
             look = getattr(self, "_seed_filter_look", None) or set()
@@ -14919,8 +15792,25 @@ class GardenApp(InspectorMixin):
             entry.bind("<Down>", lambda e: (_bump(-1), "break")[1])
             return box, entry
 
-        _colour_text = {"green": "green seeds", "yellow": "yellow seeds",
-                        "mixed": "green & yellow seeds"}
+        def _colour_text(kind, match_fn):
+            """'5 yellow · 2 green' for a group."""
+            n = {"yellow": 0, "green": 0}
+            try:
+                for sd in self.harvest_inventory:
+                    if match_fn(sd):
+                        v = str((sd.get("traits", {}) or {}).get("seed_color", "")).lower()
+                        if v in n:
+                            n[v] += 1
+            except Exception:
+                pass
+            return " · ".join(f"{c} {k}" for k, c in n.items() if c)
+
+        def _dashed_line(parent):
+            c = tk.Canvas(parent, height=5, bg=CARD, highlightthickness=0, bd=0)
+            c.pack(fill="x", pady=(3, 3))
+            c.bind("<Configure>", lambda e: (c.delete("all"),
+                                             c.create_line(0, 2, e.width, 2, fill=EDGE, dash=(3, 3))))
+            return c
 
         def _build_card(parent, kind, src, donor, count, label, match_fn):
             card = tk.Frame(parent, bg=CARD, width=CARD_W, height=CARD_H,
@@ -14966,11 +15856,22 @@ class GardenApp(InspectorMixin):
                 _attach_tooltip(bx, "Throw these seeds away")
 
             colours = self._seed_group_colors(kind, match_fn)
-            sub = f"{count} seed{'s' if count != 1 else ''}"
+            # the mother's flower colour first (once it was seen), set off
+            # from the seeds' own look by a faint dashed line
+            _mfc = self._seed_mother_flower(src) if kind != "S" else None
+            if _mfc:
+                frow = tk.Frame(inner, bg=CARD)
+                frow.pack(anchor="w")
+                _fic = _half_icon("flower_color", _mfc)
+                tk.Label(frow, text="flowered" if _fic is not None else f"flowered {_mfc}",
+                         font=("Segoe UI", 10, "italic"), bg=CARD, fg=MUTED).pack(side="left")
+                if _fic is not None:
+                    tk.Label(frow, image=_fic, bg=CARD).pack(side="left", padx=(4, 0))
+                _dashed_line(inner)
             if kind == "S":
-                sub += " · random founders"
-            elif colours:
-                sub += f" · {_colour_text[colours]}"
+                sub = f"{count} random founder{'s' if count != 1 else ''}"
+            else:
+                sub = _colour_text(kind, match_fn) or f"{count} seed{'s' if count != 1 else ''}"
             tk.Label(inner, text=sub, font=("Segoe UI", 10, "italic"), bg=CARD,
                      fg=MUTED).pack(anchor="w")
             shp = _shape_text(kind, match_fn)
@@ -15046,9 +15947,26 @@ class GardenApp(InspectorMixin):
             except Exception:
                 groups = []
             cleaned = []
-            only_crossed = bool(getattr(self, "_seed_filter_crossed", False))
+            only_crossed = False
             only_noted = bool(getattr(self, "_seed_filter_noted", False))
             noted = set((getattr(self, "plant_notes", None) or {}).keys())
+
+            def _mother_is_cross(src):
+                """Did the mother plant itself grow from a crossed seed?"""
+                m = f = None
+                try:
+                    for t in self._all_plot_tiles():
+                        p = getattr(t, "plant", None)
+                        if p is not None and str(getattr(p, "id", "")) == str(src):
+                            m, f = getattr(p, "mother_id", None), getattr(p, "father_id", None)
+                            break
+                    else:
+                        snap = ((self.archive or {}).get("plants") or {}).get(str(src)) or {}
+                        m, f = snap.get("mother_id"), snap.get("father_id")
+                except Exception:
+                    return False
+                return (m not in (None, "", -1) and f not in (None, "", -1)
+                        and str(m) != str(f))
 
             def _from_noted(src, match_fn):
                 # Seeds whose mother or father plant has a note.
@@ -15071,8 +15989,8 @@ class GardenApp(InspectorMixin):
                         count = sum(1 for sd in self.harvest_inventory if match_fn(sd))
                     except Exception:
                         count = 0
-                if only_crossed and (kind == "S" or "×" not in str(label)):
-                    continue          # crossed groups are the "♀#a × ♂#b" ones
+                if not _gen_ok(kind, match_fn):
+                    continue
                 if only_noted and (kind == "S" or not _from_noted(src, match_fn)):
                     continue
                 if kind == "S" or count > 0:
@@ -15099,9 +16017,10 @@ class GardenApp(InspectorMixin):
                 lbl_page.pack(side="left")
 
             if not shown:
-                tk.Label(grid, text=("No seeds match these filters." if ((only_crossed and only_noted)
-                                                                          or look_on)
-                                     else "No seeds from crosses yet." if only_crossed
+                tk.Label(grid, text=("No seeds match these filters." if (look_on or (
+                                         only_noted and getattr(self, "_seed_filter_gen", None)))
+                                     else "No seeds of this generation yet."
+                                     if getattr(self, "_seed_filter_gen", None)
                                      else "No seeds from plants with a note." if only_noted
                                      else "No seeds to plant."),
                          font=("Segoe UI", 12, "italic"),
@@ -15324,6 +16243,25 @@ class GardenApp(InspectorMixin):
         # changes any actual behavior.
         _prof = {"daily_setup": 0.0, "sim_hour": 0.0, "cleanup": 0.0,
                   "render": 0.0, "event_pump": 0.0}
+        # Showing the garden costs time on every refresh — on a Mac much
+        # more than the simulation itself (each plot is its own canvas and
+        # macOS repaints them all: ~0.3 s per refresh with 250 plants).
+        # So the next refresh waits until at least as long again has
+        # passed: the screen still moves a few times a second, but Fast
+        # Forward is no longer held up by repainting.
+        # (At least once per simulated day the garden is shown anyway, so
+        # the plants can still be seen growing.)
+        _ui = {"t": 0.0, "cost": 0.0, "hours": 0}
+
+        def _ui_free(hours=1):
+            _ui["hours"] += hours
+            return (_ui["hours"] >= 24
+                    or time.perf_counter() - _ui["t"] >= max(0.05, 1.2 * _ui["cost"]))
+
+        def _ui_done(cost):
+            _ui["t"] = time.perf_counter()
+            _ui["cost"] = cost
+            _ui["hours"] = 0
         _render_times = []
         _ff_start_t = time.perf_counter()
 
@@ -15438,7 +16376,7 @@ class GardenApp(InspectorMixin):
                                          and self.ff_render_daily.get())
                 if _use_daily_render:
                     # Daily mode: render once per simulated day
-                    if (step + 1) % 24 == 0:
+                    if (step + 1) % 24 == 0 and _ui_free(24):
                         _t0 = time.perf_counter()
                         self.render_all()
                         _dt = time.perf_counter() - _t0
@@ -15451,6 +16389,7 @@ class GardenApp(InspectorMixin):
                         except Exception:
                             pass
                         _prof["event_pump"] += time.perf_counter() - _t0
+                        _ui_done(_dt + time.perf_counter() - _t0)
                 else:
                     # Normal FF mode: render every N simulated hours (user-defined)
                     try:
@@ -15463,7 +16402,7 @@ class GardenApp(InspectorMixin):
                         interval = 23
 
                     self._ff_ui_counter = getattr(self, "_ff_ui_counter", 0) + 1
-                    if (self._ff_ui_counter % interval) == 0:
+                    if (self._ff_ui_counter % interval) == 0 and _ui_free(interval):
                         _t0 = time.perf_counter()
                         self.render_all()
                         _dt = time.perf_counter() - _t0
@@ -15476,6 +16415,7 @@ class GardenApp(InspectorMixin):
                         except Exception:
                             pass
                         _prof["event_pump"] += time.perf_counter() - _t0
+                        _ui_done(_dt + time.perf_counter() - _t0)
             except Exception:
                 pass
 
@@ -15530,7 +16470,7 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass
 
-        # (not in the tutorial: there Fast Forward stops for Friar Cyril,
+        # (not in the tutorial: there Fast Forward stops for Abbot Cyril,
         # who then speaks for himself)
         if (_ff_stopped_early and not getattr(self, "_ff_quiet_stop", False)
                 and not getattr(self, "_tutorial_active", False)):
@@ -15565,6 +16505,34 @@ class GardenApp(InspectorMixin):
         GardenApp methods can call it without passing one explicitly.
         """
         return _silent_dialog_raw(parent or self.root, title, message, kind=kind)
+
+    def _ask_confirm(self, title, message, yes_text="Yes", parent=None, yes_icon=None):
+        """Yes / Cancel question in the game's own window, text as large as
+        the Inspect window's. Enter = yes, Escape = Cancel."""
+        # "Yes" on the button, its meaning in brackets beside it; the
+        # window stays on top of everything until answered
+        note = ""
+        if yes_text.startswith("Yes") and len(yes_text) > 3:
+            note = yes_text[3:].strip(" \u2014-:")
+            yes_text = "Yes"
+        return bool(_silent_dialog_raw(parent or self.root, title, message, kind="question",
+                                       yes_text=yes_text, no_text="Cancel",
+                                       font_size=13, wrap=520, yes_note=note, on_top=True,
+                                       yes_icon=(os.path.join(ICONS_DIR, yes_icon)
+                                                 if yes_icon else None)))
+
+    def _confirm_genotype_reveal(self, parent=None):
+        """Asked once per garden before the alleles are revealed: it ends
+        all law and achievement credit in this garden."""
+        if getattr(self, "_genotype_revealed", False):
+            return True
+        return self._ask_confirm(
+            "Reveal Genotype",
+            "Reveal the genotypes (the alleles of every plant)?\n\n"
+            "Mendel never could. From now on, no Mendelian law and no "
+            "achievement can be unlocked in this garden any more "
+            "(the tutorial's own parts excepted).",
+            yes_text="Yes \u2014 reveal the alleles", parent=parent)
 
     def _silent_askyesno(self, title, message, parent=None, **kw):
         return self._silent_dialog(title, message, kind="question", parent=parent)
@@ -15662,6 +16630,16 @@ class GardenApp(InspectorMixin):
     # ============================================================================
     
     def _on_new_garden(self):
+        """File > New Garden. On a Mac, Tk can crash when a menu command
+        opens a modal window and then rebuilds the garden while the menu
+        is still finishing: so the question comes a moment later, and
+        the garden is rebuilt after the question window has closed."""
+        try:
+            self.root.after(30, self._on_new_garden_now)
+        except Exception:
+            self._on_new_garden_now()
+
+    def _on_new_garden_now(self):
         """File > New Garden: throws the current garden away and starts
         again from scratch, exactly like a freshly launched game."""
         if getattr(self, "_tutorial_active", False):
@@ -15677,14 +16655,20 @@ class GardenApp(InspectorMixin):
                 "replaced. Use File > Save Garden first if you want to keep it.",
                 icon='warning'):
             return
+
+        def _go():
+            try:
+                import copy
+                self._deserialize_garden_state(copy.deepcopy(fresh))
+                self._winter_prompted_key = None
+                self._toast("A new garden begins.", level="info")
+            except Exception as e:
+                logging.error(f"Failed to start new garden: {e}", exc_info=True)
+                self._silent_showerror("New Garden", f"Could not start a new garden:\n{e}")
         try:
-            import copy
-            self._deserialize_garden_state(copy.deepcopy(fresh))
-            self._winter_prompted_key = None
-            self._toast("A new garden begins.", level="info")
-        except Exception as e:
-            logging.error(f"Failed to start new garden: {e}", exc_info=True)
-            self._silent_showerror("New Garden", f"Could not start a new garden:\n{e}")
+            self.root.after(60, _go)
+        except Exception:
+            _go()
 
     def _latest_save_info(self):
         """(filepath, display name, date text) of the most recently saved
@@ -15753,7 +16737,7 @@ class GardenApp(InspectorMixin):
     def _ask_continue_or_new(self, name=None, when="", stats=""):
         """Start-up question. With an earlier garden (name given): continue
         it, begin anew, load another one, or play the tutorial. Without one:
-        just begin or play the tutorial. Returns "continue", "new",
+        just begin, play the tutorial or open the missions. Returns "continue", "new", "missions",
         "choose" or "tutorial"."""
         result = {"v": "new"}
         win = tk.Toplevel(self.root)
@@ -15763,15 +16747,17 @@ class GardenApp(InspectorMixin):
         win.resizable(False, False)
         self._force_window_not_maximized(win)
         has_save = name is not None
-        in_tutorial = bool(name) and str(name).startswith("Friar Cyril's tutorial")
+        in_tutorial = bool(name) and str(name).startswith("Abbot Cyril's tutorial")
         tk.Label(win, text=("Welcome back, Gregor!" if has_save else "Welcome, Gregor!"),
                  font=("Segoe UI", 16, "bold"),
                  bg="#f5eee0", fg="#3b2a1a").pack(padx=28, pady=(20, 6))
         if has_save:
-            tk.Label(win, text=("Continue the tutorial?" if in_tutorial
-                                else "Continue your latest garden?"),
-                     font=("Segoe UI", 11), bg="#f5eee0", fg="#3b2a1a",
-                     justify="center").pack(padx=28, pady=(0, 4))
+            _q_default = ("Continue the tutorial?" if in_tutorial
+                          else "Continue your latest garden?")
+            q_lbl = tk.Label(win, text=_q_default,
+                             font=("Segoe UI", 11), bg="#f5eee0", fg="#3b2a1a",
+                             justify="center")
+            q_lbl.pack(padx=28, pady=(0, 4))
             name_lbl = tk.Label(win, text=f"\u201c{name}\u201d \u2014 saved {when}",
                                 font=("Segoe UI", 11, "bold"), bg="#f5eee0", fg="#3b2a1a",
                                 justify="center", cursor="hand2")
@@ -15784,35 +16770,44 @@ class GardenApp(InspectorMixin):
                 name_lbl.bind("<Enter>", lambda e: stats_lbl.configure(text=stats))
                 name_lbl.bind("<Leave>", lambda e: stats_lbl.configure(text=""))
         else:
-            tk.Label(win, text="Ready to tend your garden?",
-                     font=("Segoe UI", 11), bg="#f5eee0", fg="#3b2a1a",
-                     justify="center").pack(padx=28, pady=(0, 12))
+            _q_default = "Ready to tend your garden?"
+            q_lbl = tk.Label(win, text=_q_default,
+                             font=("Segoe UI", 11), bg="#f5eee0", fg="#3b2a1a",
+                             justify="center")
+            q_lbl.pack(padx=28, pady=(0, 12))
         row = tk.Frame(win, bg="#f5eee0")
-        row.pack(padx=28, pady=(0, 8))
+        row.pack(padx=28, pady=(0, 20))
+
+        def _explain(btn, text):
+            # short button; hovering it explains it in the question line
+            btn.bind("<Enter>", lambda e: q_lbl.configure(text=text), add="+")
+            btn.bind("<Leave>", lambda e: q_lbl.configure(text=_q_default), add="+")
+            return btn
 
         def _pick(v):
             result["v"] = v
             win.destroy()
 
         if has_save:
-            _make_flat_button_raw(row, ("Continue tutorial" if in_tutorial else "Continue latest garden"),
-                                  lambda: _pick("continue"),
-                                  bg="#7A9A3C", fg="white", font=("Segoe UI", 11, "bold")
-                                  ).pack(side="left", padx=(0, 10))
-        _make_flat_button_raw(row, "Start a new garden", lambda: _pick("new"),
-                              bg=("#e0dccf" if has_save else "#7A9A3C"),
-                              fg=("#333333" if has_save else "white"),
-                              font=("Segoe UI", 11) if has_save else ("Segoe UI", 11, "bold")
-                              ).pack(side="left", padx=(0, 10) if has_save else 0)
+            _explain(_make_flat_button_raw(row, "Continue", lambda: _pick("continue"),
+                                           bg="#7A9A3C", fg="white", font=("Segoe UI", 11, "bold")),
+                     ("Continue the tutorial where you left it" if in_tutorial
+                      else "Continue your latest garden")).pack(side="left", padx=(0, 10))
+        _explain(_make_flat_button_raw(row, "Start new", lambda: _pick("new"),
+                                       bg=("#e0dccf" if has_save else "#7A9A3C"),
+                                       fg=("#333333" if has_save else "white"),
+                                       font=("Segoe UI", 11) if has_save else ("Segoe UI", 11, "bold")),
+                 "Start a new garden").pack(side="left", padx=(0, 10))
         if has_save:
-            _make_flat_button_raw(row, "Load a saved garden\u2026", lambda: _pick("choose"),
-                                  bg="#e0dccf", fg="#333333", font=("Segoe UI", 11)
-                                  ).pack(side="left")
-        row2 = tk.Frame(win, bg="#f5eee0")
-        row2.pack(padx=28, pady=(0, 20))
-        _make_flat_button_raw(row2, "Play the tutorial", lambda: _pick("tutorial"),
-                              bg="#e0dccf", fg="#333333", font=("Segoe UI", 11)
-                              ).pack()
+            _explain(_make_flat_button_raw(row, "Load garden", lambda: _pick("choose"),
+                                           bg="#e0dccf", fg="#333333", font=("Segoe UI", 11)),
+                     "Load a saved garden\u2026").pack(side="left", padx=(0, 10))
+        _explain(_make_flat_button_raw(row, "Tutorial", lambda: _pick("tutorial"),
+                                       bg="#e0dccf", fg="#333333", font=("Segoe UI", 11)),
+                 "Play the tutorial with Abbot Cyril").pack(side="left", padx=(0, 10))
+        _explain(_make_flat_button_raw(row, "Missions", lambda: _pick("missions"),
+                                       bg="#e0dccf", fg="#333333", font=("Segoe UI", 11)),
+                 "Pursue one of Mendel's experiments in a garden of its own").pack(side="left")
         win.protocol("WM_DELETE_WINDOW", lambda: _pick("new"))
 
         def _centre():
@@ -15899,10 +16894,14 @@ class GardenApp(InspectorMixin):
             prog = _tut._load_tutorial_progress()
             if prog is None:
                 return None
-            pd = int(prog.get("tutorial_part_done", 1))
-            part = 1 if pd < 1 else (2 if pd == 1 else 3)
+            # the part the saved tutorial is in, as numbered on the map (1-5)
+            step = _tut._map_progress_step(prog)
+            part = 1
+            for _n, (_first, _last) in sorted(_tut._MAP_PART_STEPS.items()):
+                if step >= _last:
+                    part = min(_n + 1, len(_tut._TUTORIAL_PARTS))
             when = _d.datetime.fromtimestamp(os.path.getmtime(path)).strftime("%d %b %Y, %H:%M")
-            return (f"Friar Cyril's tutorial — Part {part}", when,
+            return (f"Abbot Cyril's tutorial — Part {part}", when,
                     "Continue where you left off in the tutorial")
         except Exception:
             return None
@@ -15929,17 +16928,35 @@ class GardenApp(InspectorMixin):
             data = self._serialize_garden_state()
             data["garden_name"] = "Autosave"
             data["realm"] = "garden"
-            tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            os.replace(tmp, path)
-            for old in _glob.glob(os.path.join(data_dir, "garden_Autosave_*.json")):
-                if os.path.abspath(old) != os.path.abspath(path):
-                    try:
-                        os.remove(old)
-                    except Exception:
-                        pass
-            logging.info(f"Autosaved garden to {path}")
+            # Big harvests make this slow (tens of thousands of seeds: the
+            # indented file took over a second). Now: compact text (about
+            # 5x faster, less than half the size), made here, and written
+            # to disk by a background thread so the game doesn't wait.
+            text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+            import threading as _thr
+
+            def _write(text=text, path=path):
+                try:
+                    tmp = path + ".tmp"
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        f.write(text)
+                    os.replace(tmp, path)
+                    for old in _glob.glob(os.path.join(data_dir, "garden_Autosave_*.json")):
+                        if os.path.abspath(old) != os.path.abspath(path):
+                            try:
+                                os.remove(old)
+                            except Exception:
+                                pass
+                    logging.info(f"Autosaved garden to {path}")
+                except Exception:
+                    logging.error("Autosave (writing) failed", exc_info=True)
+
+            if getattr(self, "_closing", False):
+                _write()                     # closing: written right away
+            else:
+                t = _thr.Thread(target=_write, daemon=False)
+                self._autosave_thread = t
+                t.start()
             return True
         except Exception:
             logging.error("Autosave failed", exc_info=True)
@@ -15975,6 +16992,16 @@ class GardenApp(InspectorMixin):
         try:
             if _mixer_ready:
                 pygame.mixer.stop()
+        except Exception:
+            pass
+        # cancel the timers still waiting (otherwise Tk prints a list of
+        # "invalid command name ..." errors while the window closes)
+        try:
+            for _a in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+                try:
+                    self.root.after_cancel(_a)
+                except Exception:
+                    pass
         except Exception:
             pass
         try:
@@ -16026,6 +17053,13 @@ class GardenApp(InspectorMixin):
         if choice == "tutorial":
             try:
                 self.root.after(200, self._start_tutorial)
+            except Exception:
+                pass
+            return
+        if choice == "missions":
+            self._remember_realm("garden")
+            try:
+                self.root.after(200, self._open_missions)
             except Exception:
                 pass
             return
@@ -16125,6 +17159,12 @@ class GardenApp(InspectorMixin):
                 save_data['realm'] = 'tutorial'
                 save_data['tutorial_part_done'] = int(getattr(self, "_tutorial_part_done", 0) or 0)
                 save_data['tutorial_day_length_s'] = float(getattr(self, "day_length_s", 1.0))
+                # how far parts 4 and 5 got (they have no part numbers of their own)
+                try:
+                    import tutorial as _tut
+                    save_data['tutorial_later_steps'] = _tut._later_steps(self)
+                except Exception:
+                    pass
             else:
                 save_data['realm'] = 'garden'
             
@@ -16593,6 +17633,7 @@ class GardenApp(InspectorMixin):
                 _tut._resume_tutorial(self, {
                     "garden": save_data,
                     "tutorial_part_done": pd,
+                    "later_steps": save_data.get("tutorial_later_steps"),
                     "day_length_s": save_data.get("tutorial_day_length_s", 1.0),
                 }, was_active=bool(getattr(self, "_tutorial_active", False)))
                 self._toast("Back in the tutorial.", level="info")
@@ -16655,7 +17696,7 @@ class GardenApp(InspectorMixin):
             if not cached_path_exists(img_path):
                 self._toast("Monastery artwork not found.", level="warn")
                 return
-            self._ring_bell()
+            self._ring_bell(full=False)
 
             pil_img = Image.open(img_path).convert("RGBA")
             scale = 0.25
@@ -16858,6 +17899,28 @@ class GardenApp(InspectorMixin):
             canvas.tag_bind(ach_poly_id, "<Leave>", _on_leave_ach)
             canvas.tag_bind(ach_poly_id, "<Button-1>", _on_click_ach)
 
+            # "Greenhouse" — the missions board (Mendel had a greenhouse
+            # built for his experiments in 1854).
+            raw_points_gh = [752, 1610, 760, 1720, 855, 1795, 1240, 1532,
+                             1250, 1425, 1175, 1342, 775, 1585]
+            gh_poly_id = canvas.create_polygon(
+                *[p * scale for p in raw_points_gh], fill="", outline="", width=2,
+            )
+
+            def _on_enter_gh(event=None):
+                legend_var.set("Greenhouse (Missions)")
+                canvas.itemconfig(gh_poly_id, outline="#4f7d3a", width=4)
+                canvas.config(cursor="hand2")
+
+            def _on_leave_gh(event=None):
+                legend_var.set("")
+                canvas.itemconfig(gh_poly_id, outline="", width=2)
+                canvas.config(cursor="")
+
+            canvas.tag_bind(gh_poly_id, "<Enter>", _on_enter_gh)
+            canvas.tag_bind(gh_poly_id, "<Leave>", _on_leave_gh)
+            canvas.tag_bind(gh_poly_id, "<Button-1>", lambda e: self._open_missions())
+
             # "Study rooms" — for now opens the Help / Legend window.
             # (shifted 2 px up and 2 px left of the measured outline)
             raw_points_study = [1557, 1359, 1547, 1334, 1510, 1280, 1454, 1210,
@@ -16945,6 +18008,7 @@ class GardenApp(InspectorMixin):
         self._set_garden_only_portrait(DEFAULT_GARDEN_ONLY_PORTRAIT)
         self._health_hearts_var.set(DEFAULT_HEALTH_HEARTS_ENABLED)
         self._set_health_hearts_enabled(DEFAULT_HEALTH_HEARTS_ENABLED)
+        self._set_portrait_weather_anim(DEFAULT_PORTRAIT_WEATHER_ANIM)
         self._texture_blur_var.set(DEFAULT_TEXTURE_BLUR_PCT)
         self._set_texture_blur(DEFAULT_TEXTURE_BLUR_PCT)
         self._set_stone_size_px(DEFAULT_STONE_SIZE_PX)
@@ -17219,6 +18283,8 @@ class GardenApp(InspectorMixin):
                    lambda: self._set_garden_only_portrait(self._garden_only_var.get()))
             _check(panel, "Health: show as hearts", self._health_hearts_var,
                    lambda: self._set_health_hearts_enabled(self._health_hearts_var.get()))
+            _check(panel, "Animate rain and snow in Mendel's picture", self._portrait_weather_var,
+                   lambda: self._set_portrait_weather_anim(self._portrait_weather_var.get()))
 
             _subheading(panel, "Plant Style")
             if getattr(self, "_plant_style_var", None) is None:
@@ -17595,6 +18661,8 @@ class GardenApp(InspectorMixin):
                     'mother_id': getattr(tile.plant, 'mother_id', None),
                     'father_id': getattr(tile.plant, 'father_id', None),
                     'selfed':    getattr(tile.plant, 'selfed', False),
+                    'seed_parent_id': getattr(tile.plant, 'seed_parent_id', None),
+                    'pollen_parent_id': getattr(tile.plant, 'pollen_parent_id', None),
                     # Pod provenance — needed by TIE to group siblings by pod
                     'source_pod_index': getattr(tile.plant, 'source_pod_index', None),
                     'is_weak': getattr(tile.plant, 'is_weak', False),
@@ -17695,7 +18763,8 @@ class GardenApp(InspectorMixin):
         if hasattr(self, 'archive') and isinstance(self.archive, dict):
             # Normalize to string keys to prevent int/str key collisions in JSON
             archive_data = {
-                'plants': {str(k): v for k, v in self.archive.get('plants', {}).items()}
+                'plants': {str(k): v for k, v in self.archive.get('plants', {}).items()},
+                'pod_seeds': {str(k): v for k, v in (self.archive.get('pod_seeds') or {}).items()},
             }
 
         # Serialize lineage_store (TIE reads from both archive and lineage_store)
@@ -17716,6 +18785,9 @@ class GardenApp(InspectorMixin):
             'law2_ratio_ui':       getattr(self, 'law2_ratio_ui', ''),
             'law3_ratio_ui':       getattr(self, 'law3_ratio_ui', ''),
             '_genotype_revealed':  getattr(self, '_genotype_revealed', False),
+            'active_mission':      getattr(self, '_active_mission', None),
+            'active_mission_params': getattr(self, '_active_mission_params', None),
+            'inspected_traits':    getattr(self, '_inspected_traits', None) or {},
         }
 
         # Compile everything
@@ -17839,8 +18911,10 @@ class GardenApp(InspectorMixin):
         archive_data = save_data.get('archive')
         if archive_data and isinstance(archive_data, dict):
             self.archive['plants'] = archive_data.get('plants', {})
+            self.archive['pod_seeds'] = archive_data.get('pod_seeds', {}) or {}
         else:
             self.archive['plants'] = {}
+            self.archive['pod_seeds'] = {}
 
         # Restore lineage_store and merge with archive so TIE has the full picture
         if not hasattr(self, 'lineage_store'):
@@ -17882,6 +18956,13 @@ class GardenApp(InspectorMixin):
         self.law2_ratio_ui        = law_flags.get('law2_ratio_ui', 'Ratio __:__')
         self.law3_ratio_ui        = law_flags.get('law3_ratio_ui', 'Ratio __:__:__:__')
         self._genotype_revealed   = law_flags.get('_genotype_revealed', False)
+        self._active_mission      = law_flags.get('active_mission', None)
+        self._active_mission_params = law_flags.get('active_mission_params', None)
+        self._inspected_traits    = dict(law_flags.get('inspected_traits', None) or {})
+        try:
+            self._refresh_mission_indicator()
+        except Exception:
+            pass
 
         # NOTE: do NOT call _seed_archive_safe() here — garden.plants is still
         # empty at this point (plants are placed on tiles further below).
@@ -18051,6 +19132,8 @@ class GardenApp(InspectorMixin):
             plant.mother_id = plant_data.get('mother_id')
             plant.father_id = plant_data.get('father_id')
             plant.selfed    = plant_data.get('selfed', False)
+            plant.seed_parent_id = plant_data.get('seed_parent_id')
+            plant.pollen_parent_id = plant_data.get('pollen_parent_id')
             plant.is_weak              = plant_data.get('is_weak', False)
             plant.weak_blocks_flowering = plant_data.get('weak_blocks_flowering', False)
             # older saves: normal pace, so nothing changes for those plants
@@ -18614,7 +19697,12 @@ class GardenApp(InspectorMixin):
         # exclusively by _season_daily_update on day change, which is the correct
         # granularity for a daily simulation.
         try:
-            self.root.after(500, self._season_poll)
+            if getattr(self, "_season_poll_job", None) is not None:
+                try:
+                    self.root.after_cancel(self._season_poll_job)    # never two chains
+                except Exception:
+                    pass
+            self._season_poll_job = self.root.after(500, self._season_poll)
         except Exception:
             pass
 
@@ -18905,7 +19993,7 @@ class GardenApp(InspectorMixin):
         if getattr(self, "_tutorial_active", False):
             if getattr(self, "_tut_no_sowing", False):
                 try:
-                    self._toast("Not yet — Friar Cyril has a word for you first.", level="info")
+                    self._toast("Not yet — Abbot Cyril has a word for you first.", level="info")
                 except Exception:
                     pass
                 return False
@@ -18913,7 +20001,7 @@ class GardenApp(InspectorMixin):
                 month = int(getattr(self.garden, "month", 4))
             except Exception:
                 month = 4
-            if month not in (3, 4, 5):
+            if month not in (3, 4, 5) and not getattr(self, "_tut_sow_any_season", False):
                 try:
                     self._toast("No sowing now — Gregor sows his peas only in spring (March to May).", level="warn")
                 except Exception:
@@ -19062,6 +20150,19 @@ class GardenApp(InspectorMixin):
                     pidx = get(p, "source_pod_index", get(p, "pod_index", None))
                     if pidx is not None:
                         snap["source_pod_index"] = pidx
+                    for _k in ("seed_parent_id", "pollen_parent_id"):
+                        if get(p, _k, None) is not None:
+                            snap[_k] = get(p, _k, None)
+                    # Discovered traits (TIE shows only these); never shrink
+                    try:
+                        _rt = dict(get(p, "revealed_traits", None) or {})
+                        _old = self.archive["plants"].get(str(pid)) or {}
+                        if isinstance(_old, dict) and isinstance(_old.get("revealed_traits"), dict):
+                            _rt = {**_old["revealed_traits"], **_rt}
+                        if hasattr(p, "revealed_traits") or _rt:
+                            snap["revealed_traits"] = _rt
+                    except Exception:
+                        pass
                     # Always use str key so it matches the JSON-loaded archive entries
                     self.archive["plants"][str(pid)] = snap
                     count += 1
@@ -19071,14 +20172,37 @@ class GardenApp(InspectorMixin):
         except Exception:
             return False
         
+    def _tie_allowed(self):
+        """The TIE (and revealing alleles) — not in the tutorial until
+        Abbot Cyril shows it (part 5)."""
+        return (not getattr(self, "_tutorial_active", False)
+                or bool(getattr(self, "_tut_allow_tie", False)))
+
     def open_history_archive_browser(self, parent_window, default_pid=None):
-        if getattr(self, "_tutorial_active", False):
-            return          # TIE is not available during the tutorial
+        if not self._tie_allowed():
+            return          # TIE is not available during the tutorial (until part 5)
         # Central construction point for every TIE window regardless of
         # caller (the inspector's button, the Genotype Explorer, etc.) —
         # hooking the topmost-yield here covers all of them at once.
         tie = TraitInheritanceExplorer(parent_window, self, default_pid=default_pid)
+        self._tie_win = tie
         self._let_window_go_above_inspector(tie)
+        if getattr(self, "_tutorial_active", False):
+            # leave the status bar (Abbot Cyril's lines) at the bottom free
+            try:
+                sw, sh = tie.winfo_screenwidth(), tie.winfo_screenheight()
+                tie._max_h_cap = max(420, sh - 300)
+                tie.state("normal")
+                # (it sizes and places itself for the sections Cyril opens)
+            except Exception:
+                pass
+            # in the tutorial the TIE stays the top window (Cyril talks
+            # about it; nothing may cover it)
+            try:
+                tie.attributes("-topmost", True)
+                tie.after(800, tie.lift)
+            except Exception:
+                pass
 
     def _repair_traitless_archive_entries(self):
         """
@@ -19296,6 +20420,15 @@ class GardenApp(InspectorMixin):
             geno = g(plant, "genotype", None)
             if geno:
                 snap["genotype"] = geno
+            # Which traits the player has discovered so far — the TIE shows
+            # only these (plus the planted seed's colour and shape).
+            _rt = g(plant, "revealed_traits", None)
+            if isinstance(_rt, dict):
+                snap["revealed_traits"] = dict(_rt)
+            # the real seed / pollen parent (see plant_seed)
+            for _k in ("seed_parent_id", "pollen_parent_id"):
+                if g(plant, _k, None) is not None:
+                    snap[_k] = g(plant, _k, None)
             # Also carry source_pod_index from the live plant if present
             spidx = g(plant, "source_pod_index", None)
             if spidx is not None:
@@ -19313,6 +20446,11 @@ class GardenApp(InspectorMixin):
                 for field in ("traits", "genotype", "ancestry", "paternal_ancestry"):
                     if not snap.get(field) and existing.get(field):
                         merged[field] = existing[field]
+                # Discovered traits only ever grow
+                if isinstance(existing.get("revealed_traits"), dict):
+                    _m = dict(existing["revealed_traits"])
+                    _m.update(snap.get("revealed_traits") or {})
+                    merged["revealed_traits"] = _m
                 snap = merged
             plants[str(pid)] = snap   # always string key — consistent with seed_archive_from_live
             return True
@@ -19543,6 +20681,8 @@ class _PlantRenderPool:
     def __init__(self, n=None):
         import subprocess, threading, queue
         self.ok = False
+        self.why = ""                       # why the helpers are not (or no longer) working
+        self.n = 0
         self.jobs = {}                      # job id -> (plant, key, args)
         self._q = queue.Queue()
         self._procs = []
@@ -19551,19 +20691,30 @@ class _PlantRenderPool:
         script = os.path.join(_SIM_DIR, "pea_worker.py")
         exe = sys.executable or ""
         if getattr(sys, "frozen", False) or not exe or not os.path.exists(script):
+            self.why = ("pea_worker.py missing" if not os.path.exists(script)
+                        else "no Python interpreter to start them")
+            print(f"[render helpers] not started: {self.why}")
             return
         if n is None:
             n = max(1, min(3, (os.cpu_count() or 2) - 1))
         flags = 0x08000000 if os.name == "nt" else 0          # no console window
+        # the helpers' error messages go to a log file next to the game
+        # (if one fails on some computer, the reason can be read there)
+        try:
+            self._errlog = open(os.path.join(_SIM_DIR, "pea_worker_errors.log"), "ab")
+        except Exception:
+            self._errlog = subprocess.DEVNULL
         for _ in range(n):
             p = subprocess.Popen([exe, "-u", script], stdin=subprocess.PIPE,
-                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=self._errlog,
                                  cwd=_SIM_DIR, creationflags=flags)
             k = len(self._procs)
             self._procs.append(p)
             self._load.append(0)
             threading.Thread(target=self._reader, args=(k, p), daemon=True).start()
         self.ok = True
+        self.n = n
+        print(f"[render helpers] {n} started ({sys.platform}, {os.cpu_count()} CPU cores)")
         import atexit
         atexit.register(self.close)
 
@@ -19577,8 +20728,16 @@ class _PlantRenderPool:
         except Exception:
             if self.ok:
                 self.ok = False             # a helper ended: fall back to drawing in-game
+                try:
+                    code = p.poll()
+                except Exception:
+                    code = None
+                self.why = f"a helper ended (exit code {code}) — see pea_worker_errors.log"
+                print(f"[render helpers] {self.why}; plants are drawn in the game itself now")
 
-    def submit(self, plant, key, args, size, traits):
+    def submit(self, plant, key, args, size, traits, extra=None):
+        """extra: what the result is for (None = the plant's tile picture;
+        ("tframe", n) = a bent-tendril frame)."""
         import pickle
         if not self.ok:
             return False
@@ -19595,7 +20754,7 @@ class _PlantRenderPool:
             self.ok = False
             return False
         self._load[k] += 1
-        self.jobs[jid] = (plant, key, args)
+        self.jobs[jid] = (plant, key, args, extra)
         return True
 
     def drain(self):
@@ -19642,6 +20801,22 @@ def _save_plant_style(style):
 # the horizontal fill bar — a purely cosmetic display preference,
 # persisted the same way as the other Game Settings toggles above.
 DEFAULT_HEALTH_HEARTS_ENABLED = True
+
+
+DEFAULT_PORTRAIT_WEATHER_ANIM = True
+
+
+def _load_portrait_weather_anim():
+    try:
+        return bool(_load_display_settings().get("portrait_weather_anim", DEFAULT_PORTRAIT_WEATHER_ANIM))
+    except Exception:
+        return DEFAULT_PORTRAIT_WEATHER_ANIM
+
+
+def _save_portrait_weather_anim(enabled):
+    settings = _load_display_settings()
+    settings["portrait_weather_anim"] = bool(enabled)
+    _save_display_settings(settings)
 
 
 def _load_health_hearts_enabled():
@@ -19905,6 +21080,19 @@ def _ask_grid_size(root, existing_config=None):
     return rows, cols, show_dialog_next_time
 #%% Main entry point
 def main():
+    # A hard crash (Tk itself, e.g. on a Mac) cannot be caught by Python:
+    # faulthandler writes where it happened into crash_log.txt.
+    try:
+        import faulthandler
+        _crash_f = open(os.path.join(_SIM_DIR, "crash_log.txt"), "a", encoding="utf-8")
+        import datetime as _dt
+        _crash_f.write(f"\n--- started {_dt.datetime.now():%Y-%m-%d %H:%M:%S} "
+                       f"({sys.platform}, Python {sys.version.split()[0]}) ---\n")
+        _crash_f.flush()
+        faulthandler.enable(file=_crash_f, all_threads=True)
+        globals()["_CRASH_LOG_FILE"] = _crash_f       # kept open for the whole run
+    except Exception:
+        pass
     root = tk.Tk()
     handler = CrashHandler()
     handler.install()
@@ -19953,13 +21141,15 @@ def main():
         # was never being reached there. Branch on the real platform
         # instead of hoping the exception fires correctly (found and fixed
         # the same bug in traitinheritanceexplorer.py's maximize call).
-        if sys.platform == "darwin":
-            root.attributes('-zoomed', True)
-        else:
+        # (macOS Aqua knows the "zoomed" state but has no "-zoomed"
+        # attribute — that call failed silently there)
+        try:
+            root.state('zoomed')
+        except Exception:
             try:
-                root.state('zoomed')
-            except Exception:
                 root.attributes('-zoomed', True)  # some Linux window managers
+            except Exception:
+                root.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight() - 80}+0+0")
     except Exception:
         pass
 
@@ -20005,6 +21195,12 @@ def main():
         pass
     try:
         app._schedule_autosave()
+    except Exception:
+        pass
+    # Missions complete by themselves as the garden gets there (missions.py)
+    try:
+        import missions as _missions
+        _missions.start_watch(app)
     except Exception:
         pass
 

@@ -60,6 +60,45 @@ class _FlatButton(tk.Label):
     config = configure
 
 
+
+# The parts of the pea flower named on the emasculation picture:
+# (name, point it names, where the name sits), in the picture's own pixels.
+FLOWER_PART_LABELS = [
+    ("Stigma",     (479, 329), (600, 245)),
+    ("Anthers",    (510, 462), (630, 560)),
+    ("Filaments",  (377, 452), (250, 575)),
+]
+FLOWER_PETALS_NOTE = ("Petals: standard (top), two wings (sides) and the keel, "
+                      "which encloses the anthers and the stigma.")
+
+
+def draw_flower_labels(canvas, scale, width, height, tag="part_label"):
+    """Names the main parts of the flower on the canvas: a thin leader
+    line from each name to its part. Returns {name: [canvas items]}."""
+    out = {}
+    pad = 6
+    for name, (px, py), (lx, ly) in FLOWER_PART_LABELS:
+        x0, y0 = px * scale, py * scale
+        x1 = min(max(lx * scale, 40), width - 40)
+        y1 = min(max(ly * scale, 14), height - 14)
+        items = []
+        items.append(canvas.create_line(x1, y1, x0, y0, fill="#ffffff", width=3, tags=tag))
+        items.append(canvas.create_line(x1, y1, x0, y0, fill=INK, width=1, tags=tag))
+        items.append(canvas.create_oval(x0 - 3, y0 - 3, x0 + 3, y0 + 3, fill="#ffffff",
+                                        outline=INK, tags=tag))
+        t = canvas.create_text(x1, y1, text=name, fill=INK,
+                               font=("Segoe UI", 11, "bold"), tags=tag)
+        bx = canvas.bbox(t)
+        if bx:
+            r = canvas.create_rectangle(bx[0] - pad, bx[1] - 2, bx[2] + pad, bx[3] + 2,
+                                        fill=BG, outline=MUTED, tags=tag)
+            canvas.tag_raise(t, r)
+            items.append(r)
+        items.append(t)
+        out[name] = items
+    return out
+
+
 class EmasculationDialog(tk.Toplevel):
     """
     Interactive dialog for plant emasculation.
@@ -221,7 +260,7 @@ class EmasculationDialog(tk.Toplevel):
         
         # Draw flower image first (at the back)
         if self.flower_image:
-            self.canvas.create_image(
+            self._flower_item = self.canvas.create_image(
                 self.canvas_width // 2,
                 self.canvas_height // 2,
                 image=self.flower_image
@@ -241,6 +280,19 @@ class EmasculationDialog(tk.Toplevel):
         
         # Create anthers AFTER flower so they're on top
         self._create_anthers()
+
+        # the names of the main parts of the flower
+        try:
+            self._part_labels = draw_flower_labels(self.canvas, self.scale_factor,
+                                                   self.canvas_width, self.canvas_height)
+            if getattr(self, "_flower_item", None):
+                self.canvas.tag_lower("part_label")
+                self.canvas.tag_raise("part_label", self._flower_item)
+            if self.cursor_icon:
+                self.canvas.tag_raise(self.cursor_icon)
+        except Exception as e:
+            print(f"Could not draw the flower labels: {e}")
+            self._part_labels = {}
         
         # Bind click event
         self.canvas.bind("<Button-1>", self._on_canvas_click)
@@ -253,6 +305,10 @@ class EmasculationDialog(tk.Toplevel):
         # Set default cursor
         self.canvas.config(cursor="crosshair")
         
+        tk.Label(self, text=FLOWER_PETALS_NOTE, font=("Segoe UI", 10, "italic"),
+                 bg=BG, fg=MUTED, wraplength=max(260, self.canvas_width),
+                 justify="center").pack(padx=20, pady=(0, 2))
+
         # Success message frame (pre-allocated, initially empty)
         self.success_frame = tk.Frame(self, bg=BG, height=0)
         self.success_frame.pack(fill="x", padx=10, pady=(5, 0))
@@ -459,6 +515,7 @@ class EmasculationDialog(tk.Toplevel):
         
         # Check if hovering over an anther
         hovering = False
+        near = False
         for anther in self.anthers:
             if anther["removed"]:
                 continue
@@ -467,6 +524,10 @@ class EmasculationDialog(tk.Toplevel):
             dy = event.y - anther["y"]
             distance = math.sqrt(dx * dx + dy * dy)
             
+            # the forceps already show in a wider area around the anthers;
+            # picking (highlight + click) still needs the anther itself
+            if distance < self.click_tolerance * 3.0:
+                near = True
             if distance < self.click_tolerance:  # Use scaled tolerance
                 hovering = True
                 # Highlight the anther with thicker bright orange outline
@@ -478,7 +539,7 @@ class EmasculationDialog(tk.Toplevel):
         
         # Update cursor (the closed forceps stay in view while they are
         # closed — no crosshair in between)
-        if hovering or getattr(self, "_forceps_closed", False):
+        if hovering or near or getattr(self, "_forceps_closed", False):
             if self.has_custom_cursor and self.cursor_icon:
                 # Show custom tweezer cursor icon at mouse position
                 # bottom-left corner (the tips) on the mouse point
@@ -513,7 +574,7 @@ class EmasculationDialog(tk.Toplevel):
         self.canvas.coords(self.cursor_icon, ptr[0] - tx - FORCEPS_TIP_DX,
                            ptr[1] - ty + FORCEPS_TIP_DY)
 
-    FORCEPS_CLOSED_MIN_MS = 300     # the forceps stay closed at least this long
+    FORCEPS_CLOSED_MIN_MS = 150     # the forceps stay closed at least this long
 
     def _forceps_release(self):
         """Mouse button up: the forceps open again — but only once they

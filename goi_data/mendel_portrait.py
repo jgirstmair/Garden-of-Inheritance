@@ -190,7 +190,8 @@ def _night_image(path, step):
 # ---- Rain: dimmed picture with slanted streaks falling ---------------------
 _RAIN_FRAMES = 10
 _WINTER_HOURS = (6, 14, 22)    # winter: Mendel only appears at the weather measurements
-_RAIN_LEAVE_DELAY_H = 2         # simulated hours of rain before Gregor goes indoors
+_RAIN_LEAVE_DELAY_S = 5.0       # real seconds of rain before Gregor goes indoors
+                                # (real time, so it works at every speed)
 _RAIN_FRAME_MS = 100
 _RAIN_STYLES = {            # name -> (streaks per 158x265 px, dimming 0-1)
     "rain": (130, 0.85),
@@ -201,7 +202,14 @@ _SNOW_FRAMES = 48               # snow falls slowly, so its loop is longer
 
 
 def _frame_ms(style):
-    return _RAIN_FRAME_MS
+    # On a Mac every new picture makes Tk repaint far more of the window,
+    # so the rain there falls at half the frame rate (still smooth).
+    return _RAIN_FRAME_MS * (2 if sys.platform == "darwin" else 1)
+
+
+def _anim_on(app):
+    """Game Settings > "Animate rain and snow in Mendel's picture"."""
+    return bool(getattr(app, "_portrait_weather_anim", True))
 
 
 def _nframes(style):
@@ -257,7 +265,7 @@ def _rain_overlay_frames(size, style):
     return frames
 
 
-def _rain_image(path, style, frame, step=0, flash=False):
+def _rain_image(path, style, frame, step=0, flash=False, whole_loop=True):
     """The picture at `path`, dimmed, with rain streaks (animation frame
     `frame`). PhotoImages are kept only for the picture currently shown,
     so memory stays small; the overlays themselves are built once."""
@@ -267,7 +275,7 @@ def _rain_image(path, style, frame, step=0, flash=False):
     key = (path, style, step, frame, flash)
     if key in _rain_photos:
         return _rain_photos[key]
-    if not _rain_photos and not flash:                              # first frame of this picture:
+    if not _rain_photos and not flash and whole_loop:               # first frame of this picture:
         for f in range(_nframes(style)):               # build the whole loop now so
             if f != frame % _nframes(style):              # the animation never stalls
                 _rain_image_build(path, style, f, step, False)
@@ -443,18 +451,23 @@ class MendelPortrait:
             return None
 
     def _rain_away(self):
-        """True once it has been raining for _RAIN_LEAVE_DELAY_H simulated
-        hours — Gregor doesn't run indoors the instant the first drop
-        falls. Not in the tutorial."""
+        """True once it has been raining for _RAIN_LEAVE_DELAY_S seconds —
+        Gregor doesn't run indoors the instant the first drop falls, but
+        doesn't stay out for long either (real seconds, not game hours,
+        so it is the same at every speed, Real Time included)."""
+        import time as _t
         if not self._raining():
             self._rain_started = None
             return False
-        now = self._sim_hours()
-        if now is None:
-            return True
+        now = _t.monotonic()
         if self._rain_started is None:
             self._rain_started = now
-        return now - self._rain_started >= _RAIN_LEAVE_DELAY_H
+            # look again once the time is up, even if nothing else changes
+            try:
+                self.label.after(int(_RAIN_LEAVE_DELAY_S * 1000) + 150, self.refresh)
+            except Exception:
+                pass
+        return now - self._rain_started >= _RAIN_LEAVE_DELAY_S
 
     def _rain_style(self):
         """"rain" / "storm" while it rains (never in the tutorial or while
@@ -492,6 +505,13 @@ class MendelPortrait:
                     return
             except Exception:
                 pass
+            if not _anim_on(self.app):
+                # still picture: no frames, only a look once a second
+                # whether the weather or the picture has changed
+                self._apply()
+                if self._shown and "rain" in self._shown and self._rain_job is None:
+                    self._rain_job = self.app.root.after(1000, self._rain_anim_tick)
+                return
             self._rain_ticks += 1
             self._rain_frame = (self._rain_frame + 1) % _nframes(style or "rain")
             ctx = self._rain_ctx
@@ -641,7 +661,8 @@ class MendelPortrait:
         try:
             img = None
             if rain:
-                img = _rain_image(path, rain, self._rain_frame, step, self._lightning)
+                img = _rain_image(path, rain, self._rain_frame, step, self._lightning,
+                                  whole_loop=_anim_on(self.app))
             if img is None:
                 img = _night_image(path, step) if step > 0 else None
             if img is None:
@@ -652,7 +673,8 @@ class MendelPortrait:
             # Keep the rain falling (about 10 swaps a second between
             # pictures that are already built — very cheap).
             if rain and self._rain_job is None:
-                self._rain_job = self.app.root.after(_frame_ms(rain), self._rain_anim_tick)
+                self._rain_job = self.app.root.after(
+                    _frame_ms(rain) if _anim_on(self.app) else 1000, self._rain_anim_tick)
         except Exception:
             pass
 

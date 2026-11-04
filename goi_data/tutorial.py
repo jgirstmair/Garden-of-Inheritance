@@ -684,13 +684,19 @@ LECTURE_SPRING_DIALOGUE = [
      {"mood": 2}),
     ("Cyril", "Sow as many seeds as you please.",
      {"highlight_words": ["as many seeds as you please"], "pause": True}),
-    ("Cyril", "And call me when they begin to bud.",
-     {"highlight_words": ["begin to bud"]}),
+    # Part 4 crosses a white mother with a purple father: both are needed.
+    ("Cyril", "But be sure to sow seeds of your white-flowering and of your purple-flowering plants.",
+     {"highlight_words": ["white-flowering", "purple-flowering"], "pause": True}),
+    # No seeds of one colour left? Cyril hands over a few (true-breeding).
+    ("Cyril", lambda app: _missing_colour_line(app),
+     {"highlight_words": ["take a few of mine"], "skip_if": "both_colours_available",
+      "give_colour_seeds": True, "pause": True}),
     # Garden 2 opens with this line (it stays closed in the tutorial
     # until now — see GardenApp._plot_open).
     ("Cyril", "Oh, and there’s another strip of garden available to you.",
      {"highlight_words": ["another strip of garden"], "highlight_target": "plot2_button",
-      "open_plot2": True, "pause": True}),
+      "open_plot2": True, "pause": True, "no_skip": True,
+      "wait_for_condition": "plot2_shown"}),          # the player opens garden 2
     ("Cyril", "Feel free to use it whenever you need to."),
     # Fast Forward to the next sunny morning before sowing: sowing stays
     # blocked from the start of this visit until then (see _watch_for_spring
@@ -706,9 +712,17 @@ LECTURE_SPRING_DIALOGUE = [
       "pause": True, "no_skip": True, "wait_for_condition": "sunny_skip_used",
       "release_sun": True}),
     ("Cyril", "Ah, there you go.",
-     {"mood": 2, "allow_sowing": True}),
+     {"mood": 2, "allow_sowing": True, "real_time": True}),
     ("Cyril", "A fine sunny morning, just right for sowing and crossing!",
-     {"mood": 2, "highlight_words": ["sowing and crossing"], "auto_advance_ms": 5000}),
+     {"mood": 2, "highlight_words": ["sowing and crossing"], "pause": True}),
+    # Waits until plants of both flower colours grow (Cyril hands over
+    # seeds of a colour that cannot be sown any more, see _both_colours_sown).
+    ("Cyril", "Sow your seeds now, and remember: white-flowering and purple-flowering ones.",
+     {"highlight_words": ["white-flowering", "purple-flowering"], "highlight_target": "plant_button",
+      "unlock_buttons": ["plant_seeds_btn"], "pause": True, "no_skip": True,
+      "wait_for_condition": "both_colours_sown"}),
+    ("Cyril", "Good, both colours are in the ground. Call me when they begin to bud.",
+     {"mood": 2, "highlight_words": ["both colours"], "auto_advance_ms": 5000}),
 ]
 
 
@@ -737,19 +751,24 @@ LECTURE_CROSS_1_DIALOGUE = [
      {"highlight_words": ["two parents"]}),
     ("Cyril", "They should differ in one trait you can clearly see.",
      {"pause": True}),
-    ("Cyril", "A purple-flowering plant and a white one, for example.",
-     {"highlight_words": ["purple-flowering", "white one"]}),
+    # The mother's colour: white if a white plant has a bud, otherwise
+    # purple (and the father the other colour), see _choose_mother_colour.
+    ("Cyril", lambda app: (f"Let us take a {_choose_mother_colour(app)}-flowering plant as the mother, "
+                           f"and a {_other_colour(_choose_mother_colour(app))} one as the father."),
+     {"highlight_words": ["white-flowering plant as the mother", "purple one as the father",
+                         "purple-flowering plant as the mother", "white one as the father"],
+      "pause": True}),
     ("Cyril", "Then we’ll see whose flower colour their offspring inherit."),
     ("Cyril", "As you know, the mother must not pollinate herself."),
     ("Cyril", "So you take away her anthers while the flower is still a bud.",
      {"highlight_words": ["take away her anthers", "still a bud"], "pause": True}),
     # Waits until a plant with buds is shown in the inspection window
     # (opened with every section closed).
-    ("Cyril", "Now, select the plant you want as the mother and inspect it.",
-     {"highlight_words": ["mother", "inspect"], "highlight_target": "inspect_button",
+    ("Cyril", lambda app: f"Now, select a {_tut_mother_colour(app)}-flowering plant as the mother and inspect it.",
+     {"highlight_words": ["white-flowering", "purple-flowering", "mother", "inspect"], "highlight_target": "inspect_button",
       "portrait": "mendel", "pause": True, "no_skip": True,
       "unlock_buttons": ["inspect_btn"], "inspector_closed": True,
-      "wait_for_condition": "budding_plant_inspected", "highlight_plants": 4}),
+      "wait_for_condition": "white_budding_inspected", "highlight_plants": "white_buds"}),
     # Waits until the Crossing section is open.
     ("Cyril", "Open »Crossing«. There you see all its buds and flowers.",
      {"highlight_words": ["Crossing"], "highlight_target": "inspector_crossing_toggle",
@@ -795,7 +814,8 @@ LECTURE_CROSS_2_DIALOGUE = [
      {"highlight_words": ["dry out"], "pause": True}),
     # Cyril has chosen the father: a plant whose pollen is ripe right now
     # (see _pick_tutorial_father) — it is marked in the garden.
-    ("Cyril", "I found a plant with fresh pollen this morning and marked it for you.",
+    ("Cyril", lambda app: (f"I found a {_father_colour(app)}-flowering plant with fresh pollen "
+                           f"this morning and marked it for you."),
      {"highlight_words": ["fresh pollen", "marked"], "highlight_plants": "father",
       "pause": True, "real_time": True}),
     # Waits until that plant is shown in the inspection window.
@@ -855,7 +875,13 @@ LECTURE_CROSS_2_DIALOGUE = [
     ("Mendel", "So these seeds will have two parents: this mother, and the father I chose.",
      {"portrait": "mendel", "highlight_words": ["two parents"], "pause": True}),
     ("Cyril", "Yes, if all went well."),
-    ("Cyril", "Sometimes a little beetle brings pollen from other plants, God knows which one!"),
+    # (Mendel 1866: the closed keel protects the pea flower; only the pea
+    # beetle Bruchus pisi now and then brings foreign pollen)
+    ("Cyril", "Bees and butterflies may visit, but the pea keeps its flower closed and pollinates itself.",
+     {"highlight_words": ["keeps its flower closed"], "pause": True}),
+    ("Cyril", "Only a little beetle sometimes creeps inside,",
+     {"highlight_words": ["little beetle"]}),
+    ("Cyril", "bringing pollen from other plants, God knows which one!"),
     ("Cyril", "Be sure to catch it whenever you spot one.",
      {"highlight_words": ["catch it"], "pause": True}),
     # Points at the inspection window's »Wildlife« tab (if the window is
@@ -863,8 +889,8 @@ LECTURE_CROSS_2_DIALOGUE = [
     ("Cyril", "Under »Wildlife« in the inspection window you can see what it looks like.",
      {"highlight_words": ["Wildlife"], "highlight_target": "inspector_wildlife_toggle",
       "highlight_late": True, "glow_targets": ["inspector_wildlife_toggle"], "pause": True}),
-    ("Cyril", "That is why you have to work so carefully.",
-     {"highlight_words": ["work so carefully"], "auto_advance_ms": 3000}),
+    ("Cyril", "Another reason why you must always pay close attention.",
+     {"highlight_words": ["pay close attention"], "auto_advance_ms": 3000}),
     ("Cyril", "One more thing: You may wish to make a few notes for each plant.",
      {"highlight_words": ["make a few notes"], "pause": True}),
     # Waits until a note has been saved (»Make note« in the inspection
@@ -880,10 +906,18 @@ LECTURE_CROSS_2_DIALOGUE = [
 LECTURE_CROSS_3_DIALOGUE = [
     ("Mendel", "Cyril, the pod of my cross is ripe!",
      {"portrait": "mendel", "highlight_words": ["my cross", "ripe"], "pause": True}),
-    # Waits until the crossed pod has been harvested.
     ("Cyril", "Then harvest it. Its seeds are the first children (F1) of your own cross.",
-     {"highlight_words": ["harvest it"], "portrait": "mendel", "pause": True,
+     {"highlight_words": ["first children (F1)"], "portrait": "mendel", "pause": True}),
+    ("Cyril", "But careful: the flowers you left alone have pollinated themselves and made pods too.",
+     {"highlight_words": ["pollinated themselves"], "pause": True}),
+    ("Cyril", "The pod of your cross is marked with a »P«, on its plot and in the inspection window.",
+     {"highlight_words": ["»P«"], "glow_targets": ["inspector_cross_pod_cells"], "pause": True}),
+    # Waits until the crossed pod has been harvested; until then only pods
+    # marked »P« can be harvested (their seeds stay apart from the selfed ones).
+    ("Cyril", "Harvest only that pod for now, so its seeds don't get mixed up with the others.",
+     {"highlight_words": ["only that pod"], "portrait": "mendel", "pause": True,
       "no_skip": True, "unlock_buttons": ["harvest_btn", "inspect_btn"],
+      "glow_targets": ["inspector_cross_pod_cells"], "cross_pods_only": True,
       "wait_for_condition": "crossed_pod_harvested"}),
     ("Mendel", "And when they grow, I will see whose flower colour they carry.",
      {"portrait": "mendel", "highlight_words": ["whose flower colour"], "pause": True}),
@@ -891,8 +925,8 @@ LECTURE_CROSS_3_DIALOGUE = [
      {"highlight_words": ["the real work"]}),
     ("Cyril", "uncovering how your seven traits are inherited.",
      {"highlight_words": ["seven traits"], "pause": True}),
-    ("Cyril", "I wish you luck!",
-     {"mood": 2, "auto_advance_ms": 5000}),
+    ("Cyril", "Sow them, and their flowers will show you which colour they inherited.",
+     {"mood": 2, "highlight_words": ["which colour they inherited"], "auto_advance_ms": 5000}),
 ]
 
 
@@ -928,6 +962,10 @@ _HIGHLIGHT_TARGETS = {
     # the "2" of "Mendel's Garden: 1 2" (garden 2 opens in part 4)
     "plot2_button": lambda app: (list(getattr(app, "_plot_switcher_btns", None) or [None, None]) + [None, None])[1],
     "harvest_button": lambda app: getattr(app, "harvest_btn", None),
+    "remove_button": lambda app: getattr(app, "remove_btn", None),
+    # the »Generation« choices in the Choose Seeds window (glow only)
+    "seed_crossed_cb": lambda app: _live_widget((getattr(app, "_seed_gen_rbs", None) or {}).get("F1")),
+    "seed_ofcross_cb": lambda app: _live_widget((getattr(app, "_seed_gen_rbs", None) or {}).get("F2")),
     # "Harvest All" inside the plant inspector window (only while open).
     "inspector_harvest_button": lambda app: _live_widget(getattr(app, "_inspector_harvest_btn", None)),
     # The "Harvest" section button at the top of the inspector.
@@ -951,12 +989,35 @@ _HIGHLIGHT_TARGETS = {
     "inspector_open_cells": lambda app: _ripe_flower_cells(app),
     # the flower Cyril chose on the father (crossing visit 2)
     "inspector_father_cell": lambda app: _father_cell(app),
+    # pods from hand-pollinated flowers (marked »P«) in the inspector
+    "inspector_cross_pod_cells": lambda app: [w for w in list(getattr(app, "_inspector_cross_pod_lbls", None) or [])
+                                              if _live_widget(w) is not None],
     "inspector_emasc_open_cells": lambda app: _flower_cells(app, lambda st, f: st == "open" and _hand_emasc(f)),
     # The inspector's "Close" button.
     "inspector_close_button": lambda app: _live_widget(getattr(app, "_inspector_close_btn", None)),
     # ...and its "Traits" section button.
     "inspector_traits_toggle": lambda app: _live_widget(
         (getattr(app, "_inspector_section_btns", None) or {}).get("traits")),
+    # Part 5: the Genotype Viewer / TIE buttons and parts of the TIE
+    # (glow only — no arrows into other windows)
+    "inspector_genotype_button": lambda app: _live_widget(getattr(app, "_inspector_genotype_btn", None)),
+    "inspector_tie_button": lambda app: _live_widget(getattr(app, "_inspector_tie_btn", None)),
+    "tie_list": lambda app: _live_widget(getattr(_tie(app), "listbox", None)),
+    "tie_tree": lambda app: _live_widget(getattr(_tie(app), "canvas", None)),
+    "tie_trait_buttons": lambda app: _live_widget(getattr(_tie(app), "_trait_bar", None)),
+    "tie_seed_color_btn": lambda app: _live_widget((getattr(_tie(app), "_trait_rbs", None) or {}).get("Seed color")),
+    "tie_flower_color_btn": lambda app: _live_widget((getattr(_tie(app), "_trait_rbs", None) or {}).get("Flowers")),
+    "tie_pods": lambda app: _live_widget(getattr(_tie(app), "pods_scroll_canvas", None)),
+    "tie_total_ratio": lambda app: _live_widget(getattr(getattr(_tie(app), "pods_row", None), "_ratio_inline", None)),
+    "tie_tabs": lambda app: _live_widget(getattr(_tie(app), "_section_bar", None)),
+    "tie_ratio_btn": lambda app: _live_widget((getattr(_tie(app), "_section_btns", None) or {}).get("ratio")),
+    "tie_punnett_btn": lambda app: _live_widget((getattr(_tie(app), "_section_btns", None) or {}).get("punnett")),
+    "tie_pods_btn": lambda app: _live_widget((getattr(_tie(app), "_section_btns", None) or {}).get("pods")),
+    "tie_best_fit": lambda app: _live_widget(getattr(_tie(app), "_cross_best_btn", None)),
+    "tie_reveal_button": lambda app: [w for w in (_live_widget(getattr(_tie(app), "_reveal_btn", None)),
+                                                  _live_widget(getattr(app, "_gv_reveal_btn", None)))
+                                      if w is not None],
+    "tie_show_alleles": lambda app: _live_widget(getattr(_tie(app), "_alleles_cb", None)),
 }
 
 
@@ -1085,12 +1146,199 @@ def _all_flowers(app):
     return out
 
 
+def _flower_colour(p):
+    try:
+        return str((getattr(p, "traits", {}) or {}).get("flower_color", "")).lower()
+    except Exception:
+        return ""
+
+
+def _close_inspector_section(app, key):
+    """Folds one section of the inspection window (e.g. the big Wildlife
+    table) — rebuilt at once if the window is open."""
+    try:
+        secs = app._inspector_sections()
+        if not secs.get(key):
+            return
+        secs[key] = False
+        try:
+            app._save_inspector_sections()
+        except Exception:
+            pass
+        win = _live_widget(getattr(app, "_inspector_win", None))
+        idx = getattr(app, "selected_index", None)
+        plant = app.tiles[idx].plant if (idx is not None and 0 <= idx < len(app.tiles)) else None
+        if win is not None and plant is not None:
+            app._open_plant_inspector(plant)
+    except Exception:
+        pass
+
+
+def _missing_seed_colours(app):
+    """Flower colours ("white" / "purple") the player has no seeds of
+    for Part 4's cross: selfed seeds in the bag (they breed true) and
+    the anonymous seeds (which come in both colours) count."""
+    have = set()
+    try:
+        if int(getattr(app, "available_seeds", 0) or 0) >= 2:
+            have |= {"white", "purple"}
+        for c in list(getattr(app, "_tut_starter_colours", None) or []):
+            have.add(c)
+        for sd in list(getattr(app, "harvest_inventory", []) or []):
+            d = sd.get("donor_id")
+            if d not in (None, "", sd.get("source_id")):
+                continue                      # crossed seed: not true-breeding
+            c = str((sd.get("traits") or {}).get("flower_color", "")).lower()
+            if c:
+                have.add(c)
+    except Exception:
+        return []
+    return [c for c in ("white", "purple") if c not in have]
+
+
+def _missing_colour_line(app):
+    miss = _missing_seed_colours(app) or getattr(app, "_tut_gave_colours", None) or ["white"]
+    what = " or ".join(miss) if len(miss) > 1 else miss[0]
+    return f"I see you have no {what}-flowering seeds left. Here, take a few of mine."
+
+
+def _give_colour_seeds(app, per_colour=3, only=None):
+    """Abbot Cyril's own seeds for the colours missing (sown like the
+    starter seeds; see GardenApp._tut_starter_colours). `only`: just
+    these colours (if they are missing)."""
+    miss = _missing_seed_colours(app)
+    if only is not None:
+        miss = [c for c in miss if c in only]
+    if not miss:
+        return
+    app._tut_gave_colours = list(miss)
+    q = list(getattr(app, "_tut_starter_colours", None) or [])
+    for c in miss:
+        q += [c] * per_colour
+    app._tut_starter_colours = q
+    app.available_seeds = int(getattr(app, "available_seeds", 0) or 0) + per_colour * len(miss)
+    try:
+        app._refresh_seed_counter_var()
+    except Exception:
+        pass
+    try:
+        app._toast("Abbot Cyril hands you " + " and ".join(
+            f"{per_colour} {c}-flowering" for c in miss) + " seeds.", level="info")
+    except Exception:
+        pass
+    _play_sound_via_app(app, "harvest_all.ogg")
+
+
+def _budding_plants(app):
+    budding = []
+    for p in _living_plant_list(app):
+        try:
+            if any(st == "bud" and not _hand_emasc(f) for _k, st, f in _flower_info(app, p)):
+                budding.append(p)
+        except Exception:
+            pass
+    return budding
+
+
+def _other_colour(c):
+    return "purple" if c == "white" else "white"
+
+
+def _choose_mother_colour(app):
+    """Part 4's mother: white-flowering if a white plant has a bud to
+    emasculate, otherwise purple (the father is then white). Chosen once
+    when Cyril proposes it; kept in app._tut_mother_colour."""
+    c = getattr(app, "_tut_mother_colour", None)
+    if c in ("white", "purple"):
+        return c
+    cols = {_flower_colour(p) for p in _budding_plants(app)}
+    c = "white" if ("white" in cols or "purple" not in cols) else "purple"
+    app._tut_mother_colour = c
+    return c
+
+
+def _tut_mother_colour(app):
+    """The colour of the cross's mother: the one Cyril chose, or (after
+    loading a saved garden) that of the mother of the crossed seeds."""
+    c = getattr(app, "_tut_mother_colour", None)
+    if c in ("white", "purple"):
+        return c
+    try:
+        for p in _living_plant_list(app):
+            if _flower_colour(p) and any(_hand_emasc(f) for _k, _st, f in _flower_info(app, p)):
+                return _flower_colour(p)
+    except Exception:
+        pass
+    try:
+        for sd in list(getattr(app, "harvest_inventory", []) or []):
+            d, src = sd.get("donor_id"), sd.get("source_id")
+            if d in (None, "") or str(d) == str(src):
+                continue
+            snap = _archive_snap(app, src) or {}
+            c = str((snap.get("traits") or {}).get("flower_color", "")).lower()
+            if c in ("white", "purple"):
+                return c
+    except Exception:
+        pass
+    try:
+        for p in _living_plant_list(app):
+            if _is_cross_child(p):
+                snap = _archive_snap(app, getattr(p, "mother_id", None)) or {}
+                c = str((snap.get("traits") or {}).get("flower_color", "")).lower()
+                if c in ("white", "purple"):
+                    return c
+    except Exception:
+        pass
+    return "white"
+
+
+def _father_colour(app):
+    fp = _tut_father_plant(app)[0]
+    c = _flower_colour(fp) if fp is not None else ""
+    return c if c in ("white", "purple") else _other_colour(_tut_mother_colour(app))
+
+
+def _white_grandparent(app):
+    return "grandmother" if _tut_mother_colour(app) == "white" else "grandfather"
+
+
+def _both_colours_sown(app):
+    """Part 4 spring: white- and purple-flowering plants both grow (the
+    cross needs one of each). A colour that cannot be sown any more (no
+    seeds of it left) is handed over by Cyril."""
+    grown = {_flower_colour(p) for p in _living_plant_list(app)
+             if not _is_cross_child(p)}
+    if {"white", "purple"} <= grown:
+        return True
+    try:
+        need = [c for c in _missing_seed_colours(app) if c not in grown]
+        if need and not getattr(app, "_tut_gave_sow_colours", False):
+            app._tut_gave_sow_colours = True
+            _give_colour_seeds(app, only=need)
+    except Exception:
+        pass
+    return False
+
+
+def _white_budding_plants(app):
+    """Living plants of the mother's colour (see _tut_mother_colour) with
+    a bud that can be emasculated — or, if there is none, any such
+    budding plant."""
+    budding = _budding_plants(app)
+    want = _tut_mother_colour(app)
+    pref = [p for p in budding if _flower_colour(p) == want]
+    return pref or budding
+
+
 def _cross_mothers(app):
-    """Every plant with an open, emasculated flower (possible mothers)."""
+    """Every plant with an open, emasculated flower (possible mothers) —
+    white-flowering ones first (the lesson crosses white x purple)."""
     out = []
     for p, _k, st, f in _all_flowers(app):
         if st == "open" and _hand_emasc(f) and p not in out:
             out.append(p)
+    want = _tut_mother_colour(app)
+    out.sort(key=lambda p: 0 if _flower_colour(p) == want else 1)
     return out
 
 
@@ -1207,6 +1455,18 @@ def _tutorial_force_sun(app):
                 pass
     except Exception:
         pass
+
+
+def _fair_weather(app):
+    """The real weather is dry (no rain, storm or snow) — Cyril comes for
+    a harvest only on such a morning, so rain never gets in the way."""
+    try:
+        g = app.garden
+        if getattr(g, "weather_lock", None):
+            return True
+        return str(g.weather) not in ("🌧", "⛈", "❄️", "🌨")
+    except Exception:
+        return True
 
 
 def _lock_sun_weather(app):
@@ -1507,8 +1767,18 @@ _WAIT_CONDITIONS = {
         _live_widget(getattr(app, "_inspector_win", None)) is not None
         and bool(app._inspector_sections().get("harvest"))),
     # Part 5 (crossing)
+    # Part 4 spring: garden 2 opened by the player
+    "plot2_shown": lambda app, baseline: int(getattr(app, "active_plot_index", 0) or 0) == 1,
+    # Part 4 spring: seeds of both flower colours to sow
+    "both_colours_available": lambda app, baseline: not _missing_seed_colours(app),
     "budding_plant_inspected": lambda app, baseline: _inspector_shows(
         app, lambda st, f: st == "bud" and not _hand_emasc(f)),
+    # Part 4: the mother is white-flowering (any budding plant if none is)
+    "white_budding_inspected": lambda app, baseline: (
+        _inspector_shows(app, lambda st, f: st == "bud" and not _hand_emasc(f))
+        and _selected_living_plant(app) in _white_budding_plants(app)),
+    # Part 4 spring: plants of both flower colours are growing
+    "both_colours_sown": lambda app, baseline: _both_colours_sown(app),
     "crossing_section_open": lambda app, baseline: (
         _live_widget(getattr(app, "_inspector_win", None)) is not None
         and bool(app._inspector_sections().get("crossing"))),
@@ -1532,6 +1802,37 @@ _WAIT_CONDITIONS = {
     "flower_pollinated": lambda app, baseline: any(
         _hand_emasc(f) and f.get("pollen") for _p, _k, _st, f in _all_flowers(app)),
     "crossed_pod_harvested": lambda app, baseline: _crossed_pod_harvested(app),
+    # Part 5
+    "f1_sown": lambda app, baseline: bool(_f1_plants(app)),
+    # (cleared when the line begins, so it must be ticked in the seed window)
+    # the »Seeds from crosses« row of the Choose Seeds window: F1 / F2
+    "seed_filter_crossed": lambda app, baseline: getattr(app, "_seed_filter_gen", None) == "F1",
+    "seed_filter_ofcross": lambda app, baseline: getattr(app, "_seed_filter_gen", None) == "F2",
+    "several_removed": lambda app, baseline: any(
+        int(n or 0) >= 2 for n in list(getattr(app, "_remove_log", []) or [])[int(baseline or 0):]),
+    "f1_inspected": lambda app, baseline: (
+        _live_widget(getattr(app, "_inspector_win", None)) is not None
+        and _is_cross_child(_selected_living_plant(app))),
+    "genotype_viewer_open": lambda app, baseline: _live_widget(
+        getattr(app, "_genotype_viewer_win", None)) is not None,
+    "genotype_viewer_closed": lambda app, baseline: _live_widget(
+        getattr(app, "_genotype_viewer_win", None)) is None,
+    "f1_harvested": lambda app, baseline: _f1_harvested(app),
+    "tie_open": lambda app, baseline: _tie(app) is not None,
+    "tie_closed": lambda app, baseline: _tie(app) is None,
+    "tie_open_f2": lambda app, baseline: _tie(app) is not None and _is_f2(app, _tie_current(app)),
+    "tie_open_f2_white": lambda app, baseline: _tie(app) is not None and _is_white_f2(app, _tie_current(app)),
+    # Part 5: more F2 plants sown after none of them flowered white
+    "f2_more_sown": lambda app, baseline: (not _f2_white_impossible(app)) or _f2_seeds_left(app) == 0,
+    "tie_seed_color": lambda app, baseline: _tie_shows(app, lambda t: t.trait_mode.get() == "Seed color"),
+    "tie_flower_color": lambda app, baseline: _tie_shows(app, lambda t: t.trait_mode.get() == "Flowers"),
+    "tie_tab_ratio": lambda app, baseline: _tie_shows(app, lambda t: _tie_tab(t) == 2),
+    "tie_tab_punnett": lambda app, baseline: _tie_shows(app, lambda t: _tie_tab(t) == 1),
+    "genotype_revealed": lambda app, baseline: bool(getattr(app, "_genotype_revealed", False)),
+    "tie_alleles_hovered": lambda app, baseline: bool(getattr(app, "_tie_alleles_hovered", False)),
+    "tie_show_alleles": lambda app, baseline: _tie_shows(app, lambda t: bool(t._show_alleles_var.get())),
+    "f2_sown": lambda app, baseline: (len(_f2_plants(app)) >= 8
+                                      or (_f2_plants(app) and _f2_seeds_left(app) == 0)),
     "inspector_window_closed": lambda app, baseline: (
         _live_widget(getattr(app, "_inspector_win", None)) is None),
     "traits_section_open": lambda app, baseline: (
@@ -1562,6 +1863,29 @@ def _plant_highlight_tiles(app, stage):
         fp = _tut_father_plant(app)[0]
         return [t for t in list(getattr(app, "tiles", []) or [])
                 if getattr(t, "plant", None) is fp]
+    if stage == "white_buds":
+        mothers = _white_budding_plants(app)
+        return [t for t in list(getattr(app, "tiles", []) or [])
+                if getattr(t, "plant", None) in mothers]
+    if stage == "old":
+        # plants (alive or dead) on the garden shown, not children of the cross
+        return [t for t in list(getattr(app, "tiles", []) or [])
+                if getattr(t, "plant", None) is not None and not _is_cross_child(t.plant)
+                and getattr(t, "plot_idx", 0) == getattr(app, "active_plot_index", 0)]
+    if stage == "f1_ripe":
+        return [t for t in list(getattr(app, "tiles", []) or [])
+                if getattr(t, "plant", None) is not None
+                and getattr(t.plant, "alive", True) and _is_cross_child(t.plant)
+                and int(t.plant.ripe_pods() or 0) > 0]
+    if stage == "f2_white":
+        return [t for t in list(getattr(app, "tiles", []) or [])
+                if getattr(t, "plant", None) is not None
+                and getattr(t.plant, "alive", True) and _is_white_f2(app, t.plant)]
+    if stage in ("f1", "f2"):
+        want = _is_cross_child if stage == "f1" else (lambda p: _is_f2(app, p))
+        return [t for t in list(getattr(app, "tiles", []) or [])
+                if getattr(t, "plant", None) is not None
+                and getattr(t.plant, "alive", True) and want(t.plant)]
     if stage in ("father", "mother"):
         out = []
         for t in list(getattr(app, "tiles", []) or []):
@@ -1681,6 +2005,14 @@ def _draw_stem_ring(t, bb):
                      width=2, tags=("tutplants", part))
 
 
+# lines that wait for seeds to be sown: no plant highlight may limit the
+# selection then (see _show_line)
+_SOWING_CONDITIONS = ("f1_sown", "f2_sown", "both_colours_sown")
+
+# highlight sets that change while the line shows (recomputed each second)
+_DYNAMIC_HIGHLIGHTS = ("f1_ripe", "old")
+
+
 def _show_plant_highlight(dlg, stage):
     """A golden ring around the stem of the plants Cyril is talking about — e.g.
     the ones with buds — with a pulsing glow so they are easy to spot.
@@ -1710,6 +2042,18 @@ def _show_plant_highlight(dlg, stage):
         if getattr(dlg.app, "_tutorial_dialogue", None) is not dlg:
             _clear_plant_highlight(dlg)            # Cyril is done
             return
+        if stage in _DYNAMIC_HIGHLIGHTS:
+            # e.g. only plants that still have ripe pods: a plant drops out
+            # of the ring (and the selection limit) once it is done
+            try:
+                now = _plant_highlight_tiles(dlg.app, stage)
+                for t in [t for t in tiles if t not in now]:
+                    t.delete("tutplants")
+                    state["shown"].pop(t, None)
+                tiles[:] = list(now)
+                dlg.app._tutorial_select_only = set(now)
+            except Exception:
+                pass
         for t in tiles:
             try:
                 photo = getattr(getattr(t, "plant", None), "img_obj", None)
@@ -1876,10 +2220,12 @@ def _raise_above(w, other, topmost):
 
 
 class _GlowRing:
-    """A pulsing outline lying ON a widget's own edge: four thin borderless
-    bars on top of it (an overlay), so the widget and its window never
-    change size. Follows the widget, hides while it isn't visible (e.g.
-    the inspection window steps aside for a dialog)."""
+    """A pulsing outline lying ON a widget's own edge: four thin bars placed
+    over it inside its own window (place(), so the widget and its window
+    never change size). No separate windows: the earlier borderless
+    Toplevel bars had to compete with the always-on-top inspection window
+    for the front, and on Windows they flickered in and out with every
+    pulse. Hides while the widget isn't visible."""
     T = 3
 
     def __init__(self, app, widget):
@@ -1887,23 +2233,21 @@ class _GlowRing:
         self.widget = widget
         self.bars = []
         self._geo = None
-        self._top = None
+
+    def _ensure_bars(self, top):
+        if (len(self.bars) == 4 and all(b.winfo_exists() for b in self.bars)
+                and self.bars[0].master is top):
+            return True
+        self.destroy()
         try:
-            top = widget.winfo_toplevel()
-            self._top = (top is not app.root and bool(top.attributes("-topmost")))
+            self.bars = [tk.Frame(top, bd=0, highlightthickness=0, width=1, height=1)
+                         for _ in range(4)]
+            for b in self.bars:            # a click on the outline is a click on the widget
+                b.bind("<Button-1>", lambda e, _w=self.widget: _w.event_generate("<Button-1>"))
         except Exception:
-            self._top = False
-        for _ in range(4):
-            try:
-                b = tk.Toplevel(app.root)
-                b.withdraw()
-                b.overrideredirect(True)
-                _own_by_target_window(b, widget)    # stays above that window
-                if self._top:
-                    b.attributes("-topmost", True)
-                self.bars.append(b)
-            except Exception:
-                pass
+            self.bars = []
+        self._geo = None
+        return bool(self.bars)
 
     def update(self, color):
         w = self.widget
@@ -1914,16 +2258,18 @@ class _GlowRing:
         if not ok:
             for b in self.bars:
                 try:
-                    b.withdraw()
+                    b.place_forget()
                 except Exception:
                     pass
             self._geo = None
             return
         try:
-            x, y = w.winfo_rootx(), w.winfo_rooty()
-            ww, hh = w.winfo_width(), w.winfo_height()
             top = w.winfo_toplevel()
-            self._top = (top is not self.app.root and bool(top.attributes("-topmost")))
+            if not self._ensure_bars(top):
+                return
+            x = w.winfo_rootx() - top.winfo_rootx()
+            y = w.winfo_rooty() - top.winfo_rooty()
+            ww, hh = w.winfo_width(), w.winfo_height()
         except Exception:
             return
         t = self.T
@@ -1933,13 +2279,9 @@ class _GlowRing:
         for b, (rx, ry, rw, rh) in zip(self.bars, rects):
             try:
                 b.configure(bg=color)
-                if geo != self._geo:
-                    b.geometry(f"{max(1, rw)}x{max(1, rh)}+{rx}+{ry}")
-                if b.state() == "withdrawn":
-                    b.deiconify()
-                # never behind the window it outlines (that window may have
-                # come to the front again since)
-                _raise_above(b, top, self._top)
+                if geo != self._geo or not b.winfo_ismapped():
+                    b.place(x=rx, y=ry, width=max(1, rw), height=max(1, rh))
+                b.lift()                 # above its sibling widgets (no window juggling)
             except Exception:
                 pass
         self._geo = geo
@@ -2490,7 +2832,7 @@ def _line_end_image(app, name):
     return img
 
 
-# Text colour per speaker: Friar Cyril red, Gregor Mendel a deep blue
+# Text colour per speaker: Abbot Cyril red, Gregor Mendel a deep blue
 # (clearly different from Cyril's red and from the black highlighted
 # words, and well readable on the light status bar)
 _SPEAKER_COLORS = {"cyril": "#c01818", "mendel": "#1f4f99"}
@@ -2691,8 +3033,11 @@ class _StatusBarDialogue:
         # A flat, borderless button like this one doesn't get any
         # hover feedback from Tk by default — bind it explicitly so it's
         # obvious the button is clickable.
-        btn.bind("<Enter>", lambda e, b=btn: b.configure(bg=self._btn_bg_hover))
-        btn.bind("<Leave>", lambda e, b=btn: b.configure(bg=self._btn_bg_normal))
+        btn._hover = False
+        btn.bind("<Enter>", lambda e, b=btn: (setattr(b, "_hover", True),
+                                              b.configure(bg=self._btn_bg_hover)))
+        btn.bind("<Leave>", lambda e, b=btn: (setattr(b, "_hover", False),
+                                              b.configure(bg=self._btn_bg_normal)))
         return btn
 
     def _reposition_buttons(self, text, end_image=None):
@@ -2744,6 +3089,7 @@ class _StatusBarDialogue:
             # after it finishes typing; showing a button that isn't
             # actually needed just invites clicking it mid-sentence.
             if self._auto_advance or self._no_skip:
+                self._stop_next_pulse()
                 self.next_btn.place_forget()
             else:
                 text_w = self._font.measure(text)
@@ -2767,12 +3113,10 @@ class _StatusBarDialogue:
             pass
 
     def _start_next_pulse(self):
-        """The first time "▶" ever appears, makes it pulse between its
-        normal brown and a soft amber so the player notices it is
-        something to press. Stops for good (app._tutorial_next_hint_done)
-        the first time it is actually clicked."""
-        if getattr(self.app, "_tutorial_next_hint_done", False):
-            return
+        """Whenever "▶" shows (a line that waits for a click), it pulses
+        between its normal brown and a soft amber, so the player always
+        notices there is something to press to go on. (Under the mouse
+        it shows its hover colour instead.)"""
         if self._next_pulse_job is not None:
             return
 
@@ -2783,8 +3127,10 @@ class _StatusBarDialogue:
             self._next_pulse_k = (self._next_pulse_k + 1) % steps
             t = (1 - math.cos(2 * math.pi * self._next_pulse_k / steps)) / 2
             try:
+                hover = getattr(self.next_btn, "_hover", False)
                 self.next_btn.configure(
-                    bg=_lerp_color(self._btn_bg_normal, "#D08A3A", t),
+                    bg=(self._btn_bg_hover if hover else
+                        _lerp_color(self._btn_bg_normal, "#D08A3A", t)),
                     font=("Segoe UI", 11 + (1 if t > 0.6 else 0), "bold"))
             except Exception:
                 return
@@ -3036,6 +3382,20 @@ class _StatusBarDialogue:
             except Exception:
                 text = ""
         extra = entry[2] if len(entry) > 2 else {}
+        # the pod of the first cross: only pods marked »P« can be harvested
+        self.app._tutorial_cross_pods_only = bool(extra.get("cross_pods_only"))
+        # "tie_focus": the TIE is switched to the plant the line talks about
+        # (as soon as it is open), so a sibling shown there can't confuse
+        if extra.get("tie_focus") == "f2_white":
+            def _focus(_i=idx):
+                try:
+                    if getattr(self, "_line_idx", None) != _i or not self.app.root.winfo_exists():
+                        return
+                except Exception:
+                    return
+                if not _tie_focus_white_f2(self.app):
+                    self.app.root.after(400, _focus)
+            self.app.root.after(250, _focus)
         self._auto_advance = not bool(extra.get("pause", False))
         self._auto_advance_ms = extra.get("auto_advance_ms") or self.AUTO_ADVANCE_MS
         self._wait_condition_name = extra.get("wait_for_condition")
@@ -3056,6 +3416,16 @@ class _StatusBarDialogue:
             _prev = _log[-1] if _log else None
             self.app._tut_other_plants_need = min(OTHER_PLANTS_NEEDED,
                                                   _ripe_plants_other_than(self.app, _prev))
+        if (self._wait_condition_name in ("seed_filter_crossed", "seed_filter_ofcross")
+                and ("seedfilter", idx) not in self._granted_lines):
+            self._granted_lines.add(("seedfilter", idx))      # once (the line may be shown again)
+            # the player ticks it (nothing else filtered away meanwhile)
+            for _a in ("_seed_filter_gen", "_seed_filter_look"):
+                setattr(self.app, _a, None)
+            for _a in ("_seed_filter_crossed", "_seed_filter_ofcross", "_seed_filter_noted"):
+                setattr(self.app, _a, False)
+        if self._wait_condition_name == "several_removed":
+            self._wait_baseline = len(getattr(self.app, "_remove_log", []) or [])
         if self._wait_condition_name == "note_saved":
             self._wait_baseline = int(getattr(self.app, "_notes_saved_count", 0) or 0)
         if self._wait_condition_name == "sunny_skip_used":
@@ -3169,6 +3539,19 @@ class _StatusBarDialogue:
                 pass
         if extra.get("allow_sowing"):
             self.app._tut_no_sowing = False
+        if extra.get("close_wildlife"):
+            _close_inspector_section(self.app, "wildlife")
+        if extra.get("give_colour_seeds") and idx not in self._granted_lines:
+            self._granted_lines.add(idx)
+            _give_colour_seeds(self.app)
+        if extra.get("allow_tie"):
+            self.app._tut_allow_tie = True      # part 5: the TIE is the player's
+        if extra.get("tie_sections") is not None:
+            _set_tie_sections(self.app, dict(extra["tie_sections"]))
+        if extra.get("tie_tab") is not None:
+            _set_tie_tab(self.app, int(extra["tie_tab"]))
+        if self._wait_condition_name == "tie_alleles_hovered":
+            self.app._tie_alleles_hovered = False
         if extra.get("unlock_buttons"):
             _unlock_buttons(self.app, extra["unlock_buttons"])
             if "fast_btn" in extra["unlock_buttons"]:
@@ -3193,7 +3576,8 @@ class _StatusBarDialogue:
         # No arrows into the inspection window (on Windows they kept
         # flickering between above and below it): its buttons only glow
         # (see the glow_targets below, which always include them).
-        target_names = [n for n in (target_names or []) if not str(n).startswith("inspector_")]
+        target_names = [n for n in (target_names or [])
+                        if not str(n).startswith(("inspector_", "tie_", "gv_"))]
         # Inspect / Harvest only make sense for a marked plant: their arrow
         # appears once one of the marked plants is selected (and goes away
         # again if another plant is selected) — otherwise players click the
@@ -3236,6 +3620,11 @@ class _StatusBarDialogue:
                 _show_plant_highlight(self, hp if isinstance(hp, str) else int(hp))
             except Exception:
                 pass
+        elif (extra.get("clear_plant_highlight")
+              or extra.get("wait_for_condition") in _SOWING_CONDITIONS):
+            # sowing: every plot can be picked again (the rings of an
+            # earlier line would otherwise still limit the selection)
+            _clear_plant_highlight(self)
 
         # "inspector_closed": the inspection window opens with every section
         # closed from now on (until part 3 ends) — the player's own saved
@@ -3251,10 +3640,27 @@ class _StatusBarDialogue:
         _glow = list(extra.get("glow_targets") or [])
         _ht = extra.get("highlight_target")
         for n in ([_ht] if isinstance(_ht, str) else list(_ht or [])):
-            if str(n).startswith("inspector_") and n not in _glow:
+            if str(n).startswith(("inspector_", "tie_", "gv_")) and n not in _glow:
                 _glow.append(n)              # instead of an arrow: it glows
         if _glow:
             self._poll_glow_harvest(idx, _glow)
+        # Everything this line points at lives in the inspection window:
+        # if the player closed it, the arrow shows on »Inspect« first, so
+        # nobody is left stuck (e.g. »Make note« with the window shut).
+        _ht_all = [extra.get("highlight_target")] if isinstance(extra.get("highlight_target"), str) \
+            else list(extra.get("highlight_target") or [])
+        if (_glow and all(str(n).startswith("inspector_") for n in _glow)
+                and "inspect_button" not in _ht_all
+                and (extra.get("wait_for_condition") or extra.get("pause"))):
+            def _insp_closed():
+                if getattr(self.app, "_reopen_inspector_after_dialog", False):
+                    return False           # only stepped aside for a dialog
+                w = _live_widget(getattr(self.app, "_inspector_win", None))
+                try:
+                    return w is None or not w.winfo_viewable()
+                except Exception:
+                    return True
+            self._poll_late_highlight("inspect_button", idx, when=_insp_closed)
 
         if extra.get("highlight_late"):
             for name in (target_names or []):
@@ -3517,7 +3923,7 @@ class _StatusBarDialogue:
         if self._no_skip and not from_auto:
             return
         if not from_auto:
-            self._stop_next_pulse(mark_done=True)
+            self._stop_next_pulse()
         self._cancel_auto_advance()
         if self._typing_job is not None:
             self._finish_typing_instantly()
@@ -3536,6 +3942,7 @@ class _StatusBarDialogue:
             self._stop_next_pulse()
             self._stop_mood()
             self.app._tutorial_key_watch_active = False
+            self.app._tutorial_cross_pods_only = False
             for btn_attr in ("next_btn", "back_btn"):
                 try:
                     getattr(self, btn_attr).destroy()
@@ -3992,6 +4399,7 @@ def _teardown_active_dialogue(app):
     except Exception:
         pass
     app._tutorial_key_watch_active = False
+    app._tutorial_cross_pods_only = False
     try:
         dlg._stop_next_pulse()
         dlg._stop_mood()
@@ -4263,7 +4671,11 @@ def _later_steps(app):
     return {"ageing_seen": bool(getattr(app, "_tutorial_ageing_seen", False)),
             "spring_seen": bool(getattr(app, "_tutorial_spring_seen", False)),
             "cross_done": int(getattr(app, "_tutorial_cross_done", 0) or 0),
-            "plot2_open": bool(getattr(app, "_tutorial_plot2_open", False))}
+            "plot2_open": bool(getattr(app, "_tutorial_plot2_open", False)),
+            "p5": int(getattr(app, "_tutorial_p5", 0) or 0),
+            "p5_spring": list(getattr(app, "_tut_p5_spring", None) or []),
+            "allow_tie": bool(getattr(app, "_tut_allow_tie", False)),
+            "starter_n": int(getattr(app, "_tut_starter_n", 0) or 0)}
 
 
 def _set_later_steps(app, steps=None):
@@ -4271,6 +4683,11 @@ def _set_later_steps(app, steps=None):
     app._tutorial_ageing_seen = bool(steps.get("ageing_seen", False))
     app._tutorial_spring_seen = bool(steps.get("spring_seen", False))
     app._tutorial_cross_done = int(steps.get("cross_done", 0) or 0)
+    app._tutorial_p5 = int(steps.get("p5", 0) or 0)
+    _sp = steps.get("p5_spring") or None
+    app._tut_p5_spring = tuple(_sp) if _sp else None
+    app._tut_allow_tie = bool(steps.get("allow_tie", False))
+    app._tut_starter_n = int(steps.get("starter_n", 0) or 0)
     # (older saves without the flag: open once spring had come)
     app._tutorial_plot2_open = bool(steps.get("plot2_open", app._tutorial_spring_seen))
     # Garden 2 still closed: back to garden 1, and the "2" button greyed
@@ -4362,7 +4779,7 @@ def _tutorial_plants_lost(app, part_done=None):
 
 def _start_loss_watch(app):
     """Every 2 s (between Cyril's lines): once the plants are gone and no
-    seeds are left either, Friar Cyril offers to go back to the last
+    seeds are left either, Abbot Cyril offers to go back to the last
     tutorial save. Asked once; asked again only after
     the garden has recovered and been lost again."""
     if getattr(app, "_tutorial_loss_job", None) is not None:
@@ -4409,7 +4826,7 @@ _TUTORIAL_PART_AWARDS = {
 def _award_tutorial_part(app, n):
     """Achievement for finishing tutorial part n (1-3 as on the map; 5 is
     map part 4, »Crossing«, kept under its old key tutorial_5);
-    Friar Cyril congratulates the first time."""
+    Abbot Cyril congratulates the first time."""
     key, title, text = _TUTORIAL_PART_AWARDS.get(n, (None, None, None))
     if not key:
         return None
@@ -4422,7 +4839,7 @@ def _award_tutorial_part(app, n):
 
 
 def _offer_next_lesson_after(app, congrats_win=None, delay_ms=5000):
-    """Friar Cyril asks whether Gregor is ready for the next lesson:
+    """Abbot Cyril asks whether Gregor is ready for the next lesson:
     5 s after the achievement window closes (or after part 3 ends)."""
     def _ask():
         if not getattr(app, "_tutorial_active", False):
@@ -4430,6 +4847,9 @@ def _offer_next_lesson_after(app, congrats_win=None, delay_ms=5000):
         if getattr(app, "_tutorial_dialogue", None) is not None:
             app.root.after(2000, _ask)               # wait for a quiet moment
             return
+        if (int(getattr(app, "_tutorial_cross_done", 0) or 0) >= 3
+                and int(getattr(app, "_tutorial_p5", 0) or 0) > 0):
+            return                                   # part 5 is already under way
         was_running = bool(getattr(app, "running", True))
         app.running = False
         try:
@@ -4463,7 +4883,12 @@ def _offer_next_lesson_after(app, congrats_win=None, delay_ms=5000):
 
 
 def _begin_next_lesson(app):
-    """Starts tutorial part 4 — not written yet; until then Cyril says so."""
+    """Starts the next tutorial part: part 4 after part 3, part 5 after
+    part 4 (the crossed pod harvested)."""
+    if int(getattr(app, "_tutorial_cross_done", 0) or 0) >= 3:
+        if _p5_step(app) == 0 and getattr(app, "_tutorial_dialogue", None) is None:
+            _play_part_5(app)
+        return
     nxt = globals().get("_play_part_4")
     if callable(nxt):
         nxt(app)
@@ -4483,7 +4908,7 @@ def _tutorial_seeds_left(app):
 
 
 def _ask_cyril_restart(app):
-    """Friar Cyril comes by when the garden is empty and the seed bags
+    """Abbot Cyril comes by when the garden is empty and the seed bags
     too, and offers to start this part of the tutorial again. True = yes."""
     return _cyril_ask(
         app,
@@ -4494,14 +4919,14 @@ def _ask_cyril_restart(app):
 
 
 def _cyril_ask(app, text, question, yes_text, no_text, portrait="franz_1.png"):
-    """A small window with Friar Cyril asking something; True = yes."""
+    """A small window with Abbot Cyril asking something; True = yes."""
     import tkinter as tk
     BG = getattr(app, "INSPECTOR_BG", "#f5f0e6")
     INK = "#3b2a1a"
     answer = {"yes": False}
     win = tk.Toplevel(app.root)
     win.withdraw()
-    win.title("Friar Cyril")
+    win.title("Abbot Cyril")
     win.configure(bg=BG)
     win.resizable(False, False)
     try:
@@ -4529,7 +4954,7 @@ def _cyril_ask(app, text, question, yes_text, no_text, portrait="franz_1.png"):
         pass
     col = tk.Frame(row, bg=BG)
     col.pack(side="left", fill="both", expand=True)
-    tk.Label(col, text="Friar Cyril", font=("Segoe UI", 10, "italic"), bg=BG,
+    tk.Label(col, text="Abbot Cyril", font=("Segoe UI", 10, "italic"), bg=BG,
              fg="#6b5a44").pack(anchor="w")
     tk.Label(col, text=text,
              font=("Segoe UI", 12), bg=BG, fg=INK, wraplength=340,
@@ -4845,7 +5270,9 @@ def _watch_for_next_part(app, part_done):
             hour = int(app.garden.clock_hour) % 24
         except Exception:
             hour = 9
-        return 7 <= hour < 12 and _enough_at_stage(app, stage)
+        # (the harvest lesson, part 6: on a dry morning)
+        return (7 <= hour < 12 and _enough_at_stage(app, stage)
+                and (nxt != 6 or _fair_weather(app)))
 
     # A long Fast Forward stops right when the plants get there.
     app._ff_stop_check = _ready
@@ -4911,9 +5338,33 @@ def _days_until_ageing(app):
     return left[min(len(left), _senescent_needed(app)) - 1] + 1
 
 
-def _play_cyril_visit(app, dialogue, after=None):
+def _keep_sun_until_tomorrow(app):
+    """Clear sky for the rest of today (the sunny sowing morning Cyril
+    promised); the real weather comes back the next morning."""
+    try:
+        day0 = int(getattr(app.garden, "day", 0) or 0)
+        app.garden.weather_lock = "\u2600\ufe0f"
+    except Exception:
+        return
+
+    def _tick():
+        try:
+            if (not getattr(app, "_tutorial_active", False)
+                    or int(getattr(app.garden, "day", 0) or 0) != day0):
+                if getattr(app.garden, "weather_lock", None) == "\u2600\ufe0f":
+                    app.garden.weather_lock = None
+                    app.render_all()
+                return
+            app.root.after(2000, _tick)
+        except Exception:
+            pass
+    app.root.after(2000, _tick)
+
+
+def _play_cyril_visit(app, dialogue, after=None, stay_real_time=False):
     """Cyril comes by, says `dialogue`, and leaves again (like the stage
-    lectures, without saving a part)."""
+    lectures, without saving a part). stay_real_time: the clock stays in
+    real time after he leaves (and today stays sunny)."""
     app._tutorial_portrait_free = False      # Cyril is back
     _swap_portrait_for_tutorial(app)
     _lock_down_sidebar(app)
@@ -4921,8 +5372,13 @@ def _play_cyril_visit(app, dialogue, after=None):
     _lock_sun_weather(app)
 
     def _done():
-        _tutorial_set_speed(app, 1.0)        # back to 1 sec = 1 hour
-        _release_sun(app)
+        if stay_real_time:
+            _tutorial_set_speed(app, _TUTORIAL_DAY_LENGTH_S)
+            _release_sun(app)
+            _keep_sun_until_tomorrow(app)
+        else:
+            _tutorial_set_speed(app, 1.0)        # back to 1 sec = 1 hour
+            _release_sun(app)
         _unlock_sidebar(app)
         _cyril_leaves(app)
         if after is not None:
@@ -5006,8 +5462,9 @@ def _watch_for_spring(app):
             app._ff_suggest_days = None
             app._tutorial_spring_seen = True
             app._tut_no_sowing = True        # until the sunny morning (see the visit)
+            _true_breed_flower_colour(app)   # white x purple must work out
             _play_cyril_visit(app, LECTURE_SPRING_DIALOGUE,
-                              after=lambda: _finish_part_4(app))
+                              after=lambda: _finish_part_4(app), stay_real_time=True)
             return
         app._tutorial_seedling_job = app.root.after(1000, _check)
 
@@ -5037,14 +5494,49 @@ def _plot_of(app, plant):
     return None
 
 
-def _father_candidate(app, mother):
+def _father_candidate(app, mother, strict=False):
     """(plant, k): a flower of another plant whose anthers are ripe right
     now — or, if none is, an open flower with anthers that can be made
     ripe for the lesson (see _pick_tutorial_father). None if no other
     plant has an open flower with anthers."""
     ripe, other = None, None
     plot = _plot_of(app, mother) if mother is not None else None
+    # a father of the other flower colour (purple for the white mother);
+    # only if there is none, any other plant
+    mcol = _flower_colour(mother) if mother is not None else ""
+    plants = _living_plant_list(app)
+    pref = [p for p in plants if mcol and _flower_colour(p) and _flower_colour(p) != mcol]
+    for group in ((pref,) if strict else (pref, plants)):
+        r = _father_from(app, mother, plot, group)
+        if r is not None:
+            return r
+    return None
+
+
+def _contrast_may_flower(app, mother):
+    """Does a plant of the other flower colour grow in the mother's garden
+    that has (or will have) a flower with anthers?"""
+    mcol = _flower_colour(mother)
+    plot = _plot_of(app, mother)
     for p in _living_plant_list(app):
+        if p is mother or not _flower_colour(p) or _flower_colour(p) == mcol:
+            continue
+        if plot is not None and _plot_of(app, p) != plot:
+            continue
+        try:
+            if int(getattr(p, "stage", 0) or 0) < 4:
+                return True                 # not flowering yet
+            if any(st in ("bud", "open", "not yet") and not _hand_emasc(f) and _has_anthers(f)
+                   for _k, st, f in _flower_info(app, p)):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _father_from(app, mother, plot, plants):
+    ripe, other = None, None
+    for p in plants:
         if p is mother:
             continue
         # only in the mother's own garden (switching between the gardens
@@ -5074,8 +5566,13 @@ def _pick_tutorial_father(app):
     app._tut_father = None
     app._tut_ripe_override = None
     cand = None
-    for m in _cross_mothers(app):          # a mother with a father in her garden
-        cand = _father_candidate(app, m)
+    # a mother with a father of the other flower colour in her garden —
+    # only if there is none at all, any other father
+    for strict in (True, False):
+        for m in _cross_mothers(app):
+            cand = _father_candidate(app, m, strict=strict)
+            if cand is not None:
+                break
         if cand is not None:
             break
     if cand is None:
@@ -5134,7 +5631,13 @@ def _cross_visit_ready(app, n):
                 pass
         return False
     if n == 2:          # the emasculated flower is open, and a father can give pollen
-        return any(_father_candidate(app, m) is not None for m in _cross_mothers(app))
+        mothers = _cross_mothers(app)
+        if any(_father_candidate(app, m, strict=True) is not None for m in mothers):
+            return True
+        # a father of the same colour only when no plant of the other
+        # colour in her garden is going to flower any more
+        return any(_father_candidate(app, m) is not None and not _contrast_may_flower(app, m)
+                   for m in mothers)
     return _crossed_pod_ripe(app)
 
 
@@ -5155,7 +5658,8 @@ def _watch_for_cross_visit(app, n):
             hour = int(app.garden.clock_hour) % 24
         except Exception:
             hour = 9
-        return 7 <= hour < 12 and _cross_visit_ready(app, n)
+        # (visit 3 is the harvest of the crossed pod: on a dry morning)
+        return 7 <= hour < 12 and _cross_visit_ready(app, n) and (n != 3 or _fair_weather(app))
 
     app._ff_stop_check = _ready
 
@@ -5180,14 +5684,18 @@ def _play_cross_visit(app, n):
     def _after():
         app._tutorial_cross_done = n
         try:
-            _save_tutorial_progress(app, max(6, int(getattr(app, "_tutorial_part_done", 6) or 6)))
+            _pd = max(6, int(getattr(app, "_tutorial_part_done", 6) or 6))
+            _save_tutorial_progress(app, _pd)
+            _save_checkpoint(app, _pd)        # restart point after each visit
         except Exception:
             pass
         if n < 3:
             _watch_for_cross_visit(app, n + 1)
             return
         app._tut_insp_sections = None        # the player's own inspector sections again
-        _award_tutorial_part(app, 5)
+        app._tut_tie_sections = None         # the player's own TIE sections again
+        win = _award_tutorial_part(app, 5)
+        _offer_next_lesson_after(app, win)   # part 5
 
     # Clear sky and working hours for the whole visit: rain or the evening
     # must not stop the emasculation or the pollination (released again
@@ -5197,6 +5705,713 @@ def _play_cross_visit(app, n):
         _pick_tutorial_father(app)            # a plant whose pollen is ripe now
     _tutorial_force_sun(app)
     _start_sun_keeper(app)
+    _play_cyril_visit(app, dialogue, after=_after)
+
+
+# ============================================================================
+# Part 5 — The Hidden Elements: the children of the cross (F1) and their
+# children (F2), with the Genotype Viewer and the TIE.
+#   step 0  Part 4 done; the player says yes to the next lesson
+#   step 1  bridge talk done: the winter passes (Fast Forward to spring)
+#   step 2  spring: the crossed seeds (F1) sown
+#   step 3  visit 1, the F1 in bloom
+#   step 4  visit 2, the F1 pods ripe: the TIE, then the Genotype Viewer
+#   step 5  spring: the F1 seeds (F2) sown
+#   step 6  visit 3, the F2 in bloom (white again): ratios, Punnett square,
+#           revealing the alleles — the end of the tutorial
+# ============================================================================
+def _is_cross_child(p):
+    """A plant grown from a crossed seed (two different parents)."""
+    try:
+        m, f = getattr(p, "mother_id", None), getattr(p, "father_id", None)
+        return m not in (None, "", -1) and f not in (None, "", -1) and str(m) != str(f)
+    except Exception:
+        return False
+
+
+def _archive_snap(app, pid):
+    try:
+        plants = (getattr(app, "archive", {}) or {}).get("plants", {}) or {}
+        return plants.get(str(pid)) or plants.get(pid)
+    except Exception:
+        return None
+
+
+def _is_f2(app, p):
+    """A plant grown from a selfed seed of a crossed plant (F1)."""
+    try:
+        m, f = getattr(p, "mother_id", None), getattr(p, "father_id", None)
+        if m in (None, "", -1) or (f not in (None, "", -1) and str(m) != str(f)):
+            return False
+        for q in _living_plant_list(app):
+            if str(getattr(q, "id", "")) == str(m):
+                return _is_cross_child(q)
+        s = _archive_snap(app, m)
+        if isinstance(s, dict):
+            mm, ff = s.get("mother_id"), s.get("father_id")
+            return mm not in (None, "", -1) and ff not in (None, "", -1) and str(mm) != str(ff)
+    except Exception:
+        pass
+    return False
+
+
+def _f1_plants(app):
+    return [p for p in _living_plant_list(app) if _is_cross_child(p)]
+
+
+def _f2_plants(app):
+    return [p for p in _living_plant_list(app) if _is_f2(app, p)]
+
+
+def _f2_seeds_left(app):
+    """Seeds in the bag that would grow into F2 plants."""
+    ids = set()
+    try:
+        for p in [t.plant for t in app._all_plot_tiles() if t.plant is not None]:
+            if _is_cross_child(p):
+                ids.add(str(getattr(p, "id", "")))
+        for k, s in ((getattr(app, "archive", {}) or {}).get("plants", {}) or {}).items():
+            if isinstance(s, dict):
+                mm, ff = s.get("mother_id"), s.get("father_id")
+                if mm not in (None, "", -1) and ff not in (None, "", -1) and str(mm) != str(ff):
+                    ids.add(str(k))
+    except Exception:
+        pass
+    n = 0
+    for sd in list(getattr(app, "harvest_inventory", []) or []):
+        try:
+            if str(sd.get("source_id")) in ids and sd.get("donor_id") in (None, "", sd.get("source_id")):
+                n += 1
+        except Exception:
+            pass
+    return n
+
+
+def _f1_ripe_left(app):
+    return sum(int(p.ripe_pods() or 0) for p in _f1_plants(app))
+
+
+def _f1_harvested(app):
+    """Every ripe pod of the crossed plants picked (at least one)."""
+    try:
+        any_h = any(f.get("harvested") for p in _f1_plants(app) for f in p.ensure_flowers())
+    except Exception:
+        any_h = False
+    return any_h and _f1_ripe_left(app) == 0
+
+
+def _is_white_f2(app, p):
+    return p is not None and _is_f2(app, p) and _flower_colour(p) == "white"
+
+
+def _ensure_white_f2(app):
+    """The tutorial must show white coming back among the grandchildren.
+    Each F2 plant is white only by a 1 in 4 chance, so with few plants
+    there may be none (8 plants: about 1 in 10). If no growing F2 plant is
+    white, one that has not shown its flower colour yet (no buds) is made
+    white (aa) — nothing visible changes. False if that is not possible
+    any more (every F2 plant has already shown purple)."""
+    f2 = _f2_plants(app)
+    if any(_flower_colour(p) == "white" for p in f2):
+        return True
+    hidden = [p for p in f2 if int(getattr(p, "stage", 0) or 0) < 4]
+    if not hidden:
+        return False
+    p = hidden[-1]
+    try:
+        geno = getattr(p, "genotype", None)
+        if isinstance(geno, dict):
+            geno["A"] = ("a", "a")
+        p.traits["flower_color"] = "white"
+    except Exception:
+        return False
+    return True
+
+
+def _f2_white_impossible(app):
+    """Every F2 plant has shown purple: no white can come any more."""
+    f2 = _f2_plants(app)
+    return bool(f2) and not _ensure_white_f2(app)
+
+
+def _f2_bloom_ready(app):
+    """F2 plants flowering (flower colour shown) and a white one among them."""
+    _ensure_white_f2(app)
+    blooming = [p for p in _f2_plants(app) if int(getattr(p, "stage", 0) or 0) >= 5]
+    # (white is recessive: it shows again whichever parent was white)
+    return len(blooming) >= 3 and any(_flower_colour(p) == "white" for p in blooming)
+
+
+def _tie(app):
+    return _live_widget(getattr(app, "_tie_win", None))
+
+
+def _tie_shows(app, test):
+    t = _tie(app)
+    if t is None:
+        return False
+    try:
+        return bool(test(t))
+    except Exception:
+        return False
+
+
+def _tie_tab(t):
+    """The TIE's open view: 0 Pod Seeds, 1 Punnett Square, 2 Trait Ratio,
+    -1 when none of them is open."""
+    try:
+        return t._active_tab()
+    except Exception:
+        return t.tie_notebook.index(t.tie_notebook.select())
+
+
+def _tie_focus_white_f2(app):
+    """If the TIE shows something other than a white-flowering grandchild
+    (e.g. a purple sibling), Cyril switches it to one — a sibling of the
+    plant shown when there is one. True if the TIE now shows one."""
+    t = _tie(app)
+    if t is None:
+        return False
+    cur = _tie_current(app)
+    if _is_white_f2(app, cur):
+        return True
+    try:
+        whites = [p for p in _f2_plants(app) if _is_white_f2(app, p)
+                  and int(getattr(p, "stage", 0) or 0) >= 4 and getattr(p, "alive", True)]
+    except Exception:
+        whites = []
+    if not whites:
+        return False
+
+    def _mom(p):
+        return str(getattr(p, "seed_parent_id", None) or getattr(p, "mother_id", None))
+    sib = [p for p in whites if cur is not None and _mom(p) == _mom(cur)]
+    pick = (sib or whites)[0]
+    try:
+        t._render_pid(getattr(pick, "id", None))
+        return True
+    except Exception:
+        return False
+
+
+def _tie_current(app):
+    t = _tie(app)
+    if t is None:
+        return None
+    pid = getattr(t, "current_pid", None)
+    for p in [tl.plant for tl in app._all_plot_tiles() if tl.plant is not None]:
+        if str(getattr(p, "id", "")) == str(pid):
+            return p
+    return None
+
+
+def _set_tie_tab(app, idx):
+    _set_tie_sections(app, {"tab": int(idx)})
+
+
+def _set_tie_sections(app, secs):
+    """Opens / closes sections of the TIE (plant, archive, tree, tab) — kept
+    for a TIE opened later in the same lesson."""
+    cur = dict(getattr(app, "_tut_tie_sections", None) or {})
+    cur.update(secs)
+    app._tut_tie_sections = cur
+    t = _tie(app)
+    if t is not None:
+        try:
+            t.set_sections(**secs)
+        except Exception:
+            try:
+                if secs.get("tab") is not None:
+                    t.tie_notebook.select(int(secs["tab"]))
+            except Exception:
+                pass
+
+
+# Next 1 March (8:00) after now — where the Fast Forward of a part 5
+# winter stops.
+def _p5_next_spring(app, month_day=None):
+    """month_day: (month, day) — Part 5's springs begin on 1 April."""
+    md = tuple(month_day or (4, 1))
+    try:
+        g = app.garden
+        now = (int(g.year), int(g.month), int(g.day_of_month), int(g.clock_hour) % 24)
+        y = now[0] if now < (now[0], md[0], md[1], 8) else now[0] + 1
+        return (y, md[0], md[1], 8)
+    except Exception:
+        return _spring_target()
+
+
+def _p5_days_to(app, target):
+    import datetime as _dt
+    import math as _m
+    try:
+        g = app.garden
+        now = _dt.datetime(int(g.year), int(g.month), int(g.day_of_month), int(g.clock_hour) % 24)
+        hours = (_dt.datetime(*target) - now).total_seconds() / 3600.0
+        return max(1, int(_m.ceil(hours / 24.0)))
+    except Exception:
+        return 1
+
+
+def _p5_reached(app, target):
+    try:
+        g = app.garden
+        return (int(g.year), int(g.month), int(g.day_of_month), int(g.clock_hour) % 24) >= tuple(target)
+    except Exception:
+        return False
+
+
+def _p5_winter_line(app):
+    tgt = getattr(app, "_tut_p5_spring", None) or _p5_next_spring(app)
+    return f"Let the winter pass: Fast Forward {_p5_days_to(app, tgt)} days, until next spring."
+
+
+def _p5_arm_winter(app, month_day=None):
+    """The next spring is where the Fast Forward stops (and what its
+    window suggests)."""
+    tgt = _p5_next_spring(app, month_day)
+    app._tut_p5_spring = tgt
+    app._ff_suggest_days = lambda: _p5_days_to(app, tgt)
+    app._ff_stop_check = lambda: _p5_reached(app, tgt)
+
+
+def _true_breed_flower_colour(app):
+    """The tutorial's seeds and plants breed true for flower colour (AA
+    purple, aa white) — so the cross of part 4 and part 5 always works
+    out, also from gardens saved before this rule."""
+    def _fix(geno, colour):
+        try:
+            if isinstance(geno, dict) and colour in ("purple", "white"):
+                geno["A"] = ("A", "A") if colour == "purple" else ("a", "a")
+        except Exception:
+            pass
+    for sd in list(getattr(app, "harvest_inventory", []) or []):
+        try:
+            d = sd.get("donor_id")
+            if d not in (None, "", sd.get("source_id")):
+                continue             # a crossed seed is meant to be mixed
+            _fix(sd.get("genotype"), str((sd.get("traits") or {}).get("flower_color", "")).lower())
+        except Exception:
+            pass
+    for p in _living_plant_list(app):
+        if _is_cross_child(p):
+            continue                 # a cross is meant to be mixed
+        _fix(getattr(p, "genotype", None), _flower_colour(p))
+
+
+LECTURE_P5_BRIDGE_DIALOGUE = [
+    ("Cyril", "The seeds of your cross are safe in your seed bag, Gregor.",
+     {"mood": 2, "highlight_words": ["seeds of your cross"], "pause": True}),
+    ("Cyril", "There is still time to sow them this summer.",
+     {"highlight_words": ["this summer"], "pause": True}),
+    ("Cyril", "But first, make room: your old plants have done their work.",
+     {"highlight_words": ["make room"], "highlight_plants": "old", "pause": True}),
+    ("Cyril", "Select several at once: drag across them with the mouse, or hold Shift and click each one.",
+     {"highlight_words": ["drag across them", "hold Shift"], "highlight_plants": "old",
+      "pause": True}),
+    # Waits until »Remove plant« has cleared at least two plants at once.
+    ("Cyril", "Then press »Remove plant« to clear them all together.",
+     {"highlight_words": ["Remove plant"], "highlight_target": "remove_button",
+      "unlock_buttons": ["remove_btn"], "highlight_plants": "old",
+      "pause": True, "no_skip": True, "wait_for_condition": "several_removed"}),
+    ("Cyril", "Well done. Now there is room for the next generation.",
+     {"mood": 2, "highlight_words": ["room for the next generation"]}),
+    ("Cyril", "Sow the seeds of your cross.",
+     {"highlight_words": ["seeds of your cross"], "pause": True}),
+    # Waits until »F1« is chosen in the Choose Seeds window.
+    ("Cyril", "Your seed bag holds many seeds by now.",
+     {"pause": True}),
+    ("Cyril", "Press »Plant« and, under »Seeds from crosses«, choose »F1«: the first generation.",
+     {"highlight_words": ["Plant", "Seeds from crosses", "F1"], "highlight_target": "plant_button",
+      "glow_targets": ["seed_crossed_cb"], "unlock_buttons": ["plant_seeds_btn"],
+      "pause": True, "no_skip": True, "wait_for_condition": "seed_filter_crossed"}),
+    # Waits until a crossed seed (two different parents) has been sown.
+    ("Cyril", "Now only the seeds of your cross are left, marked with both of their parents. Sow them!",
+     {"highlight_words": ["both of their parents"], "pause": True, "no_skip": True,
+      "wait_for_condition": "f1_sown"}),
+    ("Cyril", "Sow any other seeds you like as well."),
+    ("Cyril", "I shall come back when the young plants flower.",
+     {"auto_advance_ms": 4000}),
+]
+
+LECTURE_P5_SPRING_1_DIALOGUE = [
+    ("Cyril", "Spring is here, Gregor!",
+     {"mood": 2, "highlight_words": ["Spring"], "pause": True}),
+    ("Cyril", "Now sow the seeds of your cross.",
+     {"highlight_words": ["seeds of your cross"], "pause": True}),
+    # Waits until a crossed seed (two different parents) has been sown.
+    ("Cyril", "You will find them in your seed bag, marked with both of their parents.",
+     {"highlight_words": ["both of their parents"], "highlight_target": "plant_button",
+      "unlock_buttons": ["plant_seeds_btn"], "pause": True, "no_skip": True,
+      "wait_for_condition": "f1_sown"}),
+    ("Cyril", "Sow any other seeds you like as well."),
+    ("Cyril", "I shall come back when the young plants flower.",
+     {"auto_advance_ms": 4000}),
+]
+
+LECTURE_P5_VISIT_1_DIALOGUE = [
+    ("Mendel", "Cyril, the children of my cross are flowering!",
+     {"portrait": "mendel", "highlight_words": ["children of my cross"],
+      "highlight_plants": "f1", "pause": True}),
+    ("Cyril", "Well done, Gregor!",
+     {"mood": 2}),
+    ("Cyril", "Let them set their pods. Then I shall show you how to keep track of your crosses.",
+     {"highlight_words": ["keep track"], "pause": True}),
+    ("Cyril", "I shall come back when their pods are ripe.",
+     {"auto_advance_ms": 4000}),
+]
+
+LECTURE_P5_VISIT_2_DIALOGUE = [
+    ("Mendel", "Cyril, the pods of the young plants are ripe.",
+     {"portrait": "mendel", "highlight_words": ["ripe"], "highlight_plants": "f1_ripe", "pause": True}),
+    # Waits until every ripe pod of the crossed plants is harvested.
+    ("Cyril", "Then harvest them, every one.",
+     {"highlight_words": ["harvest them"], "portrait": "mendel", "pause": True,
+      "no_skip": True, "unlock_buttons": ["harvest_btn", "inspect_btn"],
+      "highlight_plants": "f1_ripe", "wait_for_condition": "f1_harvested"}),
+    ("Mendel", "This will be a lot of work to keep track of all of them.",
+     {"portrait": "mendel", "pause": True}),
+    ("Cyril", "Indeed, but let me show you something else.",
+     {"mood": 2}),
+    # The TIE is the player's from here on (also in the tutorial).
+    ("Cyril", "Inspect one of the young plants again and open the »TIE«.",
+     {"highlight_words": ["TIE"], "highlight_target": "inspect_button",
+      "glow_targets": ["inspector_tie_button"], "allow_tie": True,
+      "tie_sections": {"plant": False, "archive": False, "tree": True, "tab": None},
+      "portrait": "mendel", "pause": True, "no_skip": True,
+      "highlight_plants": "f1", "wait_for_condition": "tie_open"}),
+    ("Mendel", "The TIE?",
+     {"portrait": "mendel", "pause": True}),
+    ("Cyril", "The Trait Inheritance Explorer. Your family book of peas.",
+     {"mood": 2, "highlight_words": ["Trait Inheritance Explorer"]}),
+    ("Cyril", "Every plant you have grown is recorded here.",
+     {"glow_targets": ["tie_list"], "tie_sections": {"archive": True}, "pause": True}),
+    ("Cyril", "Look at the family tree:",
+     {"highlight_words": ["family tree"], "glow_targets": ["tie_tree"],
+      "tie_sections": {"archive": False}}),
+    ("Cyril", "grandparents, parents and children, they will all be here.",
+     {"glow_targets": ["tie_tree"], "pause": True}),
+    ("Cyril", "Click any circle to look at that plant instead.",
+     {"glow_targets": ["tie_tree"], "auto_advance_ms": 3000}),
+    ("Cyril", "The buttons above choose which trait the pictures show.",
+     {"glow_targets": ["tie_trait_buttons"], "pause": True}),
+    ("Cyril", "Choose »Seed color«.",
+     {"highlight_words": ["Seed color"], "glow_targets": ["tie_seed_color_btn"],
+      "pause": True, "no_skip": True, "wait_for_condition": "tie_seed_color"}),
+    ("Cyril", "Under »Pod Seeds«, you can see each pod and its seeds.",
+     {"highlight_words": ["Pod Seeds"], "glow_targets": ["tie_pods"], "tie_tab": 0,
+      "pause": True}),
+    ("Cyril", "On the right, the seeds of all the pods are added up.",
+     {"glow_targets": ["tie_total_ratio"], "pause": True}),
+    ("Mendel", "So I no longer need to count every pea by hand!",
+     {"portrait": "mendel", "pause": True}),
+    ("Cyril", "Indeed! Now you can spend more time studying the results.",
+     {"mood": 2, "pause": True}),
+    # — the Genotype Explorer (after the TIE) —
+    ("Cyril", "One more window, Gregor. Close the TIE for now.",
+     {"highlight_words": ["One more window"], "pause": True, "no_skip": True,
+      "wait_for_condition": "tie_closed"}),
+    # Waits until a crossed plant is shown in the inspection window.
+    ("Cyril", "Inspect one of the young plants again.",
+     {"highlight_words": ["inspect"], "highlight_target": "inspect_button",
+      "portrait": "mendel", "pause": True, "no_skip": True, "skip_if": "f1_inspected",
+      "unlock_buttons": ["inspect_btn"], "wait_for_condition": "f1_inspected",
+      "highlight_plants": "f1"}),
+    ("Cyril", "Now open the »Genotype Explorer« at the bottom.",
+     {"highlight_words": ["Genotype Explorer"], "glow_targets": ["inspector_genotype_button"],
+      "close_wildlife": True,
+      "portrait": "mendel", "pause": True, "no_skip": True,
+      "wait_for_condition": "genotype_viewer_open"}),
+    ("Cyril", "Here every trait has its own row."),
+    ("Cyril", "At the top are seed shape and colour.",
+     {"highlight_words": ["seed shape and colour"]}),
+    ("Cyril", "Those traits you saw on the pea before you sowed it.",
+     {"pause": True}),
+    ("Cyril", "Below are the flower colour, the height, the pods and where the flowers sit."),
+    ("Cyril", "A question mark means the plant has not shown you that trait yet.",
+     {"highlight_words": ["question mark"], "pause": True}),
+    ("Mendel", "And these dots, under »Alleles«?",
+     {"portrait": "mendel", "highlight_words": ["Alleles"], "pause": True}),
+    ("Cyril", "They stand for what no eye can see: the hidden elements inside the plant.",
+     {"highlight_words": ["hidden elements"]}),
+    ("Mendel", "Two for every trait.",
+     {"portrait": "mendel"}),
+    ("Mendel", "One from the mother, one from the father, perhaps?",
+     {"portrait": "mendel", "highlight_words": ["one from the father"], "pause": True}),
+    ("Cyril", "That, Gregor, is for you to discover.",
+     {"mood": 2, "highlight_words": ["for you to discover"]}),
+    ("Cyril", "And it may keep you busy for some time.",
+     {"mood": 2, "auto_advance_ms": 3000}),
+    ("Cyril", "Close the window when you are done.",
+     {"pause": True, "no_skip": True, "wait_for_condition": "genotype_viewer_closed"}),
+    ("Cyril", "Now sow the seeds of your young plants right away.",
+     {"highlight_words": ["sow the seeds of your young plants"], "pause": True}),
+    # Waits until »F2« is chosen in the Choose Seeds window.
+    ("Cyril", "Their seeds are mixed in with all the others: press »Plant« and choose »F2«, the next generation.",
+     {"highlight_words": ["Plant", "F2"], "highlight_target": "plant_button",
+      "glow_targets": ["seed_ofcross_cb"], "unlock_buttons": ["plant_seeds_btn"],
+      "pause": True, "no_skip": True, "wait_for_condition": "seed_filter_ofcross"}),
+    # Waits until eight of them are sown (or the bag holds no more of them).
+    ("Cyril", "As many as you can: the more plants, the clearer the picture.",
+     {"highlight_words": ["As many as you can"], "highlight_target": "plant_button",
+      "unlock_buttons": ["plant_seeds_btn"], "pause": True, "no_skip": True,
+      "wait_for_condition": "f2_sown", "release_sun": True}),
+    ("Cyril", "I shall come back when they flower.",
+     {"auto_advance_ms": 4000}),
+]
+
+LECTURE_P5_SPRING_2_DIALOGUE = [
+    ("Cyril", "Spring once more, Gregor!",
+     {"mood": 2, "highlight_words": ["Spring"], "pause": True}),
+    ("Cyril", "Now sow the seeds of your young plants.",
+     {"highlight_words": ["seeds of your young plants"], "pause": True}),
+    # Waits until eight of them are sown (or the bag holds no more of them).
+    ("Cyril", "As many as you can: the more plants, the clearer the picture.",
+     {"highlight_words": ["As many as you can"], "highlight_target": "plant_button",
+      "unlock_buttons": ["plant_seeds_btn"], "pause": True, "no_skip": True,
+      "wait_for_condition": "f2_sown"}),
+    ("Cyril", "I shall come back when they flower.",
+     {"auto_advance_ms": 4000}),
+]
+
+# Part 5: all the grandchildren have flowered purple (white comes only by
+# a 1 in 4 chance): Cyril asks for more of them before visit 3.
+LECTURE_P5_MORE_F2_DIALOGUE = [
+    ("Cyril", "All your young plants flower purple, Gregor.",
+     {"highlight_words": ["flower purple"], "pause": True}),
+    ("Cyril", "Too few plants can hide what is there. Sow more of their seeds.",
+     {"highlight_words": ["Sow more of their seeds"], "highlight_target": "plant_button",
+      "unlock_buttons": ["plant_seeds_btn"], "pause": True, "no_skip": True,
+      "wait_for_condition": "f2_more_sown", "release_sun": True}),
+    ("Cyril", "I shall come back when they flower.",
+     {"auto_advance_ms": 4000}),
+]
+
+LECTURE_P5_VISIT_3_DIALOGUE = [
+    ("Mendel", "Cyril! Look: white flowers have appeared again!",
+     {"portrait": "mendel", "highlight_words": ["white flowers"], "pause": True}),
+    # the white parent of the cross: grandmother or grandfather
+    ("Mendel", lambda app: f"A few grandchildren bloom white, like their {_white_grandparent(app)}.",
+     {"portrait": "mendel", "highlight_words": ["like their grandmother", "like their grandfather"],
+      "pause": True}),
+    ("Cyril", "How curious! Perhaps the white was never truly lost.",
+     {"mood": 2, "highlight_words": ["never truly lost"], "auto_advance_ms": 3000}),
+    ("Cyril", "Open the »TIE« once more, for one of the white-flowering grandchildren.",
+     {"highlight_words": ["TIE"], "highlight_target": "inspect_button",
+      "glow_targets": ["inspector_tie_button"], "allow_tie": True,
+      "tie_sections": {"plant": False, "archive": False, "tree": True, "tab": None},
+      "portrait": "mendel", "pause": True, "no_skip": True, "tie_focus": "f2_white",
+      "highlight_plants": "f2_white", "wait_for_condition": "tie_open_f2_white"}),
+    ("Cyril", "Choose »Flower color«.",
+     {"highlight_words": ["Flower color"], "glow_targets": ["tie_flower_color_btn"],
+      "pause": True, "no_skip": True, "wait_for_condition": "tie_flower_color"}),
+    ("Cyril", "»Trait Ratio« counts its brothers and sisters for you.",
+     {"highlight_words": ["Trait Ratio"], "glow_targets": ["tie_ratio_btn"],
+      "pause": True, "no_skip": True, "wait_for_condition": "tie_tab_ratio"}),
+    ("Cyril", "Further down, all families of the same kind are counted together."),
+    ("Cyril", "Useful once you raise several families from the same kind of cross.",
+     {"highlight_words": ["several families"]}),
+    ("Cyril", "That pooled ratio is what counts when you claim one of your laws.",
+     {"highlight_words": ["pooled ratio"], "pause": True}),
+    ("Cyril", "And now open »Punnett Square«.",
+     {"highlight_words": ["Punnett Square"], "glow_targets": ["tie_punnett_btn"],
+      "pause": True, "no_skip": True, "wait_for_condition": "tie_tab_punnett"}),
+    ("Cyril", "It shows how the elements of two parents may meet in their children.",
+     {"pause": True}),
+    ("Cyril", "The small numbers beside it are your own counts.",
+     {"pause": True}),
+    ("Cyril", "»Best fit« searches your whole garden for the trait that follows the pattern most closely.",
+     {"highlight_words": ["Best fit"], "glow_targets": ["tie_best_fit"], "pause": True}),
+    ("Mendel", "Then the pattern is in the numbers, if only I grow enough plants.",
+     {"portrait": "mendel", "pause": True}),
+    ("Cyril", "Exactly. The more plants, the clearer it becomes.",
+     {"mood": 2, "auto_advance_ms": 3000}),
+    # — revealing the alleles —
+    ("Cyril", "One more thing, Gregor.",
+     {"pause": True}),
+    ("Cyril", "Both windows, the Genotype viewer and the TIE have a button:"),
+    ("Cyril", "»Reveal Genotype«.",
+     {"highlight_words": ["Reveal Genotype"], "glow_targets": ["tie_reveal_button"],
+      "pause": True}),
+    ("Mendel", "What is a Genotype and what will it do?",
+     {"portrait": "mendel"}),
+    ("Cyril", "It would save you years of counting!",
+     {"pause": True}),
+    ("Cyril", "And it would spoil everything.",
+     {"auto_advance_ms": 3000}),
+    ("Cyril", "No gardener can look inside a pea, Gregor. You have only your eyes and your patience.",
+     {"highlight_words": ["your eyes and your patience"], "pause": True}),
+    ("Cyril", "Once you reveal the genotype in a garden,"),
+    ("Cyril", "no law and no achievement can be won there any more.",
+     {"highlight_words": ["no law and no achievement"], "pause": True}),
+    # the reveal is shown on a white grandchild (aa, with Aa parents)
+    # (Cyril switches the TIE to a white grandchild himself, should it
+    # show a purple sibling now)
+    ("Cyril", "Let me show you a white-flowering grandchild again.",
+     {"highlight_words": ["white-flowering grandchild"], "tie_focus": "f2_white",
+      "skip_if": "tie_open_f2_white",
+      "pause": True, "no_skip": True, "wait_for_condition": "tie_open_f2_white"}),
+    ("Cyril", "Here, in my practice garden, it does no harm. Try it.",
+     {"highlight_words": ["Try it"], "glow_targets": ["tie_reveal_button"],
+      "pause": True, "no_skip": True, "wait_for_condition": "genotype_revealed"}),
+    ("Cyril", "Now tick »Show alleles« to see them on every plant in the family tree.",
+     {"highlight_words": ["Show alleles"], "glow_targets": ["tie_show_alleles"],
+      "pause": True, "no_skip": True, "wait_for_condition": "tie_show_alleles"}),
+    ("Cyril", "The capital letter is the dominant element, the small one the recessive.",
+     {"highlight_words": ["dominant", "recessive"], "pause": True}),
+    ("Mendel", "A over a... So the purple children carried the white all along!",
+     {"portrait": "mendel", "highlight_words": ["carried the white all along"], "pause": True}),
+    ("Cyril", "Remember it well. In your own garden you will have to"),
+    ("Cyril", "find it out by pure observation and counting.",
+     {"mood": 2, "highlight_words": ["observation and counting"], "pause": True}),
+    ("Cyril", "That is all I can teach you. The rest, the peas will tell you themselves.",
+     {"mood": 2, "auto_advance_ms": 3000}),
+    ("Cyril", "I have faith in you, Gregor, and good luck.",
+     {"mood": 2, "auto_advance_ms": 5000}),
+]
+
+_TUTORIAL_PART_AWARDS[6] = (
+    "tutorial_6", "The Hidden Elements",
+    "Purple, then white again in the grandchildren — and now you know where "
+    "to look. The rest, Gregor, the peas will tell you themselves.")
+
+
+def _p5_step(app):
+    return int(getattr(app, "_tutorial_p5", 0) or 0)
+
+
+def _p5_set(app, step):
+    app._tutorial_p5 = int(step)
+    try:
+        _pd = max(6, int(getattr(app, "_tutorial_part_done", 6) or 6))
+        _save_tutorial_progress(app, _pd)
+        _save_checkpoint(app, _pd)            # restart point after each step
+    except Exception:
+        pass
+
+
+def _play_part_5(app):
+    """The player said yes to the next lesson after part 4: part 5 begins
+    (its start save is what the map's »Restart« goes back to)."""
+    _cancel_seedling_watch(app)
+    app._tutorial_p5 = 0
+    try:
+        _save_tutorial_progress(app, max(6, int(getattr(app, "_tutorial_part_done", 6) or 6)),
+                                path=_part_start_path(_MAP_PART_STEPS[5][0]))
+    except Exception:
+        pass
+    # No winter any more: the seeds of the cross are sown right away
+    # (the tutorial's spring-only sowing rule is lifted for part 5).
+    app._ff_suggest_days = None
+    app._ff_stop_check = None
+    app._tut_no_sowing = False
+    app._tut_sow_any_season = True
+    _true_breed_flower_colour(app)
+
+    def _after():
+        _p5_set(app, 2)          # (step 1, the spring sowing, is part of this visit now)
+        _watch_p5(app)
+
+    _play_cyril_visit(app, LECTURE_P5_BRIDGE_DIALOGUE, after=_after)
+
+
+# step done -> (ready?, dialogue, morning only?, before playing)
+def _p5_table(app):
+    tgt = getattr(app, "_tut_p5_spring", None) or _p5_next_spring(app)
+    return {
+        1: (lambda: _p5_reached(app, tgt), LECTURE_P5_SPRING_1_DIALOGUE, False),
+        2: (lambda: any(int(getattr(p, "stage", 0) or 0) >= 5 for p in _f1_plants(app)),
+            LECTURE_P5_VISIT_1_DIALOGUE, True),
+        3: (lambda: _f1_ripe_left(app) > 0, LECTURE_P5_VISIT_2_DIALOGUE, True),
+        4: (lambda: _p5_reached(app, tgt), LECTURE_P5_SPRING_2_DIALOGUE, False),
+        5: (lambda: _f2_bloom_ready(app), LECTURE_P5_VISIT_3_DIALOGUE, True),
+    }
+
+
+def _watch_p5(app):
+    """Waits (once a second) for the next part 5 visit and plays it. A
+    long Fast Forward stops right there."""
+    _cancel_seedling_watch(app)
+    step = _p5_step(app)
+    if step >= 2:
+        app._tut_sow_any_season = True      # part 5 sows in any season (also after loading)
+    table = _p5_table(app)
+    if step not in table:
+        return
+    ready, dialogue, morning = table[step]
+    if step in (1, 4):
+        tgt = getattr(app, "_tut_p5_spring", None)
+        if tgt:
+            app._ff_suggest_days = lambda: _p5_days_to(app, tgt)
+
+    def _ok():
+        try:
+            hour = int(app.garden.clock_hour) % 24
+        except Exception:
+            hour = 9
+        # (step 3 is the harvest of the F1 pods: on a dry morning)
+        return ((not morning or 7 <= hour < 12) and bool(ready())
+                and (step != 3 or _fair_weather(app)))
+
+    app._ff_stop_check = _ok
+
+    def _check():
+        app._tutorial_seedling_job = None
+        if not getattr(app, "_tutorial_active", False):
+            return
+        if (getattr(app, "_tutorial_dialogue", None) is None
+                and not getattr(app, "fast_forward", False)):
+            if _ok():
+                app._ff_stop_check = None
+                _play_p5_visit(app, step, dialogue)
+                return
+            # visit 3 waits for a white grandchild: if every one of them has
+            # flowered purple and seeds are left, Cyril asks for more
+            if step == 5 and _f2_white_impossible(app) and _f2_seeds_left(app) > 0:
+                try:
+                    app.fast_forward = False
+                except Exception:
+                    pass
+                app._ff_stop_check = None
+                app._tut_no_sowing = False
+                app._tut_sow_any_season = True
+                _play_cyril_visit(app, LECTURE_P5_MORE_F2_DIALOGUE, after=lambda: _watch_p5(app))
+                return
+        app._tutorial_seedling_job = app.root.after(1000, _check)
+
+    app._tutorial_seedling_job = app.root.after(1000, _check)
+
+
+def _play_p5_visit(app, step, dialogue):
+    if step in (1, 4):
+        app._ff_suggest_days = None
+        app._tut_no_sowing = False
+    if step == 1:
+        _true_breed_flower_colour(app)
+    if step == 3:
+        app._tut_allow_tie = True
+        # the F2 seeds are sown right away (no second winter)
+        app._tut_no_sowing = False
+        app._tut_sow_any_season = True
+
+    def _after():
+        nxt = 5 if step == 3 else step + 1     # (step 4, the second spring, is skipped)
+        _p5_set(app, nxt)
+        if nxt >= 6:
+            app._tut_insp_sections = None
+            app._tut_tie_sections = None         # the player's own TIE sections again
+            app._seed_filter_gen = None          # the seed window shows every generation again
+            app._tut_mother_colour = None
+            app._tut_gave_sow_colours = False
+            app._seed_filter_crossed = app._seed_filter_ofcross = False
+            _award_tutorial_part(app, 6)
+            return
+        _watch_p5(app)
+
+    app._tutorial_keep_hours = False
+    if step in (2, 3, 5):
+        _tutorial_force_sun(app)
+        _start_sun_keeper(app)
     _play_cyril_visit(app, dialogue, after=_after)
 
 
@@ -5213,7 +6428,7 @@ def _watch_for_ageing(app):
             hour = int(app.garden.clock_hour) % 24
         except Exception:
             hour = 9
-        return 7 <= hour < 12 and _enough_senescent(app)
+        return 7 <= hour < 12 and _enough_senescent(app) and _fair_weather(app)
 
     app._ff_stop_check = _ready
 
@@ -5266,6 +6481,7 @@ def _play_stage_lecture(app, part):
         if part >= 6:
             _set_ff_locked(app, False)       # Fast Forward is the player's now
             app._tut_insp_sections = None    # the player's own inspector sections again
+            app._tut_tie_sections = None         # the player's own TIE sections again
         _release_sun(app)                    # the weather is free again
         _unlock_sidebar(app)
         _cyril_leaves(app)
@@ -5366,7 +6582,15 @@ def _resume_tutorial(app, progress, was_active=False):
         _watch_for_next_part(app, app._tutorial_part_done)
         if app._tutorial_part_done >= 6:
             # parts 4 and 5 go on where they were left
-            if getattr(app, "_tutorial_spring_seen", False):
+            if int(getattr(app, "_tutorial_cross_done", 0) or 0) >= 3:
+                # part 5
+                if _p5_step(app) == 0:
+                    app.root.after(1500, lambda: _play_part_5(app))
+                else:
+                    if _p5_step(app) >= 4:
+                        app._tut_allow_tie = True
+                    _watch_p5(app)
+            elif getattr(app, "_tutorial_spring_seen", False):
                 _watch_for_cross_visit(app, int(getattr(app, "_tutorial_cross_done", 0) or 0) + 1)
             elif getattr(app, "_tutorial_ageing_seen", False):
                 _watch_for_spring(app)
@@ -5376,6 +6600,11 @@ def _resume_tutorial(app, progress, was_active=False):
 
 def exit_tutorial(app):
     app._tut_insp_sections = None            # the player's own inspector sections again
+    app._tut_tie_sections = None         # the player's own TIE sections again
+    app._seed_filter_gen = None
+    app._tut_mother_colour = None
+    app._tut_gave_sow_colours = False
+    app._seed_filter_crossed = app._seed_filter_ofcross = False
     """
     Leaves the tutorial and returns to the normal simulator. Bound to the
     Monastery map's "Mendel's Garden" region (replacing what used to open
@@ -5391,6 +6620,7 @@ def exit_tutorial(app):
         _save_tutorial_progress(app, int(app._tutorial_part_done))
     _cancel_seedling_watch(app)
     app._ff_suggest_days = None         # Fast Forward suggests 3 days again
+    app._tut_allow_tie = False
     app._tut_no_sowing = False
     app._tutorial_policy_off = True     # all buttons come back
     app._tutorial_portrait_free = False
@@ -5442,7 +6672,7 @@ _TUTORIAL_PARTS = [
     ("Part 2", "The Seedlings", [(3, 0.5, _P_PURPLE)]),                    # a leafy young plant
     ("Part 3", "Buds, Flowers & Pods", [(4, 0.6, _P_BUDS), (7, 1.0, _P_PURPLE)]),  # buds … ripe pods
     ("Part 4", "Crossing", [(5, 0.95, _P_PURPLE), "x", (5, 0.95, _P_WHITE)]),        # purple × white
-    ("Part 5", "Coming soon", [(7, 1.0, _P_WHITE)]),
+    ("Part 5", "The Hidden Elements", [(5, 0.95, _P_PURPLE), (5, 0.95, _P_WHITE)]),   # F2: purple and white again
 ]
 
 # Part 4 (»Crossing«: the plants age, the winter passes, then the three
@@ -5450,7 +6680,7 @@ _TUTORIAL_PARTS = [
 # by the "later_steps" flags — so on the map it runs from step 7 (its
 # start save, part7start, taken when Cyril comes for the ageing talk) to
 # step 8 (the crossed pod harvested); see _map_progress_step.
-_MAP_PART_STEPS = {1: (1, 1), 2: (2, 2), 3: (3, 6), 4: (7, 8)}
+_MAP_PART_STEPS = {1: (1, 1), 2: (2, 2), 3: (3, 6), 4: (7, 8), 5: (9, 10)}
 
 
 def _map_progress_step(progress):
@@ -5460,6 +6690,10 @@ def _map_progress_step(progress):
     pd = int(progress.get("tutorial_part_done", 0) or 0)
     if pd >= 6:
         steps = progress.get("later_steps") or {}
+        if int(steps.get("p5", 0) or 0) >= 6:
+            return 10
+        if int(steps.get("p5", 0) or 0) >= 1:
+            return 9
         if int(steps.get("cross_done", 0) or 0) >= 3:
             return 8
     return pd
@@ -5594,7 +6828,7 @@ def show_tutorial_map(app):
         pass
 
     # fonts as in the inspection window
-    tk.Label(win, text="Friar Cyril's Lessons", font=("Segoe UI", 18, "bold"),
+    tk.Label(win, text="Abbot Cyril's Lessons", font=("Segoe UI", 18, "bold"),
              bg=BG, fg=FG).pack(pady=(14, 2))
     tk.Label(win, text="Choose where to continue your training.",
              font=("Segoe UI", 12, "italic"), bg=BG, fg="#7a6a55").pack(pady=(0, 8))
@@ -5785,6 +7019,7 @@ def start_tutorial(app, lecture_index=0, choice=None):
         app._tutorial_session = getattr(app, "_tutorial_session", 0) + 1
         app._tutorial_part_done = 0
         _set_later_steps(app)                # parts 4 and 5 start over too
+        app._tut_starter_n = 0               # purple and white starter seeds in turn
         app._tutorial_active = True
         try:
             app._refresh_plot_switcher_buttons()     # garden 2 closed again

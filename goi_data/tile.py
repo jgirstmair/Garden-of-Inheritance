@@ -529,6 +529,58 @@ class TileCanvas(tk.Canvas):
                 self._icon_topleft = None
         except Exception:
             pass
+        self._update_snow_top()
+
+    # Snow lying ON a sown seed / young seedling (drawn above its picture):
+    # the seed is under the snow, a seedling pokes out of it.
+    _SNOW_TOP_CACHE = {}
+
+    def _snow_top_photo(self, w, h, level):
+        key = (w, h, level)
+        ph = self._SNOW_TOP_CACHE.get(key)
+        if ph is not None or not _PIL_AVAILABLE:
+            return ph
+        try:
+            import random as _r
+            from PIL import ImageDraw as _D, ImageFilter as _F
+            S = 3
+            # transparent snow colour (not black): no dark fringe when blurred
+            im = _PilImage.new("RGBA", (w * S, h * S), (238, 243, 249, 0))
+            d = _D.Draw(im)
+            a = int(245 * min(1.0, 0.35 + level / 7.0))
+            rng = _r.Random(w * 31 + h)
+            # a low drift: a few overlapping soft mounds
+            for i in range(7):
+                cx = rng.uniform(0.15, 0.85) * w * S
+                rx = rng.uniform(0.18, 0.34) * w * S
+                ry = rng.uniform(0.45, 0.8) * h * S
+                d.ellipse((cx - rx, h * S - ry, cx + rx, h * S + ry * 0.6),
+                          fill=(238, 243, 249, a))
+            im = im.filter(_F.GaussianBlur(S * 1.2)).resize((w, h), _PilImage.LANCZOS)
+            ph = _PilImageTk.PhotoImage(im)
+        except Exception:
+            ph = None
+        self._SNOW_TOP_CACHE[key] = ph
+        return ph
+
+    def _update_snow_top(self):
+        """A sown seed (not yet come up) lies under the snow: its picture
+        is hidden while the plot is snowed over."""
+        try:
+            self.delete("snowtop")
+            p = self.plant
+            cover = float(getattr(self, "snow_cover", 0.0) or 0.0)
+            stage = int(getattr(p, "stage", 0) or 0) if p is not None else 0
+            hide = (p is not None and getattr(p, "alive", True) and stage <= 1
+                    and cover > 0.15 and not getattr(self, "special_object", None))
+            if hide:
+                self.itemconfig(self.img_item, state="hidden")
+                self._seed_snow_hidden = True
+            elif getattr(self, "_seed_snow_hidden", False):
+                self.itemconfig(self.img_item, state="normal")
+                self._seed_snow_hidden = False
+        except Exception:
+            pass
 
     def _create_label(self):
         """Create the status label (plant ID or dead)."""
@@ -1919,6 +1971,7 @@ class TileCanvas(tk.Canvas):
         if abs(cover - self.snow_cover) < 0.004:
             return                                 # skip trivial updates
         self.snow_cover = cover
+        self._update_snow_top()                    # snow over a seed / seedling
         self._bg_cache_key = None                  # force image rebake with new snow level
         last = getattr(self, "_last_applied_hex", self.soil.lstrip("#") and self.soil)
         self.set_soil_color(last)                  # re-composite with new cover

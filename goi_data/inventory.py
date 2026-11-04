@@ -526,9 +526,53 @@ class PollenChooserPopup(Toplevel):
             if flower_pos and flower_color:
                 break
 
-        # Flower icon (hi-res first, then standard)
+        # Flower icon: drawn like the garden's plants in the drawn styles,
+        # the classic picture otherwise (hi-res first, then standard)
         flower_loaded = False
-        if flower_pos and flower_color:
+        _style = str(getattr(self.app, "_plant_style", "classic") or "classic") if self.app else "classic"
+        if flower_color and _style != "classic":
+            try:
+                import pea_render as _pr
+                from PIL import ImageTk as _ITk2, Image as _PImg
+                # the source plant as it stands in the garden (drawn styles)
+                _pim = None
+                _src = None
+                try:
+                    _src = next((t.plant for t in getattr(self.app, "tiles", []) or []
+                                 if getattr(t, "plant", None) is not None
+                                 and str(getattr(t.plant, "id", "")) == str(source_id)), None)
+                except Exception:
+                    _src = None
+                if _src is not None:
+                    try:
+                        self.app._ensure_tile_icon(_src)
+                    except Exception:
+                        pass
+                    _pim = _src.__dict__.get("_grown_pil")
+                if _pim is None:
+                    # plant no longer on the plots: drawn in flower from its traits
+                    _tr = {}
+                    for pkt in packets:
+                        _tr.update(getattr(pkt, "traits", {}) or {})
+                    _pim = _pr.plant_image(_tr, 7, _pr.model_age(5, 0.5),
+                                           painterly=("painted" in _style),
+                                           staked=("staked" in _style), size=128)
+                _pim = _pim.convert("RGBA")
+                _bb = _pim.getbbox()
+                if _bb:
+                    _pim = _pim.crop(_bb)
+                _ph = int(sz * 1.5)
+                _sc = _ph / float(max(_pim.size))
+                _pim = _pim.resize((max(1, int(_pim.width * _sc)), max(1, int(_pim.height * _sc))),
+                                   _PImg.LANCZOS)
+                img = _ITk2.PhotoImage(_pim)
+                tk.Label(icon_row, image=img).pack(side="left", padx=(0, 4))
+                self._img_refs.append(img)
+                card._img_refs.append(img)
+                flower_loaded = True
+            except Exception:
+                flower_loaded = False
+        if flower_pos and flower_color and not flower_loaded:
             for path_fn in (flower_icon_path_hi, flower_icon_path):
                 try:
                     p = path_fn(flower_pos, flower_color)
