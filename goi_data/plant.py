@@ -808,6 +808,17 @@ class Plant:
             evap_rate *= 1.5
         evap = max(0.2, min(3.3, evap_rate * weather_factor))
         self.water = max(0, int(round(self.water - evap)))
+        # Its spot in the garden: on Realistic a few patches dry faster (set
+        # by the game before each hour; 1.0 everywhere else). The extra is
+        # gathered in fractions and taken off a whole point at a time, so
+        # it stays as small as meant (rounding each hour made it jump).
+        soil = float(getattr(self, "soil_dry", 1.0) or 1.0)
+        if soil > 1.0:
+            debt = float(getattr(self, "_soil_debt", 0.0) or 0.0) + evap * (soil - 1.0)
+            whole = int(debt)
+            if whole:
+                self.water = max(0, self.water - whole)
+            self._soil_debt = debt - whole
         
         # Rain adds water (with ceiling)
         if weather in ("🌧", "⛈") and self.water < 55:
@@ -856,33 +867,58 @@ class Plant:
             self.alive = False
             # Don't change stage - dead plant keeps its stage at time of death
     
-    def water_plant(self, phase: str):
+    # Watering in the heat of the day: on a hot, sunny midday a good part of
+    # the water evaporates from the soil before the roots get it (the old
+    # rule — a health penalty for ANY watering between 11:00 and 18:00,
+    # whatever the weather — isn't true to life: wet leaves don't scorch).
+    MIDDAY_HEAT_C = 25.0          # from this temperature on ...
+    MIDDAY_HOURS = (11, 16)       # ... between 11:00 and 15:59 ...
+    MIDDAY_SHARE = 0.6            # ... in sunshine only 60 % of the water stays
+    SCORCH_C = 30.0               # very hot: a plant already weak suffers a little
+
+    @classmethod
+    def watering_in_heat(cls, weather, temp, hour) -> bool:
+        """Is this a hot, sunny midday, when watering is wasteful?"""
+        try:
+            return (weather in ("☀️", "🌞") and float(temp) >= cls.MIDDAY_HEAT_C
+                    and cls.MIDDAY_HOURS[0] <= int(hour) % 24 < cls.MIDDAY_HOURS[1])
+        except Exception:
+            return False
+
+    def water_plant(self, phase: str, weather=None, temp=None, hour=None, harm=True):
         """
         Manually water the plant.
-        
+
         Args:
-            phase: Current time of day ("morning", "noon", "afternoon", "evening")
-            
+            phase: Current time of day (kept for old callers; the time that
+                counts is `hour`)
+            weather, temp, hour: the weather symbol, °C and the clock hour
+                now; without them watering always works in full
+            harm: False on Casual — the heat only wastes water there
+
         Returns:
             Status message
         """
         if not self.alive:
             return "Plant is dead."
-        
-        self.water = min(100, self.water + 30)
-        
-        # Midday watering causes stress
-        if phase in ("noon", "afternoon"):
-            penalty = random.randint(1, 3) if self.health >= 50 else random.randint(5, 10)
+
+        hot = self.watering_in_heat(weather, temp, hour)
+        gain = int(round(30 * self.MIDDAY_SHARE)) if hot else 30
+        self.water = min(100, self.water + gain)
+        if not hot:
+            return "Watered."
+        try:
+            scorching = float(temp) >= self.SCORCH_C
+        except Exception:
+            scorching = False
+        if harm and scorching and self.health < 50:
+            penalty = random.randint(2, 5)
             self.health = max(0, self.health - penalty)
-            
             if self.health == 0:
                 self.alive = False
                 # Don't change stage - dead plant keeps its stage
-            
-            return f"Watered (stress -{penalty})."
-        
-        return "Watered."
+            return f"Watered in the midday heat: part of it evaporated (weak plant stressed -{penalty})."
+        return "Watered in the midday heat: part of it evaporated."
     
     # ========================================================================
     # Reproduction & Pollination

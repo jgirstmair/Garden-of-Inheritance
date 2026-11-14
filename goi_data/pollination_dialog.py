@@ -9,6 +9,8 @@ import tkinter as tk
 from tkinter import Canvas
 from PIL import Image, ImageTk
 import math
+from emasculation_dialog import (_icfg, _set_cursor, _coords, bind_motion_coalesced,
+                                 path_dist)
 
 # Same look as the plant inspection window: cream background, dark brown
 # text, Segoe UI, flat buttons (Labels, so the colours also show on a Mac).
@@ -261,10 +263,10 @@ class PollinationDialog(tk.Toplevel):
         
         # Bind events
         self.canvas.bind("<Button-1>", self._on_canvas_click)
-        self.canvas.bind("<Motion>", self._on_mouse_move)
+        bind_motion_coalesced(self, self._on_mouse_move)
         
         # Set default cursor
-        self.canvas.config(cursor="crosshair")
+        _set_cursor(self, "crosshair")
         
         # Success message frame
         self.success_frame = tk.Frame(self, bg=BG, height=0)
@@ -492,14 +494,17 @@ class PollinationDialog(tk.Toplevel):
         # then sticks to it as well).
         if self.has_custom_cursor and self.cursor_icon:
             tx, ty = getattr(self, "_brush_tip", (0, 0))
-            self.canvas.coords(self.cursor_icon, event.x - tx, event.y - ty)
-            self.canvas.itemconfig(self.cursor_icon, state='normal')
-            self.canvas.tag_raise(self.cursor_icon)
-            self.canvas.config(cursor="none")
+            _coords(self, self.cursor_icon, event.x - tx, event.y - ty)
+            _icfg(self, self.cursor_icon, state='normal')
+            if not getattr(self, "_cursor_on_top", False):
+                self.canvas.tag_raise(self.cursor_icon)
+                self._cursor_on_top = True
+            _set_cursor(self, "none")
+        # (along the whole way since the last handled mouse position)
         for i, a in enumerate(self._anthers):
             if i in self._touched:
                 continue
-            if math.hypot(event.x - a["x"], event.y - a["y"]) < a["r"]:
+            if path_dist(a["x"], a["y"], event) < a["r"]:
                 self._touched.add(i)
                 self.anthers_touched = len(self._touched)
                 if not getattr(self, "_pollen_applied", False):
@@ -509,31 +514,22 @@ class PollinationDialog(tk.Toplevel):
                 except Exception:
                     pass
 
-        # Check if hovering over stigma
-        dx = event.x - self.stigma_scaled_x
-        dy = event.y - self.stigma_scaled_y
-        distance = math.sqrt(dx * dx + dy * dy)
+        # Check if hovering over stigma (also passed on the way since the
+        # last handled mouse position)
+        distance = path_dist(self.stigma_scaled_x, self.stigma_scaled_y, event)
         
         if distance < self.click_tolerance:
             # Hovering over stigma - keep indicator hidden but show custom cursor
             # Stigma indicator remains hidden at all times
-            
-            # Show custom cursor
-            if self.has_custom_cursor and self.cursor_icon:
-                tx, ty = getattr(self, "_brush_tip", (0, 0))
-                self.canvas.coords(self.cursor_icon, event.x - tx, event.y - ty)
-                self.canvas.itemconfig(self.cursor_icon, state='normal')
-                self.canvas.tag_raise(self.cursor_icon)
-                self.canvas.config(cursor="none")
-            else:
-                self.canvas.config(cursor="hand2")
+            if not (self.has_custom_cursor and self.cursor_icon):
+                _set_cursor(self, "hand2")
             # moving the brush tip onto the stigma is enough (no click needed)
             if distance < self.click_tolerance * 0.7:
                 self._apply_pollen()
         else:
             # Not hovering over the stigma (the brush stays visible)
             if not (self.has_custom_cursor and self.cursor_icon):
-                self.canvas.config(cursor="crosshair")
+                _set_cursor(self, "crosshair")
     
     def _on_canvas_click(self, event):
         """Handle click on canvas to check if stigma was clicked."""

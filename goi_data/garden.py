@@ -736,7 +736,9 @@ class GardenEnvironment:
         count = 0
         for plant in list(self.plants) if self.plants else []:
             if plant.alive:
-                plant.water_plant(self.phase)
+                plant.water_plant(self.phase, weather=getattr(self, "weather", None),
+                                  temp=getattr(self, "temp", None),
+                                  hour=getattr(self, "clock_hour", None))
                 count += 1
             else:
                 self.unregister_plant(plant)

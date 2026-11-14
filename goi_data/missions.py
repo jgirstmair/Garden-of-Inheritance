@@ -45,6 +45,17 @@ RECIPROCAL_NEED_SEEDS = 10     # or harvested seeds, for seed shape / colour
 WATCH_MS = 4000                # how often the missions are checked
 
 
+def _click(app, widget, fn):
+    """A click that acts when the mouse button is released over the widget
+    (the game's _bind_click): rebuilding or closing the window while the
+    button is still pressed over it crashed Tk on the Mac."""
+    b = getattr(app, "_bind_click", None)
+    if b is not None:
+        b(widget, fn)
+    else:
+        widget.bind("<Button-1>", lambda e: fn())
+
+
 def _norm(v):
     v = str(v or "").strip().lower()
     return {"dwarf": "short"}.get(v, v)
@@ -234,19 +245,36 @@ def _filial(plants, pid, memo=None, depth=0):
 PURE_NEED = 15     # selfed offspring that showed the trait, all like the parent
 
 
+def pure_line_trait(app):
+    """The trait the player chose for True Breeders (None: not chosen)."""
+    if getattr(app, "_active_mission", None) == "mission_pure_line":
+        k = (getattr(app, "_active_mission_params", None) or {}).get("trait")
+    else:
+        k = (getattr(app, "_mission_choice", None) or {}).get("mission_pure_line")
+    return k if k in _TRAIT_NAME else None
+
+
+def setup_pure_line(app):
+    return {"trait": (getattr(app, "_mission_choice", None) or {}).get("mission_pure_line")}
+
+
 def check_pure_line(app):
-    """Two pure lines of one trait, one for each form (e.g. a purple and a
-    white line): each a parent whose PURE_NEED selfed offspring showed the
-    trait, all like it."""
+    """Two true-breeding lines of the chosen trait, one for each form (e.g. a purple
+    and a white line): each a parent whose PURE_NEED selfed offspring showed
+    the trait, all like it. (Without a chosen trait — older saves — the
+    trait closest to it counts.)"""
     from collections import Counter
     plants = _all_plants(app)
     kids = _selfed_children(plants)
+    chosen = pure_line_trait(app)
     # best line per (trait, form): (score, parent, Counter)
     lines = {}
     for pid, ch in kids.items():
         par = plants.get(pid)
         for key, *_ in TRAITS:
-            if key in SEED_TRAITS:
+            if chosen is not None and key != chosen:
+                continue
+            if chosen is None and key in SEED_TRAITS:
                 continue
             form = _known(par, key)
             if not form:
@@ -270,12 +298,14 @@ def check_pure_line(app):
         txt = (f"{lbl} (#{pid}): {min(tot, PURE_NEED)}/{PURE_NEED} offspring showing their "
                f"{_TRAIT_NAME[key]}  ({_counts_line(c)})")
         if not ok:
-            txt += " \u2014 not pure"
+            txt += " \u2014 not a true breeder"
         return (txt, done)
 
-    # the trait closest to two pure lines
-    best_key, best_score = None, None
+    # the chosen trait (else the one closest to two true-breeding lines)
+    best_key, best_score = chosen, None
     for key, _n, dom, rec in TRAITS:
+        if chosen is not None:
+            break
         if key in SEED_TRAITS:
             continue
         sc = tuple(sum(x) for x in zip(*[(lines[(key, f)][0][0], lines[(key, f)][0][1],
@@ -287,9 +317,16 @@ def check_pure_line(app):
     dom, rec = _dominant(key), _recessive(key)
     if not lines:
         n = sum(len(v) for v in kids.values())
+        if chosen is not None:
+            items = [("Let plants pollinate themselves and sow their seeds", n > 0),
+                     line_text(key, dom), line_text(key, rec)]
+            return Progress(False, items,
+                            (f"Wait until the young plants show their {_TRAIT_NAME[key]}." if n else
+                             f"Harvest the seeds of a plant with {_form_label(key, dom)} and of one "
+                             f"with {_form_label(key, rec)}, and sow them."))
         items = [("Let plants pollinate themselves and sow their seeds", n > 0),
-                 (f"A pure line of one form: {PURE_NEED} offspring all like their parent", False),
-                 ("A pure line of the other form of the same trait", False)]
+                 (f"A true breeder of one form: {PURE_NEED} offspring all like their parent", False),
+                 ("A true breeder of the other form of the same trait", False)]
         return Progress(False, items,
                         ("Wait until the young plants show their traits." if n else
                          "Harvest the seeds of a purple and of a white plant, and sow them."))
@@ -314,33 +351,278 @@ def check_pure_line(app):
 # EASY 2 — Seven characters
 # ---------------------------------------------------------------------------
 
+SEVEN_KEY = "mission_seven"
+
+# Each form as the notebook offers it: (word, how it looks — after Mendel's
+# own descriptions, 1866) and what Cyril adds once it is named correctly.
+SEVEN_FORMS = {
+    ("seed_shape", "round"): ("round", "smooth and round, at most with shallow dents",
+                              "Round peas keep their shape as they dry: they store mostly starch."),
+    ("seed_shape", "wrinkled"): ("wrinkled", "angular and deeply wrinkled",
+                                 "Wrinkled peas hold more sugar and water, so they shrink and "
+                                 "crease as they dry."),
+    ("seed_color", "yellow"): ("yellow", "the seed leaves inside the pea are pale to bright yellow",
+                               "In yellow peas the green fades from the seed leaves as they ripen."),
+    ("seed_color", "green"): ("green", "the seed leaves inside the pea are a clear green",
+                              "Green peas keep their green even when they are fully ripe."),
+    ("flower_color", "purple"): ("purple", "violet standard and purple wings",
+                                 "Purple-flowered plants have grey or brown seed coats, too, and "
+                                 "often a reddish spot where the leaves join the stem."),
+    ("flower_color", "white"): ("white", "all petals white",
+                                "White-flowered plants have white seed coats as well: one element "
+                                "colours both."),
+    ("plant_height", "tall"): ("tall", "a long stem: the plant grows high",
+                               "Mendel's tall plants climbed six to seven feet high."),
+    ("plant_height", "short"): ("dwarf", "a short stem: the plant stays low and compact",
+                                "Mendel's dwarf plants stayed at three quarters of a foot to a "
+                                "foot and a half."),
+    ("pod_shape", "inflated"): ("inflated", "smoothly arched, not pinched between the seeds (a smooth outline)",
+                                "An inflated pod has a stiff, papery inner layer that keeps it taut."),
+    ("pod_shape", "constricted"): ("constricted", "deeply pinched in between the seeds (a wavy outline)",
+                                   "A constricted pod lacks the stiff inner layer, so it shrinks "
+                                   "around the seeds."),
+    ("pod_color", "green"): ("green", "light to dark green while unripe",
+                             "Green pods stay green until they ripen and dry."),
+    ("pod_color", "yellow"): ("yellow", "a vivid yellow while still unripe",
+                              "Yellow pods are yellow even while young and full of life; the "
+                              "stalks and leaf veins often are, too."),
+    ("flower_position", "axial"): ("axial", "the flowers spread along the stem, where the "
+                                   "leaves join it",
+                                   "Axial flowers open one after another, up along the stem."),
+    ("flower_position", "terminal"): ("terminal", "the flowers bunched together at the top "
+                                      "of the stem",
+                                      "With terminal flowers the top of the stem is often "
+                                      "broadened, too."),
+}
+
+
+def seven_active(app):
+    m = active_mission(app)
+    return m is not None and m.get("key") == SEVEN_KEY
+
+
+def _sparams(app):
+    """The notebook of »The Magnificent Seven«: recorded {trait: {form: plant
+    id}} and wrong answers {"id:trait": day} (saved with the garden)."""
+    p = getattr(app, "_active_mission_params", None)
+    if not isinstance(p, dict):
+        p = {}
+        app._active_mission_params = p
+    if not isinstance(p.get("recorded"), dict):
+        p["recorded"] = {}
+    if not isinstance(p.get("wrong"), dict):
+        p["wrong"] = {}
+    return p
+
+
+def _seven_today(app):
+    try:
+        return int(app._today())
+    except Exception:
+        return 0
+
+
+def _plant_counts(plant):
+    """Grown from a seed harvested in this garden (not a starter)."""
+    m = getattr(plant, "seed_parent_id", None)
+    if m in (None, "", -1):
+        m = getattr(plant, "mother_id", None)
+    return m not in (None, "", -1)
+
+
+def _plant_form(plant, trait):
+    """The form of `trait` the plant shows (None while it is not discovered)."""
+    if trait in SEED_TRAITS:
+        v = (getattr(plant, "traits", {}) or {}).get(trait)
+    else:
+        rt = getattr(plant, "revealed_traits", None) or {}
+        if trait not in rt:
+            return None
+        v = (getattr(plant, "traits", {}) or {}).get(trait) or rt.get(trait)
+    v = _norm(v)
+    return v if (trait, v) in SEVEN_FORMS else None
+
+
+def seven_status(app, plant, trait):
+    """How the inspection window shows this trait of the plant while the
+    mission runs: None (nothing to record here: no mission, a starter, not
+    discovered), "recorded" (this form is in the notebook), "locked" (named
+    wrongly today) or "record"."""
+    if plant is None or not seven_active(app) or not _plant_counts(plant):
+        return None
+    form = _plant_form(plant, trait)
+    if form is None:
+        return None
+    p = _sparams(app)
+    if form in (p["recorded"].get(trait) or {}):
+        return "recorded"
+    if p["wrong"].get(f"{getattr(plant, 'id', '')}:{trait}") == _seven_today(app):
+        return "locked"
+    return "record"
+
+
+def seven_word(trait, form):
+    """The form in the notebook's words (»dwarf« for short)."""
+    return SEVEN_FORMS.get((trait, _norm(form)), (str(form or ""),))[0]
+
+
+def open_seven_record(app, plant, trait, on_done=None, near=None):
+    """Asks which of the two forms the plant shows. Named correctly, the
+    form goes into the notebook; named wrongly, this plant can't record
+    this trait again until tomorrow."""
+    if seven_status(app, plant, trait) != "record":
+        return None
+    old = getattr(app, "_seven_win", None)
+    try:
+        if old is not None and old.winfo_exists():
+            old.destroy()
+    except Exception:
+        pass
+    import random as _r
+    form = _plant_form(plant, trait)
+    pid = getattr(plant, "id", "?")
+    bg = getattr(app, "INSPECTOR_BG", BG)
+    win = tk.Toplevel(app.root)
+    app._seven_win = win
+    win.title("Your notebook")
+    win.configure(bg=bg)
+    win.resizable(False, False)
+    try:
+        win.attributes("-topmost", True)
+    except Exception:
+        pass
+    outer = tk.Frame(win, bg=bg, padx=22, pady=16)
+    outer.pack(fill="both", expand=True)
+    tk.Label(outer, text=f"{_TRAIT_NAME[trait].capitalize()} of plant #{pid}",
+             font=("Segoe UI", 18, "bold"), bg=bg, fg=INK).pack(anchor="w")
+    tk.Label(outer, text="Look at the plant closely. Which form does it show?",
+             font=("Segoe UI", 13, "italic"), bg=bg, fg=MUTED).pack(anchor="w", pady=(2, 10))
+    opts = tk.Frame(outer, bg=bg)
+    opts.pack(fill="x")
+    forms = [f for (k, f) in SEVEN_FORMS if k == trait]
+    _r.shuffle(forms)
+    result = tk.Frame(outer, bg=bg)
+    result.pack(fill="x", pady=(12, 0))
+    state = {"done": False}
+    cards = []
+
+    def _close():
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    def _answer(f):
+        if state["done"]:
+            return
+        state["done"] = True
+        p = _sparams(app)
+        ok = (f == form)
+        if ok:
+            p["recorded"].setdefault(trait, {})[form] = str(pid)
+        else:
+            p["wrong"][f"{pid}:{trait}"] = _seven_today(app)
+        for c, cf in cards:
+            on = (cf == f)
+            colr = (SEL_BG if on else CARD)
+            c.configure(bg=colr, highlightbackground=(SEL_EDGE if on else EDGE), cursor="")
+            for w_ in c.winfo_children():
+                w_.configure(bg=colr, cursor="")
+        word = SEVEN_FORMS[(trait, form)][0]
+        if ok:
+            tk.Label(result, text=f"\u2713  Recorded: {_form_label(trait, form)}",
+                     font=("Segoe UI", 15, "bold"), bg=bg, fg=GREEN).pack(anchor="w")
+            tk.Label(result, text="Cyril: \u201c" + SEVEN_FORMS[(trait, form)][2] + "\u201d",
+                     font=("Segoe UI", 13, "italic"), bg=bg, fg=INK, wraplength=520,
+                     justify="left").pack(anchor="w", pady=(4, 0))
+            try:
+                app._toast(f"Into your notebook: {word} ({_TRAIT_NAME[trait]}, #{pid}).",
+                           level="info")
+            except Exception:
+                pass
+        else:
+            tk.Label(result, text="Not quite, Gregor. Look again at the picture.",
+                     font=("Segoe UI", 15, "bold"), bg=bg, fg="#a0522d").pack(anchor="w")
+            tk.Label(result, text=(f"Plant #{pid} can show you its {_TRAIT_NAME[trait]} again "
+                                   "tomorrow; another plant may show it today."),
+                     font=("Segoe UI", 13, "italic"), bg=bg, fg=MUTED, wraplength=520,
+                     justify="left").pack(anchor="w", pady=(4, 0))
+        btn = tk.Label(result, text="Close", font=("Segoe UI", 14, "bold"), bg="#e8e0cf",
+                       fg=INK, padx=14, pady=4, cursor="hand2")
+        btn.pack(anchor="e", pady=(10, 0))
+        _click(app, btn, _close)
+        try:
+            check_all(app)
+        except Exception:
+            pass
+        _refresh_indicator(app)
+        if on_done is not None:
+            try:
+                on_done()
+            except Exception:
+                pass
+
+    for i, f in enumerate(forms):
+        word, desc, _x = SEVEN_FORMS[(trait, f)]
+        c = tk.Frame(opts, bg=CARD, cursor="hand2", padx=12, pady=8, highlightthickness=2,
+                     highlightbackground=EDGE)
+        c.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))
+        opts.grid_columnconfigure(i, weight=1, uniform="o")
+        tk.Label(c, text=word, font=("Segoe UI", 16, "bold"), bg=CARD, fg=INK,
+                 cursor="hand2").pack(anchor="w")
+        tk.Label(c, text=desc, font=("Segoe UI", 13), bg=CARD, fg=MUTED, wraplength=230,
+                 justify="left", cursor="hand2").pack(anchor="w", pady=(2, 0))
+        cards.append((c, f))
+
+        def _hov(on, c=c):
+            if state["done"]:
+                return
+            colr = HOVER_BG if on else CARD
+            c.configure(bg=colr)
+            for w_ in c.winfo_children():
+                w_.configure(bg=colr)
+        for w_ in [c] + list(c.winfo_children()):
+            _click(app, w_, lambda f=f: _answer(f))
+            w_.bind("<Enter>", lambda e, h=_hov: h(True))
+            w_.bind("<Leave>", lambda e, h=_hov, c=c: (
+                None if c.winfo_containing(e.x_root, e.y_root) in [c] + list(c.winfo_children())
+                else h(False)))
+    win.protocol("WM_DELETE_WINDOW", _close)
+    try:
+        win.update_idletasks()
+        ww, wh = win.winfo_reqwidth(), win.winfo_reqheight()
+        if near is not None and near.winfo_exists():
+            x = near.winfo_rootx() + near.winfo_width() // 2 - ww // 2
+            y = near.winfo_rooty() + near.winfo_height() + 8
+        else:
+            x = app.root.winfo_rootx() + (app.root.winfo_width() - ww) // 2
+            y = app.root.winfo_rooty() + (app.root.winfo_height() - wh) // 2
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        x = max(0, min(x, sw - ww - 10))
+        y = max(0, min(y, sh - wh - 60))
+        win.geometry(f"+{x}+{y}")
+    except Exception:
+        pass
+    return win
+
+
 def check_seven(app):
-    plants = _all_plants(app)
-    seen = {k: set() for k, *_ in TRAITS}
-    insp = getattr(app, "_inspected_traits", None) or {}
-    for s in plants.values():
-        if s.get("mom") is None:
-            continue              # starter seeds don't count: your own harvest does
-        looked = set(insp.get(str(s.get("id")), []))
-        for key, *_ in TRAITS:
-            if key not in looked:
-                continue          # only what was seen in the inspection window
-            v = _known(s, key)
-            if v:
-                seen[key].add(v)
+    rec = _sparams(app)["recorded"] if seven_active(app) else (
+        (getattr(app, "_active_mission_params", None) or {}).get("recorded") or {})
+    seen = {k: set((rec.get(k) or {}).keys()) for k, *_ in TRAITS}
     items = []
     n_done = 0
-    for key, name, dom, rec in TRAITS:
-        both = dom in seen[key] and rec in seen[key]
+    for key, name, dom, rec_ in TRAITS:
+        both = dom in seen[key] and rec_ in seen[key]
         n_done += both
-        missing = [_form_label(key, f) for f in (dom, rec) if f not in seen[key]]
-        text = (f"{name.capitalize()}: both forms seen" if both else
+        missing = [_form_label(key, f) for f in (dom, rec_) if f not in seen[key]]
+        text = (f"{name.capitalize()}: both forms recorded" if both else
                 f"{name.capitalize()}: still missing {' and '.join(missing)}")
         items.append((text, both,
-                      [(key, dom, dom in seen[key]), (key, rec, rec in seen[key])]))
-    hint = "" if n_done == 7 else ("Only plants grown from seeds you harvested count, and "
-                                   "only traits you have looked at in the inspection window "
-                                   "(Inspect, or Traits only).")
+                      [(key, dom, dom in seen[key]), (key, rec_, rec_ in seen[key])]))
+    hint = "" if n_done == 7 else ("Only plants grown from seeds you harvested count. In the "
+                                   "inspection window, click \u00bb\u270e Record\u00ab under a "
+                                   "form that is new to your notebook and name it.")
     return Progress(n_done == 7, items, hint)
 
 
@@ -457,7 +739,7 @@ def _forms_strip(parent, bg, which, caption):
 
 
 def pure_line_example(app, parent, bg):
-    """Two pure lines: a purple and a white parent, each with offspring all
+    """Two true-breeding lines: a purple and a white parent, each with offspring all
     like it."""
     from PIL import Image, ImageDraw
     big, small, gap, n = 34, 22, 4, 5
@@ -478,7 +760,7 @@ def pure_line_example(app, parent, bg):
             x = big + 24 + i * (small + gap)
             im.alpha_composite(ch, (x, y + (big - ch.height) // 2))
         dr.text((w - 12, ay - 6), "\u2026", fill=(122, 106, 85, 255))
-    return _photo_label(parent, im, bg, "two pure lines")
+    return _photo_label(parent, im, bg, "two true breeders")
 
 
 def island_example(app, parent, bg):
@@ -570,8 +852,8 @@ def check_islands(app):
         f"{n} island{'s' if n != 1 else ''} ready: make {ISLANDS_NEED - n} more." if n else
         f"So far at most {best_partial} of the 8 plots around a white plant hold a purple one "
         "(the corners count too). Plants grown from the seeds of "
-        "a pure white or pure purple plant come true." if best_partial else
-        "Sow seeds of pure white and pure purple plants in a pattern: "
+        "a true-breeding white or purple plant come true." if best_partial else
+        "Sow seeds of true-breeding white and purple plants in a pattern: "
         "a white one in the middle, purple ones around it.")
     return Progress(n >= ISLANDS_NEED, items, hint)
 
@@ -873,7 +1155,7 @@ def check_close_ratio(app):
     counts = _f2_counts(plants, app)
     if not counts:
         return Progress(False, [
-            ("Cross two pure lines and let their hybrids pollinate themselves", False),
+            ("Cross two true-breeding lines and let their hybrids pollinate themselves", False),
             (f"More than {CLOSE_NEED - 1} grandchildren (F2) counted for one trait", False),
             (f"Their ratio between {CLOSE_RANGE[0]:.1f} : 1 and {CLOSE_RANGE[1]:.1f} : 1", False),
         ], "Seed shape and colour count on every pea the hybrids bear: the quickest way "
@@ -921,7 +1203,7 @@ def setup_true_to_type(app):
     for k in keys:
         _k, _n, dom, rec = next(t for t in TRAITS if t[0] == k)
         target.append([k, random.choice([dom, rec])])
-    # at least one dominant form: those take the real work (a pure line)
+    # at least one dominant form: those take the real work (a true-breeding line)
     if all(f == _recessive(k) for k, f in target):
         target[0][1] = _dominant(target[0][0])
     return {"target": target}
@@ -1365,7 +1647,7 @@ def open_prediction(app):
                     except Exception:
                         pass
             for ww in [cell] + parts + [x for w_ in parts for x in w_.winfo_children()]:
-                ww.bind("<Button-1>", _pick)
+                _click(app, ww, _pick)
                 ww.bind("<Enter>", lambda e, h=_hover: h(e, True))
                 ww.bind("<Leave>", lambda e, h=_hover: h(e, False))
                 try:
@@ -1423,8 +1705,8 @@ def open_prediction(app):
 
 def _roulette_genotypes(traits, rng):
     """Genotypes for the roulette plant X, its parents M (seed) and F
-    (pollen) and their parents (each pure line: like its child). For each
-    trait drawn: X a hybrid (M and F of contrasting pure lines), or a pure
+    (pollen) and their parents (each true-breeding line: like its child). For each
+    trait drawn: X a hybrid (M and F of contrasting true-breeding lines), or a pure
     line of the dominant or of the recessive form. Every other trait: one
     pure form for the whole family."""
     m, f = {}, {}
@@ -1479,7 +1761,7 @@ def build_roulette_garden(app, traits):
         else:
             s["mother_id"] = s["father_id"] = None
         arch[str(pid)] = s
-    # grandparents: pure lines, like their child
+    # grandparents: true-breeding lines, like their child
     snap(ids["mm"], gm, None, None, "F0")
     snap(ids["mf"], gm, None, None, "F0")
     snap(ids["fm"], gf, None, None, "F0")
@@ -1757,14 +2039,16 @@ def roulette_panel(app, parent, bg):
 def open_roulette(app):
     """After accepting Plant Roulette: the board shows the mission's
     »Roulette« tab with the wheel."""
-    app._roulette_state = None
     tabs = getattr(app, "_missions_tabs", None)
     if not isinstance(tabs, dict):
         tabs = app._missions_tabs = {}
+    already = tabs.get("mission_roulette") == "Roulette"
     tabs["mission_roulette"] = "Roulette"
     win = getattr(app, "_missions_win", None)
     try:
         if win is not None and win.winfo_exists():
+            if already and getattr(win, "_shown_key", None) == "mission_roulette":
+                return win          # the board shows the wheel already
             app._missions_tier = "medium"
             idxs = dict(getattr(app, "_missions_idx", None) or {})
             idxs["medium"] = tier_missions("medium").index(mission_by_key("mission_roulette"))
@@ -1781,6 +2065,8 @@ def open_roulette(app):
 # ---------------------------------------------------------------------------
 
 EX_ICON = 44                     # icon size in the pictures
+EX_ICON_SIZES = (54, 48, 42, 36)   # tried in turn: the largest whose picture fits the card
+_EX_SIZE = None                  # while a picture is drawn: every icon at this size
 
 
 def _plant_pil(app, traits, stage=6, frac=0.6, height=150):
@@ -1830,13 +2116,13 @@ def _ex_row(parent, bg, parts, size=EX_ICON):
     for part in parts:
         kind = part[0]
         if kind == "i":
-            sz = part[3] if len(part) > 3 else size
+            sz = _EX_SIZE or (part[3] if len(part) > 3 else size)
             try:
                 _photo_label(row, _trait_pil(part[1], part[2], sz), bg).pack(side="left", padx=2)
             except Exception:
                 pass
         elif kind == "f":                 # faded icon
-            sz = part[3] if len(part) > 3 else size
+            sz = _EX_SIZE or (part[3] if len(part) > 3 else size)
             try:
                 _photo_label(row, _faded(_trait_pil(part[1], part[2], sz)), bg).pack(
                     side="left", padx=2)
@@ -1858,10 +2144,11 @@ def _caption(parent, bg, text):
 
 def ex_pure_line(app, parent, bg):
     f = _ex_frame(parent, bg)
-    for col in ("purple", "white"):
-        _ex_row(f, bg, [("i", "flower_color", col, 54), ("t", "→ selfed →", 14)]
-                + [("i", "flower_color", col, 36)] * 6 + [("t", "…")]).pack(anchor="w", pady=2)
-    _caption(f, bg, "two pure lines: every child like its parent")
+    k = pure_line_trait(app) or "flower_color"
+    for col in (_dominant(k), _recessive(k)):
+        _ex_row(f, bg, [("i", k, col, 54), ("t", "→ selfed →", 14)]
+                + [("i", k, col, 36)] * 6 + [("t", "…")]).pack(anchor="w", pady=2)
+    _caption(f, bg, "two true breeders: every child like its parent")
     return f
 
 
@@ -2007,7 +2294,7 @@ def ex_true_to_type(app, parent, bg):
         _ex_row(f, bg, [("t", "?", 28), ("t", "+", 20), ("t", "?", 28), ("t", "+", 20),
                         ("t", "?", 28), ("t", "→", 20),
                         ("p", _plant_pil(app, _FULL_DOM, stage=6, frac=0.7, height=110))]).pack()
-        _caption(f, bg, "three traits drawn when you accept, bred into one pure line")
+        _caption(f, bg, "three traits drawn when you accept, bred into one true-breeding line")
     return f
 
 
@@ -2062,10 +2349,15 @@ MISSIONS = [
     {
         "key": "mission_pure_line",
         "tier": "easy",
-        "title": "Pure Lines",
-        "short": "Pure Lines",
-        "aim": ("Find two pure lines of one trait, one for each form (e.g. purple and white "
-                "flowers): self-pollinated plants whose offspring all look like their parent."),
+        "title": "True Breeders",
+        "short": "True Breeders",
+        "aim": ("Choose a trait, then find two true breeders for it, one for each form (e.g. "
+                "purple and white flowers): self-pollinated plants whose offspring all look "
+                "like their parent."),
+        "aim_active": ("Find two true breeders for {trait}, one for each form: self-pollinated "
+                       "plants whose offspring all look like their parent."),
+        "choose_trait": True,
+        "setup": setup_pure_line,
         "background": (
             "Before any crossing, Mendel tested his peas. He obtained 34 varieties from "
             "seed merchants and grew them for two years, keeping only those that bred true "
@@ -2077,15 +2369,15 @@ MISSIONS = [
             "Let a plant pollinate itself (a pea does that on its own) and harvest its seeds. "
             "Do the same with a plant of the other form of the trait, e.g. one purple and "
             "one white plant.",
-            "Sow them and raise the young plants until they show the trait: flower colour, "
-            "height, pods or flower position.",
+            "Sow them. Seed shape and colour show on the pea itself; flower colour, height, "
+            "pods and flower position once the young plants grow.",
             f"Needed for each form: {PURE_NEED} offspring that show the trait, all like their "
             "parent.",
         ],
         "check": check_pure_line,
         "example": pure_line_example,
-        "achievement": "Pure Lines",
-        "congrats": ("Every child just like its parent, in both lines! Pure lines, Gregor: "
+        "achievement": "True Breeders",
+        "congrats": ("Every child just like its parent, in both lines! True breeders, Gregor: "
                      "material you can trust. Mendel spent two whole years making sure of his."),
     },
     {
@@ -2094,7 +2386,8 @@ MISSIONS = [
         "title": "The Magnificent Seven",
         "short": "Magnificent Seven",
         "aim": ("Find both forms of each of Mendel's seven characters in plants grown from "
-                "seeds you harvested yourself: fourteen forms in all."),
+                "seeds you harvested yourself, and name each one in your notebook: fourteen "
+                "forms in all."),
         "background": (
             "Out of the many differences between his pea varieties Mendel chose seven that "
             "come in two clearly distinct forms: the shape and colour of the seed, the "
@@ -2106,9 +2399,10 @@ MISSIONS = [
             "Sow your harvest. Seed shape and colour you see on the pea; flower colour and "
             "position show when the plants flower, the pods once they form, the height as "
             "they grow.",
-            "Look at them in the inspection window (Inspect, or Traits only): only the "
-            "forms you have seen there count.",
-            "Needed: both forms of all seven traits among the plants of your own harvest.",
+            "Inspect them. Under a form that is new to your notebook the inspection window "
+            "shows \u00bb\u270e Record\u00ab: click it and name the form the plant shows. Look "
+            "closely: after a wrong answer that plant must wait until tomorrow.",
+            "Needed: both forms of all seven traits, named from the plants of your own harvest.",
         ],
         "check": check_seven,
         "example": seven_example,
@@ -2127,9 +2421,9 @@ MISSIONS = [
         "background": (
             "The abbey garden was not only a laboratory. To plan a bed like this you must "
             "know what colour a seed will flower before it is sown, and only seeds of a "
-            "pure line can promise that."),
+            "true-breeding line can promise that."),
         "steps": [
-            "Collect seeds of pure white and pure purple plants (their offspring all flower "
+            "Collect seeds of true-breeding white and purple plants (their offspring all flower "
             "like them).",
             "Sow a white seed and purple seeds in all eight plots around it, the corners "
             f"included. Make {ISLANDS_NEED} such islands in all (their rings may share plots).",
@@ -2182,7 +2476,7 @@ MISSIONS = [
         "tier": "medium",
         "title": "Three to One (3 : 1)",
         "short": "Three to One",
-        "aim": ("Cross two pure lines, let their hybrids pollinate themselves, show that the "
+        "aim": ("Cross two true-breeding lines, let their hybrids pollinate themselves, show that the "
                 "hidden form returns in the grandchildren, in about one plant of four, and "
                 "unlock the Law of Segregation with it."),
         "background": (
@@ -2220,7 +2514,7 @@ MISSIONS = [
             "Crossed with the recessive parent, half the offspring showed the recessive form: "
             "so the hybrids form two kinds of egg and pollen cells, in equal numbers."),
         "steps": [
-            "Raise hybrids (F1) from a cross of two pure lines, e.g. purple × white.",
+            "Raise hybrids (F1) from a cross of two true-breeding lines, e.g. purple × white.",
             "Cross a hybrid with a plant of the recessive form (white flowers, dwarf, "
             "terminal flowers, constricted or yellow pods). Either may be the mother.",
             f"Needed: {TEST_NEED} offspring showing the trait, the recessive form in 30 to "
@@ -2264,8 +2558,8 @@ MISSIONS = [
         "aim": ("Spin the wheel for three traits. A single plant waits in your garden: read "
                 "its family tree in the TIE and predict what its seeds will grow into."),
         "background": (
-            "Mendel's laws let you predict before you sow. A plant from two pure lines of "
-            "the same form breeds true; a hybrid of two contrasting pure lines gives both "
+            "Mendel's laws let you predict before you sow. A plant from two true-breeding lines of "
+            "the same form breeds true; a hybrid of two contrasting true-breeding lines gives both "
             "forms again, three of the dominant to one of the recessive."),
         "steps": [
             "Accept, then spin the wheel three times: three traits are drawn.",
@@ -2302,7 +2596,7 @@ MISSIONS = [
                   "3 to 1.”"),
         "quote_src": "Gregor Mendel, Experiments in Plant Hybridisation (1866)",
         "steps": [
-            "Cross two pure lines that differ in one trait and raise the hybrids (F1).",
+            "Cross two true-breeding lines that differ in one trait and raise the hybrids (F1).",
             "Let the hybrids pollinate themselves. For seed shape or colour, every pea they "
             "bear counts; for any other trait, sow the seeds and raise the grandchildren.",
             f"Needed: more than {CLOSE_NEED - 1} counted for one trait, the ratio between "
@@ -2318,9 +2612,9 @@ MISSIONS = [
         "tier": "hard",
         "title": "True to Type",
         "short": "True to Type",
-        "aim": ("Breed a pure line with three traits chosen at random when you accept: a "
+        "aim": ("Breed a true-breeding line with three traits chosen at random when you accept: a "
                 "plant that shows all three, whose own offspring all show them too."),
-        "aim_active": "Breed a pure line with {target}: a plant that shows all three, whose "
+        "aim_active": "Breed a true-breeding line with {target}: a plant that shows all three, whose "
                       "own selfed offspring all show them too.",
         "background": (
             "Combining the best of two varieties in one plant that breeds true is what "
@@ -2338,7 +2632,7 @@ MISSIONS = [
         "setup": setup_true_to_type,
         "check": check_true_to_type,
         "achievement": "True to Type",
-        "congrats": ("A new pure line, made by your own hand! Three traits brought together "
+        "congrats": ("A new true-breeding line, made by your own hand! Three traits brought together "
                      "and fixed for good. That is breeding, Gregor, not luck."),
     },
     {
@@ -2412,6 +2706,11 @@ def tier_unlocked(app, tier, got=None):
 
 
 def mission_aim(app, m):
+    if m.get("choose_trait") and m.get("aim_active") and active_mission(app) is m:
+        k = (getattr(app, "_active_mission_params", None) or {}).get("trait")
+        if k in _TRAIT_NAME:
+            return m["aim_active"].format(trait=_TRAIT_NAME[k])
+        return m["aim"]
     if m.get("aim_active") and active_mission(app) is m:
         target = _targets(app)
         if target:
@@ -2454,12 +2753,31 @@ def accept(app, key, parent=None):
     m = mission_by_key(key)
     if m is None:
         return False
-    if getattr(app, "_tutorial_active", False):
-        app._toast("Leave the tutorial first (Monastery > Mendel's Garden).", level="info")
-        return False
     if not tier_unlocked(app, m["tier"]):
         app._toast("Complete the missions before it first.", level="info")
         return False
+    if getattr(app, "_tutorial_active", False):
+        # a mission is played in the player's own garden: leave Abbot
+        # Cyril's practice garden first (the tutorial keeps its progress)
+        try:
+            yes = app._silent_askyesno(
+                "Leave the practice garden?",
+                f"»{m['short']}« is played in a garden of your own.\n\n"
+                "Leave Abbot Cyril's practice garden now? You can come back to the "
+                "tutorial later from the Friar's quarters.", parent=parent)
+        except Exception:
+            yes = False
+        if not yes:
+            return False
+        try:
+            import tutorial as _tut
+            _tut.exit_tutorial(app)
+        except Exception:
+            import logging
+            logging.error("Leaving the tutorial for a mission failed", exc_info=True)
+            return False
+        if getattr(app, "_tutorial_active", False):
+            return False
     # (no question: the current garden is kept as a save of its own first)
     _save_before_mission(app)
     fresh = getattr(app, "_fresh_state", None)
@@ -2476,6 +2794,7 @@ def accept(app, key, parent=None):
         app._silent_showerror("Mission", f"Could not start a new garden:\n{e}")
         return False
     app._active_mission = key
+    app._roulette_state = None          # (a fresh wheel)
     try:
         app._active_mission_params = m["setup"](app) if m.get("setup") else None
     except Exception:
@@ -2775,7 +3094,7 @@ def open_board(app, focus=None, tab=None):
     canvas.configure(yscrollcommand=sb.set)
     canvas.pack(side="left", fill="both", expand=True)
     inner = tk.Frame(canvas, bg=bg)
-    canvas.create_window((0, 0), window=inner, anchor="nw")
+    inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
 
     W = 760
 
@@ -2810,13 +3129,17 @@ def open_board(app, focus=None, tab=None):
         widget.bind("<Destroy>", _hide, add="+")
 
     def _fill():
-        for w in inner.winfo_children():
-            w.destroy()
+        # built off-screen and swapped in when complete (no flicker of a
+        # half-built page)
+        nonlocal inner
+        old_inner = inner
+        inner = tk.Frame(canvas, bg=bg)
         try:
             got = app._load_achievements()
         except Exception:
             got = {}
-        warn.configure(text=("Missions can't be accepted in Abbot Cyril's practice garden."
+        warn.configure(text=("You are in Abbot Cyril's practice garden: accepting a mission "
+                             "takes you back to your own garden first."
                              if getattr(app, "_tutorial_active", False) else
                              _blocked_reason(app) if active_mission(app) else ""))
         n_done = sum(1 for m in MISSIONS if m["key"] in got)
@@ -2846,7 +3169,7 @@ def open_board(app, focus=None, tab=None):
                           bg=(TAB_ON if on else TAB_OFF),
                           fg=("white" if on else (INK if open_ else "#9a9080")), cursor="hand2")
             lb.pack(side="left", padx=(0, 6))
-            lb.bind("<Button-1>", lambda e, t=t: (setattr(app, "_missions_tier", t), _fill()))
+            _click(app, lb, lambda t=t: (setattr(app, "_missions_tier", t), _fill()))
         tk.Frame(inner, height=1, bg="#c8c0ac", width=W).pack(fill="x", pady=(4, 6))
         locked = not tier_unlocked(app, cur_tier, got)
         if locked:
@@ -2875,7 +3198,7 @@ def open_board(app, focus=None, tab=None):
             a = tk.Label(nav, text=sym, font=("Segoe UI", 18, "bold"), bg=TAB_OFF, fg=INK,
                          padx=14, pady=2, cursor="hand2")
             a.pack(side=side)
-            a.bind("<Button-1>", lambda e, d=d: _step(d))
+            _click(app, a, lambda d=d: _step(d))
             a.bind("<Enter>", lambda e, a=a: a.configure(bg="#ddd3be"))
             a.bind("<Leave>", lambda e, a=a: a.configure(bg=TAB_OFF))
         dots = tk.Frame(nav, bg=bg)
@@ -2887,9 +3210,20 @@ def open_board(app, focus=None, tab=None):
             col = ("#B8860B" if mm["key"] in got else (GREEN if active_mission(app) is mm else MUTED))
             d_ = tk.Label(dots, text=c, font=("Segoe UI", 14), bg=bg, fg=col, cursor="hand2")
             d_.pack(side="left", padx=2)
-            d_.bind("<Button-1>", lambda e, j=j, t=cur_tier: (idxs.__setitem__(t, j), _fill()))
+            _click(app, d_, lambda j=j, t=cur_tier: (idxs.__setitem__(t, j), _fill()))
         _card(ms[i], got, locked)
+        win._shown_key = ms[i]["key"]
+        inner.update_idletasks()
+        canvas.itemconfigure(inner_id, window=inner)
+        try:
+            old_inner.destroy()
+        except Exception:
+            pass
         win.update_idletasks()
+        try:
+            win._sig = win._signature()      # (no second rebuild by the live refresh)
+        except Exception:
+            pass
         need_h = inner.winfo_reqheight()
         need_w = max(W + 20, inner.winfo_reqwidth())
         view_h = min(need_h, int(win.winfo_screenheight() * 0.92) - 120)
@@ -2958,18 +3292,82 @@ def open_board(app, focus=None, tab=None):
                           bg=(TAB_ON if on else TAB_OFF), fg=("white" if on else INK),
                           cursor="hand2")
             lb.pack(side="left", padx=(0, 4))
-            lb.bind("<Button-1>", lambda e, k=key, t=t: (tabs.__setitem__(k, t), _fill()))
+            _click(app, lb, lambda k=key, t=t: (tabs.__setitem__(k, t), _fill()))
         def _aim(p):
             # the aim, and a picture of it below
             tk.Label(p, text=mission_aim(app, m), font=F_TEXT, bg=cbg, fg=INK,
                      wraplength=W - 60, justify="left").pack(anchor="w")
+            if m.get("choose_trait") and not is_active:
+                _trait_picker(p)
             ex = EXAMPLES.get(m["key"]) or m.get("example")
             if ex is not None:
+                # every icon as large as the card allows (all the same size:
+                # the children as big as their parents)
+                global _EX_SIZE
                 try:
-                    ex(app, p, cbg).pack(pady=(10, 0))
+                    pic = None
+                    for _sz in EX_ICON_SIZES:
+                        _EX_SIZE = _sz
+                        if pic is not None:
+                            pic.destroy()
+                        pic = ex(app, p, cbg)
+                        pic.update_idletasks()
+                        if pic.winfo_reqwidth() <= W - 60:
+                            break
+                    pic.pack(pady=(10, 0))
                 except Exception:
                     import logging
                     logging.exception("mission picture failed: %s", m["key"])
+                finally:
+                    _EX_SIZE = None
+
+        def _trait_picker(p):
+            """The seven traits to click: the chosen one is the mission's."""
+            choice = getattr(app, "_mission_choice", None)
+            if not isinstance(choice, dict):
+                choice = app._mission_choice = {}
+            cur_k = choice.get(key)
+            warn = getattr(win, "_pick_warn", None) == key and not cur_k
+            tk.Label(p, text=("Choose a trait first:" if warn else "Your trait:"),
+                     font=F_BOLD, bg=cbg, fg=("#B0102C" if warn else MUTED)
+                     ).pack(anchor="w", pady=(10, 4))
+            row = tk.Frame(p, bg=cbg)
+            row.pack(anchor="w")
+            # all boxes the same size (one grid row, equal columns), the
+            # pictures in a band of fixed height and the names at the bottom
+            for i, (tkey, tname, dom, rec) in enumerate(TRAITS):
+                on = (tkey == cur_k)
+                cbg2 = SEL_BG if on else cbg
+                cell = tk.Frame(row, bg=cbg2, cursor="hand2", padx=4, pady=3,
+                                highlightthickness=2,
+                                highlightbackground=(SEL_EDGE if on else
+                                                     ("#B0102C" if warn else "#ddd3be")))
+                cell.grid(row=0, column=i, sticky="nsew", padx=(0, 5))
+                row.grid_columnconfigure(i, uniform="trait")
+                tk.Label(cell, text=tname.capitalize().replace(" ", "\n"),
+                         font=("Segoe UI", 11, "bold" if on else "normal"),
+                         bg=cbg2, fg=INK).pack(side="bottom")
+                band = tk.Frame(cell, bg=cbg2, height=36, width=74)
+                band.pack(side="top", fill="x")
+                band.pack_propagate(False)
+                ics = tk.Frame(band, bg=cbg2)
+                ics.place(relx=0.5, rely=0.5, anchor="center")
+                for fm in (dom, rec):
+                    try:
+                        _photo_label(ics, _trait_pil(tkey, fm, 30), cbg2).pack(side="left", padx=1)
+                    except Exception:
+                        pass
+
+                def _pick(e=None, tk_=tkey):
+                    choice[key] = tk_
+                    win._pick_warn = None
+                    _fill()
+                for w in (cell, band, ics, *ics.winfo_children(), *cell.winfo_children()):
+                    _click(app, w, _pick)
+                    try:
+                        w.configure(cursor="hand2")
+                    except Exception:
+                        pass
 
         def _details(p):
             tk.Label(p, text="Mendel's experiment", font=F_BOLD, bg=cbg, fg=MUTED
@@ -3106,16 +3504,31 @@ def open_board(app, focus=None, tab=None):
         bar.pack(fill="x", pady=(10, 0))
         if is_active:
             _btn(bar, "Abandon mission", lambda: abandon(app, parent=win)).pack(side="right")
-        elif not getattr(app, "_tutorial_active", False):
-            def _acc(k=key):
-                if accept(app, k, parent=win):
-                    tabs[k] = "Roulette" if k == "mission_roulette" else "Progress"
-                    app._roulette_state = None
+        else:
+            def _acc(k=key, m=m):
+                # a mission with a choice (Pure Lines: the trait) needs it first
+                if m.get("choose_trait") and not (
+                        getattr(app, "_mission_choice", None) or {}).get(k):
+                    tabs[k] = "Aim"
+                    win._pick_warn = k
                     _fill()
+                    return
+                # the tab to show is set first: accepting rebuilds the board
+                # once, already on it
+                before = tabs.get(k)
+                tabs[k] = "Roulette" if k == "mission_roulette" else "Progress"
+                if not accept(app, k, parent=win):
+                    if before is None:
+                        tabs.pop(k, None)
+                    else:
+                        tabs[k] = before
             _btn(bar, "Accept mission" if not done else "Accept again", _acc,
                  primary=True).pack(side="right")
-            tk.Label(bar, text="Saves your current garden (\u201cBefore the mission\u201d, "
-                               "File > Load) and starts a new one for the mission.",
+            tk.Label(bar, text=(("Leaves the practice garden, saves your own garden "
+                                 if getattr(app, "_tutorial_active", False) else
+                                 "Saves your current garden ")
+                                + "(\u201cBefore the mission\u201d, File > Load) and starts "
+                                  "a new one for the mission."),
                      font=F_SMALL, bg=cbg, fg=MUTED, wraplength=W - 260, justify="left"
                      ).pack(side="left", anchor="w")
 
@@ -3163,6 +3576,8 @@ def open_board(app, focus=None, tab=None):
         p = evaluate(app, m) if m is not None else None
         return (tuple(sorted(got)), getattr(app, "_active_mission", None),
                 tuple(p.items) if p else (), p.hint if p else "", _blocked_reason(app))
+
+    win._signature = _signature
 
     def _live():
         try:

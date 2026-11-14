@@ -1611,8 +1611,24 @@ TILES_PER_ROW = COLS
 # buttons (_open_speed_dialog) and the Ctrl+Left/Right arrow-key speed
 # step (_step_game_speed), so "the steps from Game Settings" always means
 # exactly this one list, never two lists that could drift apart.
-# Three speeds: very fast, normal (1 sec = 1 hour) and slow.
-SPEED_PRESETS = (0.1, 1, 10)
+# Four speeds: very fast, fast, normal (1 sec = 1 hour) and slow. (0.2 s
+# is about the pace the fastest speed really had before its timing was
+# made exact.)
+SPEED_PRESETS = (0.1, 0.2, 1, 10)
+# Day and night: the light changes in steps of this size (of 100), and the
+# garden is repainted for it at most every DAYNIGHT_MIN_S seconds.
+DAYNIGHT_STEP = 3
+DAYNIGHT_MIN_S = 0.25
+# ...plus this much per plot of the garden (a big garden is repainted less
+# often: every repaint redraws all of its plots at once)
+DAYNIGHT_S_PER_PLOT = 0.001
+# The running game redraws the garden at most this often (see _auto_render_due)
+AUTO_RENDER_MIN_S = 0.25
+# At this speed (seconds per game hour) or faster a whole day passes in a
+# few seconds: the light then only knows day, twilight and night (steps of
+# DAYNIGHT_FAST_STEP), so the garden is repainted only a few times a day.
+DAYNIGHT_FAST_SPEED = 0.25          # (0.1 and 0.2 s per hour)
+DAYNIGHT_FAST_STEP = 50
 
 # "Real time": 1 real second = 1 simulated second (3,600 real seconds per
 # simulated hour) — its own clearly-labeled button in the Simulation
@@ -1622,7 +1638,7 @@ SPEED_PRESETS = (0.1, 1, 10)
 # rather than racing by.
 SPEED_REAL_TIME_SECS = 3600.0
 
-# The speed-up / slow-down steps (_step_game_speed): the three presets
+# The speed-up / slow-down steps (_step_game_speed): the presets
 # and Real Time; one more step down from Real Time pauses the game, like
 # Space (one step up from the pause resumes it, at the speed it had).
 SPEED_STEP_LADDER = SPEED_PRESETS + (SPEED_REAL_TIME_SECS,)
@@ -1699,7 +1715,7 @@ class _FlatIconButton(tk.Label):
 
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
-        self.bind("<Button-1>", self._on_click)
+        _bind_click(self, self._on_click)
 
     def _on_enter(self, event=None):
         if self._enabled:
@@ -1719,8 +1735,12 @@ class _FlatIconButton(tk.Label):
             kwargs.update(cnf)
         if "state" in kwargs:
             state = kwargs.pop("state")
+            _was = self._enabled if getattr(self, "_state_set", False) else None
             self._enabled = (state != "disabled")
-            if self._enabled:
+            self._state_set = True
+            if _was is self._enabled:
+                pass            # unchanged: no redraw (Tk redraws on every configure)
+            elif self._enabled:
                 tk.Label.configure(self, bg=self._base_bg, fg=self._base_fg,
                                     cursor="hand2")
             else:
@@ -1749,6 +1769,38 @@ class _FlatIconButton(tk.Label):
             tk.Label.configure(self, **kwargs)
 
     config = configure
+
+
+def _bind_click(widget, fn):
+    """A click on a Label used as a button: like a real button it acts when
+    the mouse button is RELEASED over it (pressed there first), and only
+    after Tk has finished handling that release. Acting on the press itself
+    — e.g. a Close button destroying its window while Tk still handles the
+    mouse button that is down over it — crashed Tk on the Mac
+    (segmentation fault)."""
+    st = {"armed": False}
+
+    def _press(e=None):
+        st["armed"] = True
+
+    def _release(e=None):
+        if not st["armed"]:
+            return
+        st["armed"] = False
+        try:
+            inside = (0 <= int(e.x) < widget.winfo_width()
+                      and 0 <= int(e.y) < widget.winfo_height())
+        except Exception:
+            inside = True
+        if not inside:
+            return                  # released elsewhere: no click (as with a real button)
+        try:
+            widget._root().after_idle(fn)
+        except Exception:
+            fn()
+
+    widget.bind("<Button-1>", _press)
+    widget.bind("<ButtonRelease-1>", _release)
 
 
 def _make_flat_button_raw(parent, text, command, bg="#7A9A3C", fg="white",
@@ -1799,7 +1851,7 @@ def _make_flat_button_raw(parent, text, command, bg="#7A9A3C", fg="white",
     if not disabled:
         lbl.bind("<Enter>", lambda e: lbl.configure(bg=hover_bg))
         lbl.bind("<Leave>", lambda e: lbl.configure(bg=bg))
-        lbl.bind("<Button-1>", lambda e: (_play_sound("click.ogg"), command()))
+        _bind_click(lbl, lambda: (_play_sound("click.ogg"), command()))
     return lbl
 
 
@@ -2122,6 +2174,9 @@ class GardenApp(InspectorMixin):
         return _make_flat_button_raw(parent, text, command, bg=bg, fg=fg,
                                       hover_bg=hover_bg, font=font, state=state)
 
+    # clicks that act on release (see _bind_click) — for the other modules
+    _bind_click = staticmethod(lambda widget, fn: _bind_click(widget, fn))
+
     # Same cream background as the plant inspector window — used to
     # visually match other windows to it (see _apply_inspector_theme).
     INSPECTOR_BG = "#f5f0e6"
@@ -2156,6 +2211,7 @@ class GardenApp(InspectorMixin):
             c.destroy()
         except Exception:
             pass
+        self._bruchus_caught = int(getattr(self, "_bruchus_caught", 0) or 0) + 1   # (the tutorial asks)
         try:
             self.root.after(10, lambda: self._after_bruchus_catch(beetle_img))
         except Exception:
@@ -2256,8 +2312,8 @@ class GardenApp(InspectorMixin):
          "Pollinated a flower with pollen from the very same plant: a self-pollination by hand."),
         ("pooled_three", "Three to One, Exactly",
          "A pooled ratio of exactly 3,00 : 1 in the TIE, over more than 300 plants."),
-        ("mission_pure_line", "Pure Lines",
-         "Mission (easy): found two pure lines of one trait, one for each form."),
+        ("mission_pure_line", "True Breeders",
+         "Mission (easy): found two true breeders for one trait, one for each form."),
         ("mission_seven", "The Magnificent Seven",
          "Mission (easy): found both forms of all seven of Mendel's characters in your own harvest."),
         ("mission_islands", "White Islands",
@@ -2278,7 +2334,7 @@ class GardenApp(InspectorMixin):
         ("mission_close_ratio", "Mendel's Numbers",
          "Mission (hard): more than 100 grandchildren counted, between 2.9 : 1 and 3.1 : 1."),
         ("mission_true_to_type", "True to Type",
-         "Mission (hard): bred a pure line with three traits drawn at random."),
+         "Mission (hard): bred a true-breeding line with three traits drawn at random."),
         ("mission_six_generations", "Six Generations",
          "Mission (hard): followed a line from a cross to a flowering plant of the F6."),
         ("mission_dihybrid", "Two Traits at Once",
@@ -2315,7 +2371,7 @@ class GardenApp(InspectorMixin):
     # (flag on the app, achievement key, what Abbot Cyril says)
     LAW_ACHIEVEMENTS = (
         ("law1_ever_discovered", "law_dominance",
-         "Remarkable, Gregor! When two pure lines are crossed, only one form shows "
+         "Remarkable, Gregor! When two true-breeding lines are crossed, only one form shows "
          "in the offspring — the dominant one. The other is not lost, only hidden."),
         ("law2_ever_discovered", "law_segregation",
          "Three to one! The hidden form returns in the next generation. Each plant "
@@ -2785,17 +2841,87 @@ class GardenApp(InspectorMixin):
         badge.lift()
         self._mission_badge = badge
 
+        tip = {"win": None, "job": None}
+
+        def _hide_tip():
+            if tip["job"] is not None:
+                try:
+                    badge.after_cancel(tip["job"])
+                except Exception:
+                    pass
+                tip["job"] = None
+            if tip["win"] is not None:
+                try:
+                    tip["win"].destroy()
+                except Exception:
+                    pass
+                tip["win"] = None
+
+        def _show_tip():
+            """The mission's progress, as on its card: a tick per step done,
+            and the hint for what to do next."""
+            tip["job"] = None
+            try:
+                if not badge.winfo_exists():
+                    return
+                pr = _ms.evaluate(self, m)
+            except Exception:
+                return
+            TBG, INK_, MUT = "#FBF3D9", "#3b2a1a", "#6b5a44"
+            w = tk.Toplevel(self.root)
+            w.withdraw()
+            w.overrideredirect(True)
+            try:
+                w.attributes("-topmost", True)
+            except Exception:
+                pass
+            fr = tk.Frame(w, bg=TBG, padx=12, pady=8, highlightthickness=2,
+                          highlightbackground="#D9A520")
+            fr.pack()
+            tk.Label(fr, text=m["title"], font=("Segoe UI", 12, "bold"), bg=TBG, fg=INK_,
+                     anchor="w").pack(anchor="w")
+            if pr.done:
+                tk.Label(fr, text="Done!", font=("Segoe UI", 11, "bold"), bg=TBG,
+                         fg="#2e7d32").pack(anchor="w")
+            for it in pr.items:
+                txt, ok = it[0], bool(it[1])
+                row = tk.Frame(fr, bg=TBG)
+                row.pack(anchor="w", pady=1)
+                tk.Label(row, text=("\u2714" if ok else "\u25CB"), font=("Segoe UI", 11, "bold"),
+                         bg=TBG, fg=("#2e7d32" if ok else "#9a9080"), width=2,
+                         anchor="n").pack(side="left", anchor="n")
+                tk.Label(row, text=txt, font=("Segoe UI", 11), bg=TBG,
+                         fg=(INK_ if ok else MUT), wraplength=360, justify="left",
+                         anchor="w").pack(side="left")
+            if pr.hint and not pr.done:
+                tk.Label(fr, text=pr.hint, font=("Segoe UI", 10, "italic"), bg=TBG, fg=MUT,
+                         wraplength=380, justify="left").pack(anchor="w", pady=(4, 0))
+            tk.Label(fr, text="Click for the mission card", font=("Segoe UI", 9), bg=TBG,
+                     fg="#9a9080").pack(anchor="w", pady=(4, 0))
+            w.update_idletasks()
+            x = badge.winfo_rootx()
+            y = badge.winfo_rooty() + badge.winfo_height() + 4
+            x = max(0, min(x, w.winfo_screenwidth() - w.winfo_reqwidth() - 4))
+            w.geometry(f"+{x}+{y}")
+            w.deiconify()
+            tip["win"] = w
+
         def _enter(e):
             badge.configure(text=name, highlightbackground="#D9A520")
+            _hide_tip()
+            tip["job"] = badge.after(300, _show_tip)
 
         def _leave(e):
             badge.configure(text="\u2691 Mission", highlightbackground=ON_)
+            _hide_tip()
 
-        def _open(e=None, k=m["key"]):
+        def _open(k=m["key"]):
+            _hide_tip()
             self._open_missions(focus=k, tab="Progress")
         badge.bind("<Enter>", _enter)
         badge.bind("<Leave>", _leave)
-        badge.bind("<Button-1>", _open)
+        badge.bind("<Destroy>", lambda e: _hide_tip(), add="+")
+        _bind_click(badge, _open)
 
     def _open_missions(self, focus=None, tab=None):
         """The missions board (see missions.py)."""
@@ -3406,7 +3532,7 @@ class GardenApp(InspectorMixin):
                 want = pl is not None and str(getattr(pl, "id", "")) in notes
                 has = getattr(tile, "_has_noteflag", None)
                 if has is None:
-                    has = bool(tile.find_withtag("noteflag"))
+                    has = tile._has_noteflag = bool(tile.find_withtag("noteflag"))
                 if want == has:
                     continue                # nothing to change
                 if want and not has:
@@ -4665,6 +4791,78 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass   # decorative — never crash the simulation
 
+    # Realistic: a few small patches of ground (2-3 neighbouring plots) dry
+    # out faster than the rest — sandier soil, more sun — so in dry, sunny
+    # weeks those plants need water of their own; rain evens them out again.
+    SOIL_DRY_FACTOR = 1.2        # a fifth more evaporation there (subtle: a few
+                                 # points a day, more in hot sunny weeks)
+    SOIL_DRY_SHARE = 0.12        # about one plot in eight
+
+    def _soil_patches(self):
+        """{(plot index, tile index)} of the faster-drying spots (Realistic
+        only, made once per garden and saved with it), or None."""
+        if getattr(self, "_season_mode", "off") != "enforce":
+            return None
+        if getattr(self, "_tutorial_active", False):
+            return None                   # (Abbot Cyril's practice garden: even ground)
+        pat = getattr(self, "_soil_dry_plots", None)
+        if pat:
+            return pat
+        import random as _r
+        rnd = _r.Random()
+        pat = set()
+        try:
+            cols = int(getattr(self.garden, "cols", 0) or TILES_PER_ROW)
+            for pi, plot_tiles in enumerate(self._plot_tiles):
+                n = len(plot_tiles)
+                if n < 4:
+                    continue
+                rows = max(1, n // cols)
+                want = max(2, int(round(n * self.SOIL_DRY_SHARE)))
+                tries = 0
+                taken = set()
+                def _nbs(i_):
+                    r_, c_ = divmod(i_, cols)
+                    return [(r_ + dr) * cols + (c_ + dc) for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                            if 0 <= r_ + dr < rows and 0 <= c_ + dc < cols and (r_ + dr) * cols + (c_ + dc) < n]
+                # (patches never touch: each stays a batch of 2-3 plants)
+                near = set()
+                while len(taken) < want and tries < 300:
+                    tries += 1
+                    start = rnd.randrange(n)
+                    if start in taken or start in near:
+                        continue
+                    group = [start]
+                    size = rnd.choice((2, 2, 3))
+                    while len(group) < size:
+                        nb = [x for x in _nbs(rnd.choice(group))
+                              if x not in taken and x not in near and x not in group]
+                        if not nb:
+                            break
+                        group.append(rnd.choice(nb))
+                    if len(group) < 2:
+                        continue
+                    taken.update(group)
+                    for x in group:
+                        near.update(_nbs(x))
+                pat.update((pi, i) for i in taken)
+        except Exception:
+            return None
+        self._soil_dry_plots = pat
+        return pat
+
+    def _apply_soil_patches(self):
+        """Tells every plant how fast its spot dries (before each hour)."""
+        pat = self._soil_patches()
+        try:
+            for pi, plot_tiles in enumerate(self._plot_tiles):
+                for i, t in enumerate(plot_tiles):
+                    p = t.plant
+                    if p is not None:
+                        p.soil_dry = (self.SOIL_DRY_FACTOR if pat and (pi, i) in pat else 1.0)
+        except Exception:
+            pass
+
     def _all_plot_tiles(self):
         """
         Every tile across every plot, not just the currently active one
@@ -4905,14 +5103,33 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass
 
-        # Quantise to 100 steps — plenty for a smooth visual, cheaper cache
-        bucket = int(round(L_display * 100))
+        # Every change of the light repaints every plot of the garden, which
+        # is costly (above all on the Mac, where each plot is redrawn on its
+        # own). So the light moves in steps of DAYNIGHT_STEP (of 100) — each
+        # step only about 1 % brighter or darker, too little to see — and the
+        # garden is repainted at most every DAYNIGHT_MIN_S seconds during a
+        # dawn or dusk (a big jump, e.g. lightning, at once).
+        # (at the fastest speed a whole day passes in seconds: then only
+        # day, twilight and night — DAYNIGHT_FAST_STEP)
+        _step = (DAYNIGHT_FAST_STEP
+                 if float(getattr(self, "day_length_s", 1.0) or 1.0) <= DAYNIGHT_FAST_SPEED
+                 else DAYNIGHT_STEP)
+        bucket = int(round(L_display * 100 / _step)) * _step
+        bucket = max(0, min(100, bucket))
 
         # Skip the repaint if the display level hasn't changed
         last_bucket = getattr(self, "_daynight_last_bucket", None)
         if bucket == last_bucket:
             self._daynight_transitioning = False
             return
+        _now_r = time.perf_counter()
+        if (last_bucket is not None and abs(bucket - last_bucket) < 20
+                and not getattr(self, "fast_forward", False)
+                and _now_r - getattr(self, "_daynight_last_repaint", 0.0)
+                < DAYNIGHT_MIN_S + DAYNIGHT_S_PER_PLOT * len(self.tiles)):
+            self._daynight_transitioning = True      # (comes back soon)
+            return
+        self._daynight_last_repaint = _now_r
         self._daynight_last_bucket    = bucket
         self._daynight_transitioning  = True  # keep loop at 40 ms
 
@@ -4926,6 +5143,7 @@ class GardenApp(InspectorMixin):
         # Only the plot on screen is repainted; hidden plots are marked
         # and catch up when they are switched to (_switch_to_plot).
         _active = self.active_plot_index
+        todo = []
         for tile in self._all_plot_tiles():
             if getattr(tile, "plot_idx", 0) != _active:
                 tile._needs_repaint = True
@@ -4945,11 +5163,14 @@ class GardenApp(InspectorMixin):
                     c = GardenApp._mix(c, day_tint_target, day_bright)
                 shaded = c
                 self._daynight_cache[key] = shaded
-
-            tile._lighting_bucket = bucket   # must be set before set_soil_color
+            todo.append((tile, bucket, shaded))
+        # All plots at once (in portions, plot by plot, it looked odd: the
+        # garden darkened in patches). A big garden is instead repainted
+        # less often — see the interval check above.
+        for tile, bkt, shaded in todo:
+            tile._lighting_bucket = bkt  # must be set before set_soil_color
             tile.set_soil_color(shaded)
 
-    
     def _start_daynight_animation(self):
         """Lightweight animation loop that repaints tile shading smoothly.
 
@@ -5617,7 +5838,8 @@ class GardenApp(InspectorMixin):
             logging.debug("Plant picture update failed", exc_info=True)
         if getattr(self, "_render_pool", None) is pool and not self._ui_gone():
             try:
-                self.root.after(15, self._poll_render_results)
+                # often while pictures are on their way, rarely when idle
+                self.root.after(15 if pool.jobs else 120, self._poll_render_results)
             except Exception:
                 pass
 
@@ -6332,10 +6554,17 @@ class GardenApp(InspectorMixin):
         parts = []
         for k in ks[:4]:
             f = fl[k]
-            bits = [f"Flower {k + 1}: {name.get(states[k], states[k])}"]
+            # once it is a pod, it is called a pod
+            if states[k] == "pod":
+                bits = [f"Pod {k + 1}: growing"]
+            elif states[k] == "ripe":
+                bits = [f"Pod {k + 1}: ripe"]
+            else:
+                bits = [f"Flower {k + 1}: {name.get(states[k], states[k])}"]
             e = f.get("emasc")
             if e:
-                bits.append(f"emasculated as {e.get('as', 'bud')}, "
+                _as = "a bud" if e.get("as", "bud") == "bud" else "an open flower"
+                bits.append(f"emasculated as {_as}, "
                             f"selfing ~{int(100 * float(e.get('self_frac', 0) or 0))}%")
             don = ["#" + str(d.get("donor_id", "?")) for d in (f.get("pollen") or [])]
             if don:
@@ -6817,7 +7046,7 @@ class GardenApp(InspectorMixin):
     def _step_game_speed(self, faster: bool):
         """
         Moves simulation speed one step up or down through
-        SPEED_STEP_LADDER (0.1 s, 1 s, 10 s per hour, Real Time, then Pause) — the
+        SPEED_STEP_LADDER (0.1 s, 0.2 s, 1 s, 10 s per hour, Real Time, then Pause) — the
         exact same presets the Simulation Speed
         dialog's buttons use (_open_speed_dialog), so this is just a
         keyboard shortcut for "click the next preset over", not a
@@ -7319,10 +7548,27 @@ class GardenApp(InspectorMixin):
             self._auto_loop_id = self.root.after(delay_ms, self._auto_advance_phase)
         except Exception:
             self._auto_loop_id = None
+    def _schedule_on_time(self, step_ms):
+        """Schedules the next step of the running game `step_ms` after the
+        previous step was DUE (not after this one finished): the time the
+        game itself needs no longer adds up, so one game hour really takes
+        the chosen number of seconds. (Before, at 0.1 s per hour every hour
+        took about 0.22 s: four steps of at least 50 ms each, plus the work.)
+        If the computer can't keep up, the game just runs as fast as it can
+        without trying to catch up later."""
+        now = time.perf_counter()
+        dl = getattr(self, "_loop_deadline", None)
+        if dl is None or now - dl > 0.5 or dl - now > 5.0:
+            dl = now
+        dl += max(0, step_ms) / 1000.0
+        self._loop_deadline = dl
+        self._ensure_auto_loop(delay_ms=max(0, int(round((dl - now) * 1000))))
+
     def _auto_advance_phase(self):
         """Auto-advance phases with a single stable loop (no duplication)."""
         # If paused, just reschedule and return
         if not getattr(self, "running", True):
+            self._loop_deadline = None
             self._ensure_auto_loop(delay_ms=max(600, getattr(self, 'phase_ms', 600)))
             return
 
@@ -7343,6 +7589,7 @@ class GardenApp(InspectorMixin):
         # render_all() call the FF loop's own rendering already makes
         # redundant.
         if getattr(self, "fast_forward", False):
+            self._loop_deadline = None
             self._ensure_auto_loop(delay_ms=max(300, getattr(self, 'sub_ms', 300)))
             return
 
@@ -7351,18 +7598,30 @@ class GardenApp(InspectorMixin):
             if getattr(self.garden, "temp_updates_remaining", 0) > 0:
                 try:
                     n = getattr(self, "_frame_skip_counter", 0)
-                    # draw only every 2nd temperature substep
-                    if n % 2 == 0:
+                    # one temperature step per substep (it used to happen
+                    # inside render_all, so the hour waited for redraws and
+                    # ran slow or fast with them); draw every 2nd substep
+                    self.garden.drift_temperature_once()
+                    if n % 2 == 0 and self._auto_render_due():
                         self.render_all()
+                    else:
+                        self._update_top_clock()    # (the temperature in the top line)
                     self._frame_skip_counter = n + 1
                 except Exception:
                     pass
-                self._ensure_auto_loop(delay_ms=getattr(self, 'sub_ms', 350))
+                self._schedule_on_time(getattr(self, 'sub_ms', 350))
                 return
 
             # Advance phase and optionally render
+            self._apply_soil_patches()
             self.garden.next_phase()
             self._daynight_last_advance = time.time()  # smooth day/night interpolation
+            # the clock in the top line moves on with every hour, even when
+            # the garden itself isn't redrawn this time (see below)
+            try:
+                self._update_top_clock()
+            except Exception:
+                pass
 
             # Clean up old dead plants (check every hour)
             try:
@@ -7429,17 +7688,30 @@ class GardenApp(InspectorMixin):
                 pass
             try:
                 n = getattr(self, "_frame_skip_counter", 0)
-                # draw only every 2nd phase
-                if n % 2 == 0:
+                # every new hour is drawn (unless the last redraw was only
+                # just now — at the fastest speed the hours come quicker
+                # than the garden is redrawn, see _auto_render_due)
+                if self._auto_render_due():
                     self.render_all()
                 self._frame_skip_counter = n + 1
             except Exception:
                 pass
-            self._ensure_auto_loop(delay_ms=getattr(self, 'phase_ms', 600))
+            self._schedule_on_time(getattr(self, 'phase_ms', 600))
 
         except Exception:
             self._ensure_auto_loop(delay_ms=getattr(self, 'phase_ms', 600))
 
+
+    def _auto_render_due(self):
+        """The running game redraws the garden at most every AUTO_RENDER_MIN_S
+        seconds: at the fastest speeds the hours pass faster than anyone
+        can watch, and every redraw of a full garden costs (on the Mac most
+        of all). The game itself runs at full speed regardless."""
+        now = time.perf_counter()
+        if now - getattr(self, "_last_auto_render", 0.0) < AUTO_RENDER_MIN_S:
+            return False
+        self._last_auto_render = now
+        return True
 
     def _toggle_climate_mode(self):
         """Toggle climate mode between 'stochastic' and 'historical'."""
@@ -8077,8 +8349,30 @@ class GardenApp(InspectorMixin):
                 q.append(nb)
         return None
 
+    def _tut_sowing_blocked(self, via_picker=False):
+        """Tutorial: the seeds of the cross (F1), later of its children (F2),
+        are sown with »Plant« after ticking »Seeds from crosses« and choosing
+        that generation — other ways of sowing wait meanwhile. True (with a
+        hint) if this sowing has to wait."""
+        want = getattr(self, "_tut_sow_gen", None)
+        if not want:
+            return False
+        if via_picker and getattr(self, "_seed_filter_gen", None) == want:
+            return False
+        try:
+            self._toast(f"Press »Plant«, open »Filter« and tick only »{want}« under »Seeds "
+                        f"from crosses« first.", level="warn")
+        except Exception:
+            pass
+        return True
+
     def _on_plant_area_from_group(self, kind, match_fn):
         """Plant seeds in a contiguous area, automatically replacing dead plants."""
+        if getattr(self, "_tut_no_plant_all", False):
+            self._toast("Sow these one by one first: press »Plant«.", level="warn")
+            return
+        if self._tut_sowing_blocked():
+            return
         try:
             idx = self._resolve_planting_start_index()
         except Exception:
@@ -9522,59 +9816,211 @@ class GardenApp(InspectorMixin):
     def _performance_report(self, seconds=20):
         """Shift+F3: measures where the time goes while the game runs
         normally for `seconds`, then writes performance_report.txt next to
-        the game (with the garden's size, the computer and Python)."""
-        if getattr(self, "_perf_prof", None) is not None:
+        the game (with the garden's size, the computer and Python).
+
+        The game's own thread is SAMPLED (every 4 ms a look at what it is
+        doing) instead of profiled: from Python 3.12 on, cProfile mixes all
+        threads into one list (the picture helpers' waiting showed up as
+        game time), and its overhead slowed the game it was measuring.
+        Time the game thread spends inside Tk (drawing the window, or
+        waiting for the next event) is counted apart from Python work.
+        At the end a short redraw test measures what one repaint costs."""
+        if getattr(self, "_perf_on", False):
             return
-        import cProfile
-        self._perf_prof = cProfile.Profile()
+        import threading
+        self._perf_on = True
         self._perf_t0 = time.perf_counter()
-        self._perf_frames = [0, 0.0]          # frames, slowest gap
+        self._perf_frames = [0, 0.0, []]          # frames, slowest gap, gaps
+        self._perf_samples = {"n": 0, "tk": 0, "py": 0, "self": {}, "incl": {}}
         self._toast(f"Recording performance for {seconds} s — keep playing normally…", level="info")
 
         def _frame(last=[time.perf_counter()]):
-            if getattr(self, "_perf_prof", None) is None:
+            if not getattr(self, "_perf_on", False):
                 return
             now = time.perf_counter()
+            gap = now - last[0]
             self._perf_frames[0] += 1
-            self._perf_frames[1] = max(self._perf_frames[1], now - last[0])
+            self._perf_frames[1] = max(self._perf_frames[1], gap)
+            self._perf_frames[2].append(gap)
             last[0] = now
             self.root.after(16, _frame)
         self.root.after(16, _frame)
-        self._perf_prof.enable()
+
+        main_id = threading.main_thread().ident
+        here = os.path.dirname(os.path.abspath(__file__))
+        S = self._perf_samples
+
+        def _where(code):
+            fn = code.co_filename
+            if fn.startswith(here):
+                fn = os.path.relpath(fn, here)
+            else:
+                fn = os.path.basename(fn)
+            return f"{fn}:{code.co_firstlineno}({code.co_name})"
+
+        def _sampler():
+            end = time.perf_counter() + seconds
+            while time.perf_counter() < end and getattr(self, "_perf_on", False):
+                time.sleep(0.004)
+                try:
+                    f = sys._current_frames().get(main_id)
+                except Exception:
+                    f = None
+                if f is None:
+                    continue
+                S["n"] += 1
+                # inside Tk's event loop (drawing, or waiting for the next
+                # event) with no Python callback running
+                if f.f_code.co_name == "mainloop" and "tkinter" in f.f_code.co_filename:
+                    S["tk"] += 1
+                    continue
+                S["py"] += 1
+                leaf = _where(f.f_code)
+                S["self"][leaf] = S["self"].get(leaf, 0) + 1
+                seen = set()
+                while f is not None:
+                    w = _where(f.f_code)
+                    if w not in seen:
+                        seen.add(w)
+                        S["incl"][w] = S["incl"].get(w, 0) + 1
+                    f = f.f_back
+
+        threading.Thread(target=_sampler, daemon=True, name="perf-sampler").start()
         self.root.after(int(seconds * 1000), self._performance_report_done)
 
-    def _performance_report_done(self):
-        prof = getattr(self, "_perf_prof", None)
-        if prof is None:
-            return
-        prof.disable()
-        self._perf_prof = None
+    def _redraw_probe(self):
+        """How long one repaint takes, for a few kinds of change: nothing,
+        one top-line label, one garden plot, the label and one plot at
+        once (far apart on screen), and every plot (as at dusk). On a Mac
+        this shows whether Tk repaints only what changed or much more."""
+        r = self.root
+        out = []
+        tiles = [t for t in self._all_plot_tiles() if t.winfo_ismapped()]
+        lbl = getattr(self, "phase_label_pre", None)
+        if not tiles or lbl is None:
+            return ["(redraw test skipped: no garden on screen)"]
+        far = tiles[-1]
+        was_running = getattr(self, "running", True)
+        self.running = False
+        marks = []
+
+        def dot(t):
+            try:
+                marks.append((t, t.create_rectangle(2, 2, 6, 6, fill="#ff00ff", outline="")))
+            except Exception:
+                pass
+
+        def undo_dots():
+            while marks:
+                t, i = marks.pop()
+                try:
+                    t.delete(i)
+                except Exception:
+                    pass
+        txt0 = lbl.cget("text")
+
+        def lab():
+            lbl.configure(text=txt0 + " ")
+
+        def undo_lab():
+            lbl.configure(text=txt0)
+
+        cases = [
+            ("no change", lambda: None, lambda: None),
+            ("one top-line label", lab, undo_lab),
+            ("one garden plot", lambda: dot(far), undo_dots),
+            ("label + one plot (far apart)", lambda: (lab(), dot(far)),
+             lambda: (undo_lab(), undo_dots())),
+            (f"all {len(tiles)} plots", lambda: [dot(t) for t in tiles], undo_dots),
+        ]
         try:
-            import io, pstats, platform as _pf, gc
+            for how, fn in (("update idletasks", r.update_idletasks), ("update", r.update)):
+                for name, change, undo in cases:
+                    ts = []
+                    for _ in range(7):
+                        fn()
+                        change()
+                        t0 = time.perf_counter()
+                        fn()
+                        ts.append((time.perf_counter() - t0) * 1000.0)
+                        undo()
+                    fn()
+                    ts.sort()
+                    out.append(f"  {how:16s} {name:32s} median {ts[len(ts) // 2]:6.1f} ms   "
+                               f"(min {ts[0]:.1f}, max {ts[-1]:.1f})")
+        except Exception as e:
+            out.append(f"  (redraw test stopped: {e})")
+        finally:
+            undo_dots()
+            try:
+                undo_lab()
+            except Exception:
+                pass
+            self.running = was_running
+            self._loop_deadline = None
+        return out
+
+    def _performance_report_done(self):
+        if not getattr(self, "_perf_on", False):
+            return
+        self._perf_on = False
+        try:
+            import platform as _pf, gc
             dur = time.perf_counter() - self._perf_t0
-            frames, worst = self._perf_frames
+            frames, worst, gaps = self._perf_frames
+            S = self._perf_samples
             plants = [t.plant for t in self._all_plot_tiles() if t.plant is not None]
             pool = getattr(self, "_render_pool", None)
+            time.sleep(0.01)                          # let the sampler finish its last look
+            n = max(1, S["tk"] + S["py"])
+            per = dur * 1000.0 / n                   # ms of real time per sample
+            gaps = sorted(gaps)
+            slow = sum(1 for g in gaps if g > 0.05)
+            try:
+                w, h = self.root.winfo_width(), self.root.winfo_height()
+            except Exception:
+                w = h = 0
+            try:
+                n_wild = len(getattr(getattr(self, "wildlife", None), "_active", []) or [])
+            except Exception:
+                n_wild = "?"
             lines = [
                 "Garden of Inheritance - performance report",
                 f"computer: {_pf.platform()}  ({os.cpu_count()} cores)",
-                f"Python {sys.version.split()[0]}, Tk {self.root.tk.call('info', 'patchlevel')}",
-                f"recorded {dur:.1f} s: {frames / max(dur, 0.01):.1f} FPS, slowest frame {worst * 1000:.0f} ms",
+                f"Python {sys.version.split()[0]}, Tk {self.root.tk.call('info', 'patchlevel')}"
+                f", window {w}x{h}, {len(list(self._all_plot_tiles()))} plots",
+                f"recorded {dur:.1f} s: {frames / max(dur, 0.01):.1f} FPS, slowest frame {worst * 1000:.0f} ms"
+                + (f", median frame {gaps[len(gaps) // 2] * 1000:.0f} ms, frames over 50 ms: {slow}" if gaps else ""),
+                f"game speed: {getattr(self, 'day_length_s', '?')} s per hour, "
+                f"{'running' if getattr(self, 'running', True) else 'paused'}, "
+                f"weather: {getattr(self.garden, 'weather', '?')}, "
+                f"rain/snow in Mendel's picture: {'on' if getattr(self, '_portrait_weather_anim', True) else 'off'}",
                 f"plant style: {getattr(self, '_plant_style', '?')}, "
                 f"helpers: {'%s on' % getattr(pool, 'n', '?') if pool is not None and pool.ok else 'off'}",
                 f"plants on the plots: {len(plants)}, harvested seeds: {len(self.harvest_inventory)}, "
                 f"archived plants: {len(((self.archive or {}).get('plants') or {}))}",
                 f"Python objects: {len(gc.get_objects())}",
-                f"open windows: {[w.title() for w in self.root.winfo_children() if isinstance(w, tk.Toplevel)]}",
+                f"open windows: {[w_.title() for w_ in self.root.winfo_children() if isinstance(w_, tk.Toplevel)]}",
                 "",
+                "===== WHERE THE GAME THREAD SPENT ITS TIME =====",
+                f"{S['n']} samples (one every {per:.1f} ms)",
+                f"  inside Tk (drawing the window, or idle waiting): {100.0 * S['tk'] / n:5.1f} %",
+                f"  running the game's Python code:                  {100.0 * S['py'] / n:5.1f} %",
+                f"  frames came late (the game thread was busy) for at least "
+                f"{100.0 * sum(max(0.0, g_ - 0.0185) for g_ in gaps) / max(dur, 0.01):.1f} % of the time",
+                "",
+                "--- including what they call (share of all samples, ms in total) ---",
             ]
-            for key, title in (("cumulative", "TIME INCLUDING CALLS"), ("tottime", "TIME IN THE FUNCTION ITSELF")):
-                buf = io.StringIO()
-                pstats.Stats(prof, stream=buf).sort_stats(key).print_stats(40)
-                lines += [f"===== {title} =====", buf.getvalue()]
+            for k, c in sorted(S["incl"].items(), key=lambda kv: -kv[1])[:45]:
+                lines.append(f"  {100.0 * c / n:5.1f} %  {c * per:7.0f} ms  {k}")
+            lines += ["", "--- in the function itself ---"]
+            for k, c in sorted(S["self"].items(), key=lambda kv: -kv[1])[:30]:
+                lines.append(f"  {100.0 * c / n:5.1f} %  {c * per:7.0f} ms  {k}")
+            lines += ["", "===== REDRAW TEST (game paused for a moment) ====="]
+            lines += self._redraw_probe()
             path = os.path.join(_SIM_DIR, "performance_report.txt")
             with open(path, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines))
+                f.write("\n".join(lines) + "\n")
             self._toast(f"Performance report written: {path}", level="info", duration=8000)
             print(f"[performance] report written to {path}")
         except Exception:
@@ -9697,7 +10143,8 @@ class GardenApp(InspectorMixin):
                 if base:
                     t.set_soil_color(base)
 
-        self.garden.drift_temperature_once()
+        # (the temperature steps are done by the running game's loop —
+        # _auto_advance_phase — not here: a redraw must not move the clock)
 
         self._refresh_seed_counter_var()
 
@@ -9730,6 +10177,18 @@ class GardenApp(InspectorMixin):
             tile.render()
 
         # Update centered header (Day / Phase / Weather)
+        self._update_top_clock()
+        self._render_selection_panel()
+        self._update_action_button_states()
+        if getattr(self, "_plant_cursor_active", False):
+            self._plant_preview_refresh()     # tiles may have been redrawn
+        self._draw_note_flags()
+
+    def _update_top_clock(self):
+        """The date, clock, weather and temperature in the top line. Also
+        called by the running game at every hour and temperature step, so
+        the clock moves on at its exact pace even when the garden isn't
+        redrawn that time (only changed values are written)."""
         try:
             mon_names = ['January','February','March','April','May','June','July','August','September','October','November','December']
             mon = mon_names[getattr(self.garden, 'month', 4)-1] if 1 <= getattr(self.garden, 'month', 4) <= 12 else str(getattr(self.garden, 'month', 4))
@@ -9740,8 +10199,8 @@ class GardenApp(InspectorMixin):
             wx  = getattr(self.garden, 'weather', '')
             tmp = f"{getattr(self.garden, 'temp', 0.0):.1f}°C" if hasattr(self.garden, 'temp') else ''
             clock = f"{int(hh):02d}:{int(mm):02d}"
-            self.phase_label_pre.configure(text=f"{dom} {mon} {yr} — {clock} —")
-            self.phase_label_post.configure(text=tmp)
+            self._cfg(self.phase_label_pre, text=f"{dom} {mon} {yr} — {clock} —")
+            self._cfg(self.phase_label_post, text=tmp)
             # Only touch the icon widget when weather actually changed —
             # this runs on every render_all(), and re-loading/re-
             # configuring an image every single call would be pure waste
@@ -9768,11 +10227,6 @@ class GardenApp(InspectorMixin):
                 pass
         except Exception:
             pass
-        self._render_selection_panel()
-        self._update_action_button_states()
-        if getattr(self, "_plant_cursor_active", False):
-            self._plant_preview_refresh()     # tiles may have been redrawn
-        self._draw_note_flags()
 
     def _update_action_button_states(self):
         """Pollinate / Remove are only usable when they can do something:
@@ -9821,6 +10275,16 @@ class GardenApp(InspectorMixin):
             else:
                 tk.Label(container, text=part, font=base_font).pack(side="left")
         return container
+
+    @staticmethod
+    def _cfg(widget, **kw):
+        """widget.configure(...) only for the values that really change: Tk
+        redraws a widget on every configure, even with the same values."""
+        last = widget.__dict__.setdefault("_cfg_last", {})
+        ch = {k: v for k, v in kw.items() if k not in last or last[k] is not v and last[k] != v}
+        if ch:
+            widget.configure(**ch)
+            last.update(ch)
 
     def _render_selection_panel(self):
         if self._ui_gone():
@@ -9884,14 +10348,14 @@ class GardenApp(InspectorMixin):
         # Guard: no plant (empty tile) - show grey placeholder and "free"
         if plant is None:
             try:
-                self.id_label.configure(text="")  # No # for empty plot
-                self.gen_label.configure(text="")  # Clear generation
-                self.stage_label.configure(text='free')  # Show "free"
+                self._cfg(self.id_label, text="")  # No # for empty plot
+                self._cfg(self.gen_label, text="")  # Clear generation
+                self._cfg(self.stage_label, text='free')  # Show "free"
 
                 # Grey "..." placeholder, matching the inspector window's
                 # "?" placeholder style for not-yet-known traits — instead
                 # of the old empty-plot icon image.
-                self.plant_icon_label.configure(
+                self._cfg(self.plant_icon_label, 
                     image='', text="...", font=("Segoe UI", 28, "bold"),
                     fg="#999999", bg=self.grid_bg)
                 self.plant_icon_label.image = None
@@ -9919,16 +10383,16 @@ class GardenApp(InspectorMixin):
             
             if is_dead:
                 # Show dead plant
-                self.id_label.configure(text="")  # No # for dead plant
-                self.gen_label.configure(text="")  # Clear generation
-                self.stage_label.configure(text='dead')  # Show "dead"
+                self._cfg(self.id_label, text="")  # No # for dead plant
+                self._cfg(self.gen_label, text="")  # Clear generation
+                self._cfg(self.stage_label, text='dead')  # Show "dead"
                 
                 # Show dead icon
                 if hasattr(self, 'dead_icon') and self.dead_icon:
-                    self.plant_icon_label.configure(image=self.dead_icon, text="")
+                    self._cfg(self.plant_icon_label, image=self.dead_icon, text="")
                     self.plant_icon_label.image = self.dead_icon
                 else:
-                    self.plant_icon_label.configure(image='', text="")
+                    self._cfg(self.plant_icon_label, image='', text="")
                 
                 # Disable most buttons for dead plant (Inspect stays: it
                 # is only greyed out when no plant is selected)
@@ -9945,8 +10409,8 @@ class GardenApp(InspectorMixin):
             
             # Living plant - update normally
             # Update ID and generation text labels
-            self.id_label.configure(text=f"#{plant.id}")
-            self.gen_label.configure(text=plant.generation)
+            self._cfg(self.id_label, text=f"#{plant.id}")
+            self._cfg(self.gen_label, text=plant.generation)
             
             # Update plant icon
             try:
@@ -9954,22 +10418,22 @@ class GardenApp(InspectorMixin):
                 self._ensure_tile_icon(plant)
                 
                 if hasattr(plant, 'img_obj') and plant.img_obj:
-                    self.plant_icon_label.configure(image=plant.img_obj, text="")
+                    self._cfg(self.plant_icon_label, image=plant.img_obj, text="")
                     self.plant_icon_label.image = plant.img_obj  # Keep reference
                 else:
                     # Show placeholder if no icon
                     if hasattr(self, 'placeholder_label') and self.placeholder_label:
-                        self.plant_icon_label.configure(image='')
+                        self._cfg(self.plant_icon_label, image='')
             except Exception as e:
                 print(f"[WARNING] Failed to update plant icon: {e}")
             
             # Update stage label (centered below icon)
             try:
                 if getattr(plant, "fully_harvested", False):
-                    self.stage_label.configure(text="harvested")
+                    self._cfg(self.stage_label, text="harvested")
                 else:
                     stage_name = STAGE_NAMES.get(plant.stage, plant.stage)
-                    self.stage_label.configure(text=stage_name)
+                    self._cfg(self.stage_label, text=stage_name)
             except Exception as e:
                 print(f"[WARNING] Failed to update stage label: {e}")
 
@@ -13726,6 +14190,7 @@ class GardenApp(InspectorMixin):
 # ============================================================================
     def _on_next_phase(self):
         old_hour = int(getattr(self.garden, 'clock_hour', 8))
+        self._apply_soil_patches()
         self.garden.next_phase()
         self._daynight_last_advance = time.time()  # smooth day/night interpolation
         new_hour = int(getattr(self.garden, 'clock_hour', 8))
@@ -14446,16 +14911,23 @@ class GardenApp(InspectorMixin):
 
         msgs = []
         watered = 0
+        g = self.garden
+        _w, _t, _h = getattr(g, "weather", None), getattr(g, "temp", None), getattr(g, "clock_hour", None)
+        _harm = getattr(self, "_season_mode", "off") != "off"     # Casual: only wasted water
         for idx in indices:
             plant = self.tiles[idx].plant if (idx is not None) else None
             if not plant:
                 continue
             try:
-                msg = plant.water_plant(self.garden.phase)
+                msg = plant.water_plant(g.phase, weather=_w, temp=_t, hour=_h, harm=_harm)
                 msgs.append(msg)
                 watered += 1
             except Exception:
                 continue
+        try:
+            _hot = Plant.watering_in_heat(_w, _t, _h)
+        except Exception:
+            _hot = False
 
         self.render_all()
 
@@ -14470,7 +14942,10 @@ class GardenApp(InspectorMixin):
         if watered:
             self._spend_task_minutes(self.WATER_MINUTES_PER_PLANT * watered)
 
-        if watered == 1:
+        if watered and _hot:
+            self._toast("Hot midday sun: much of the water evaporates before it reaches the "
+                        "roots. Water in the morning or evening.", level="warn")
+        elif watered == 1:
             self._toast("Plant watered.")
         elif watered > 1:
             self._toast(f"{watered} plants watered.")
@@ -14589,6 +15064,8 @@ class GardenApp(InspectorMixin):
     def _on_harvest_selected(self, flower_k=None):
             """flower_k: harvest that flower's pod (a pod clicked in the
             Inspect window), else the next ripe one."""
+            if flower_k is None and self._tut_pod_click_blocked():
+                return None
             if not self._night_gate("harvesting"):
                 return
             idx = self.selected_index
@@ -14954,8 +15431,24 @@ class GardenApp(InspectorMixin):
 # ============================================================================
 # Event Handlers
 # ============================================================================
+    def _tut_pod_click_blocked(self):
+        """Tutorial (the pod of the first cross): it is picked by clicking the
+        pod marked »P« in the inspection window — the Harvest button, the
+        S keys and »Harvest All« wait until then. True (with a hint) if
+        this harvest has to wait."""
+        if not getattr(self, "_tutorial_pod_click_only", False):
+            return False
+        try:
+            self._toast("Pick it by hand: click the pod marked »P« in the inspection "
+                        "window (Inspect › Harvest).", level="warn")
+        except Exception:
+            pass
+        return True
+
     def _on_harvest_all_selected(self):
         """Harvest all remaining pods from the selected plant. Plant stays on the plot afterwards."""
+        if self._tut_pod_click_blocked():
+            return
         if not self._night_gate("harvesting"):
             return
         idx = self.selected_index
@@ -15492,45 +15985,95 @@ class GardenApp(InspectorMixin):
         pager = tk.Frame(header, bg=BG)
         pager.pack(side="right", anchor="e")
 
-        # Filter (tick box): only seeds from plants with a note.
-        filt_bar = tk.Frame(outer, bg=BG)
-        filt_bar.pack(fill="x", pady=(8, 0))
-        tk.Label(filt_bar, text="Show only:", font=("Segoe UI", 10), bg=BG,
-                 fg=MUTED).pack(side="left", padx=(0, 8))
-        _f_noted = tk.BooleanVar(value=bool(getattr(self, "_seed_filter_noted", False)))
-
-        def _filters_changed():
-            self._seed_filter_noted = bool(_f_noted.get())
-            picker._seed_page = 0
-            _render()
-
-        self._seed_filter_cbs = {}
-        for key, var, txt in (("noted", _f_noted, "\u2691 Seeds of noted plants"),):
-            cb = tk.Checkbutton(filt_bar, text=txt, variable=var, command=_filters_changed,
-                                font=("Segoe UI", 10), bg=BG, fg=INK, activebackground=BG,
-                                activeforeground=INK, selectcolor="#FFFDF6",
-                                highlightthickness=0, bd=0, cursor="hand2")
-            cb.pack(side="left", padx=(0, 12))
-            self._seed_filter_cbs[key] = cb
-        # Seed look (tick boxes): only round / wrinkled, only yellow / green
-        # peas — what Mendel sorted his seeds by before sowing. Nothing
-        # ticked in a pair = both.
-        look_bar = tk.Frame(outer, bg=BG)
-        look_bar.pack(fill="x", pady=(4, 0))
-        tk.Label(look_bar, text="Seed look:", font=("Segoe UI", 10), bg=BG,
-                 fg=MUTED).pack(side="left", padx=(0, 8))
+        # ---- Filter: a button like the sections of the inspection window;
+        # it opens the filters (noted plants, seed look, flower colour of
+        # the mother, generation since the cross) below the header.
+        # Opens by itself while any filter is on.
+        _gens0 = set(getattr(self, "_seed_filter_gens", None) or set())
+        if getattr(self, "_seed_filter_gen", None) is None:
+            _gens0 = set()                      # (cleared elsewhere, e.g. the tutorial)
+        elif not _gens0:
+            _gens0 = {str(self._seed_filter_gen)}
+        self._seed_filter_gens = _gens0
         _look = getattr(self, "_seed_filter_look", None)
         if not isinstance(_look, set):
             _look = self._seed_filter_look = set()
-        _look_vars = {}
+        _fl = getattr(self, "_seed_filter_flower", None)
+        if not isinstance(_fl, set):
+            _fl = self._seed_filter_flower = set()
 
-        def _look_changed():
+        def _n_filters():
+            return (int(bool(getattr(self, "_seed_filter_noted", False)))
+                    + len(self._seed_filter_look) + len(self._seed_filter_flower)
+                    + len(self._seed_filter_gens))
+
+        filt_toggle_row = tk.Frame(outer, bg=BG)
+        filt_toggle_row.pack(fill="x", pady=(10, 0))
+        filt_btn = tk.Label(filt_toggle_row, text="Filter", font=("Segoe UI", 12, "bold"),
+                            padx=10, pady=4, cursor="hand2", relief="flat")
+        filt_btn.pack(side="left")
+        self._seed_filter_btn = filt_btn            # (the tutorial lets it glow)
+        filt_note = tk.Label(filt_toggle_row, text="", font=("Segoe UI", 10, "italic"),
+                             bg=BG, fg=MUTED)
+        filt_note.pack(side="left", padx=(10, 0))
+        filt_panel = tk.Frame(outer, bg=BG)
+        picker._filter_open = bool(getattr(self, "_seed_filter_open", False)) or _n_filters() > 0
+
+        def _style_filter():
+            on = picker._filter_open
+            filt_btn.configure(bg="#8a7a52" if on else "#e8e0cf", fg="white" if on else INK)
+            n = _n_filters()
+            filt_note.configure(text=(f"{n} filter{'s' if n != 1 else ''} on" if n else ""))
+
+        def _toggle_filter():
+            picker._filter_open = not picker._filter_open
+            self._seed_filter_open = picker._filter_open
+            if picker._filter_open:
+                filt_panel.pack(fill="x", pady=(6, 0), after=filt_toggle_row)
+            else:
+                filt_panel.pack_forget()
+            _style_filter()
+        self._bind_click(filt_btn, _toggle_filter)
+
+        def _filters_changed():
+            self._seed_filter_noted = bool(_f_noted.get())
             self._seed_filter_look = {k for k, v in _look_vars.items() if v.get()}
+            self._seed_filter_flower = {k for k, v in _fl_vars.items() if v.get()}
+            gens = {k for k, v in _gen_vars.items() if v.get()}
+            self._seed_filter_gens = gens
+            # (one generation alone: its name, as the tutorial asks for it)
+            self._seed_filter_gen = (next(iter(gens)) if len(gens) == 1
+                                     else ("several" if gens else None))
             picker._seed_page = 0
+            _style_filter()
             _render()
 
-        # the game's trait icons at half size (the word if an icon is missing)
+        # the game's trait icons (the word if an icon is missing)
+        def _filter_icon(trait, value):
+            cache = getattr(self, "_seed_filter_icons", None)
+            if cache is None:
+                cache = self._seed_filter_icons = {}
+            if (trait, value) not in cache:
+                img = None
+                try:
+                    path = trait_icon_path(trait, value)
+                    if path:
+                        im = Image.open(path).convert("RGBA")
+                        bb = im.getbbox()
+                        if bb:
+                            im = im.crop(bb)
+                        # flowers (taller, with a stem) a little larger, so
+                        # they look as big as the round peas beside them
+                        box = 44 if trait == "flower_color" else 34
+                        im.thumbnail((box, box), Image.LANCZOS)
+                        img = ImageTk.PhotoImage(im, master=self.root)
+                except Exception:
+                    img = None
+                cache[(trait, value)] = img
+            return cache[(trait, value)]
+
         def _half_icon(trait, value):
+            # (small, for the »flowered« line on the cards)
             cache = getattr(self, "_seed_look_icons", None)
             if cache is None:
                 cache = self._seed_look_icons = {}
@@ -15551,55 +16094,70 @@ class GardenApp(InspectorMixin):
                 cache[(trait, value)] = img
             return cache[(trait, value)]
 
+        def _row(label):
+            r = tk.Frame(filt_panel, bg=BG)
+            r.pack(fill="x", pady=(2, 2))
+            tk.Label(r, text=label, font=("Segoe UI", 11, "bold"), bg=BG, fg=MUTED,
+                     width=16, anchor="w").pack(side="left")
+            return r
+
+        def _cb(parent, var, text="", image=None, tip=None, font=("Segoe UI", 11)):
+            cb = tk.Checkbutton(parent, text=text, image=(image if image is not None else ""),
+                                compound="left", variable=var, command=_filters_changed,
+                                font=font, bg=BG, fg=INK, activebackground=BG,
+                                activeforeground=INK, selectcolor="#FFFDF6",
+                                highlightthickness=0, bd=0, cursor="hand2")
+            cb.pack(side="left", padx=(0, 14))
+            if tip:
+                try:
+                    _attach_tooltip(cb, tip)
+                except Exception:
+                    pass
+            return cb
+
+        # Show only: seeds of plants with a note
+        _f_noted = tk.BooleanVar(value=bool(getattr(self, "_seed_filter_noted", False)))
+        self._seed_filter_cbs = {"noted": _cb(_row("Show only:"), _f_noted,
+                                              "\u2691 Seeds of noted plants")}
+        # Seed look: only round / wrinkled, only yellow / green peas — what
+        # Mendel sorted his seeds by before sowing (nothing ticked in a pair = both)
+        r = _row("Seed look:")
+        _look_vars = {}
         for key, trait in (("round", "seed_shape"), ("wrinkled", "seed_shape"),
                            ("yellow", "seed_color"), ("green", "seed_color")):
             v = tk.BooleanVar(value=key in _look)
             _look_vars[key] = v
-            _ic = _half_icon(trait, key)
-            cb = tk.Checkbutton(look_bar, text=("" if _ic is not None else key.capitalize()),
-                                image=_ic if _ic is not None else "",
-                                variable=v, command=_look_changed,
-                                font=("Segoe UI", 10), bg=BG, fg=INK, activebackground=BG,
-                                activeforeground=INK, selectcolor="#FFFDF6",
-                                highlightthickness=0, bd=0, cursor="hand2")
-            cb.pack(side="left", padx=(0, 12))
-            try:
-                _attach_tooltip(cb, f"Only {key} seeds")
-            except Exception:
-                pass
-
-        # Seeds from crosses (radio), counted as Mendel did, from the cross:
-        # F1 = the seeds of a cross itself, F2 = the seeds of the plants
-        # grown from them, F3 = the next selfed generation, ...
-        gen_bar = tk.Frame(outer, bg=BG)
-        gen_bar.pack(fill="x", pady=(4, 0))
-        tk.Label(gen_bar, text="Seeds from crosses:", font=("Segoe UI", 10), bg=BG,
-                 fg=MUTED).pack(side="left", padx=(0, 8))
-        _gen_var = tk.StringVar(value=str(getattr(self, "_seed_filter_gen", "") or ""))
-
-        def _gen_changed():
-            self._seed_filter_gen = _gen_var.get() or None
-            picker._seed_page = 0
-            _render()
-
+            _ic = _filter_icon(trait, key)
+            _cb(r, v, "" if _ic is not None else key.capitalize(), _ic, f"Only {key} seeds")
+        # Flowered: the flower colour of the plant the seeds come from
+        r = _row("Flowered:")
+        _fl_vars = {}
+        for key in ("purple", "white"):
+            v = tk.BooleanVar(value=key in _fl)
+            _fl_vars[key] = v
+            _ic = _filter_icon("flower_color", key)
+            _cb(r, v, "" if _ic is not None else key.capitalize(), _ic,
+                f"Only seeds of {key}-flowering plants")
+        # Seeds from crosses: the generation, counted as Mendel did, from the
+        # cross: F1 = the seeds of a cross itself, F2 = the seeds of the
+        # plants grown from them, F3 = the next selfed generation, ...
+        r = _row("Seeds from crosses:")
+        _gen_vars = {}
         self._seed_gen_rbs = {}
-        _gen_tips = {"": "All seeds, from crosses or not",
-                     "F1": "F1: the seeds of a cross itself",
+        _gen_tips = {"F1": "F1: the seeds of a cross itself",
                      "F2": "F2: seeds of the plants grown from a cross",
                      "F3": "F3: one more selfed generation",
                      "F4": "F4", "F5": "F5", "F6+": "F6 and later generations"}
-        for val, txt in (("", "All"), ("F1", "F1"), ("F2", "F2"), ("F3", "F3"),
-                         ("F4", "F4"), ("F5", "F5"), ("F6+", "F6+")):
-            rb = tk.Radiobutton(gen_bar, text=txt, value=val, variable=_gen_var,
-                                command=_gen_changed, font=("Segoe UI", 10), bg=BG, fg=INK,
-                                activebackground=BG, activeforeground=INK, selectcolor="#FFFDF6",
-                                highlightthickness=0, bd=0, cursor="hand2")
-            rb.pack(side="left", padx=(0, 10))
-            self._seed_gen_rbs[val or "all"] = rb
-            try:
-                _attach_tooltip(rb, _gen_tips.get(val, val))
-            except Exception:
-                pass
+        for val in ("F1", "F2", "F3", "F4", "F5", "F6+"):
+            v = tk.BooleanVar(value=val in _gens0)
+            _gen_vars[val] = v
+            self._seed_gen_rbs[val] = _cb(r, v, val, None, _gen_tips.get(val, val),
+                                          font=("Segoe UI", 12, "bold"))
+        self._seed_cross_cb = filt_btn              # (old name the tutorial used)
+
+        if picker._filter_open:
+            filt_panel.pack(fill="x", pady=(6, 0), after=filt_toggle_row)
+        _style_filter()
 
         _filial_cache = {}
 
@@ -15645,7 +16203,7 @@ class GardenApp(InspectorMixin):
             return None if pm is None else pm + 1
 
         def _gen_ok(kind, match_fn):
-            want = getattr(self, "_seed_filter_gen", None)
+            want = set(getattr(self, "_seed_filter_gens", None) or set())
             if not want:
                 return True
             if kind == "S":
@@ -15656,12 +16214,18 @@ class GardenApp(InspectorMixin):
                         n = _seed_filial(sd)
                         if n is None:
                             return False
-                        if want == "F6+":
-                            return n >= 6
-                        return f"F{n}" == want
+                        return ("F6+" if n >= 6 else f"F{n}") in want
             except Exception:
                 pass
             return False
+
+        def _flower_ok(kind, src):
+            want = set(getattr(self, "_seed_filter_flower", None) or set())
+            if not want:
+                return True
+            if kind == "S":
+                return False
+            return self._seed_mother_flower(src) in want
 
         def _look_ok(sd):
             look = getattr(self, "_seed_filter_look", None) or set()
@@ -15731,6 +16295,8 @@ class GardenApp(InspectorMixin):
             _render()
 
         def _start_planting(kind, match_fn, n):
+            if self._tut_sowing_blocked(via_picker=True):
+                return                       # (the tutorial: that generation first)
             if hasattr(self, "_start_plant_cursor_mode"):
                 self._start_plant_cursor_mode(kind, match_fn, requested_n=n)
             _close_picker()
@@ -15922,11 +16488,18 @@ class GardenApp(InspectorMixin):
                     pass
             var.trace_add("write", _upd)
 
+            # (the tutorial's first sowing: one by one, »All« comes later)
+            _no_all = bool(getattr(self, "_tut_no_plant_all", False))
             b_all = _make_flat_button_raw(
                 ctrl, f"All ({count})", lambda k=kind, mf=match_fn, c=count: _start_planting(k, mf, c),
                 font=("Segoe UI", 11, "bold"),
-                state=("normal" if count > 0 else "disabled"))
+                state=("normal" if count > 0 and not _no_all else "disabled"))
             b_all.pack(side="left")
+            if _no_all:
+                try:
+                    _attach_tooltip(b_all, "Abbot Cyril wants you to sow these one by one first.")
+                except Exception:
+                    pass
             return card
 
         def _render():
@@ -15991,6 +16564,8 @@ class GardenApp(InspectorMixin):
                         count = 0
                 if not _gen_ok(kind, match_fn):
                     continue
+                if not _flower_ok(kind, src):
+                    continue
                 if only_noted and (kind == "S" or not _from_noted(src, match_fn)):
                     continue
                 if kind == "S" or count > 0:
@@ -16017,7 +16592,8 @@ class GardenApp(InspectorMixin):
                 lbl_page.pack(side="left")
 
             if not shown:
-                tk.Label(grid, text=("No seeds match these filters." if (look_on or (
+                tk.Label(grid, text=("No seeds match these filters." if (
+                                         look_on or getattr(self, "_seed_filter_flower", None) or (
                                          only_noted and getattr(self, "_seed_filter_gen", None)))
                                      else "No seeds of this generation yet."
                                      if getattr(self, "_seed_filter_gen", None)
@@ -16328,6 +16904,7 @@ class GardenApp(InspectorMixin):
 
             # Advance simulation by one hour
             try:
+                self._apply_soil_patches()
                 self.garden.next_phase()
             except Exception:
                 pass
@@ -16788,12 +17365,77 @@ class GardenApp(InspectorMixin):
             result["v"] = v
             win.destroy()
 
+        # »Start new«: first how hard the garden should be — the same window
+        # shows the three choices; hovering one explains it right there.
+        _DIFF = (
+            ("off", "Casual",
+             "Fast growth: ripe pods about 30 days after sowing. Weather and cold never "
+             "harm your plants, and you may sow at any time of year: only water and care "
+             "matter. Best for exploring inheritance."),
+            ("overlay", "Moderate",
+             "Medium growth: ripe pods after about 55 days. Sowing follows the seasons, "
+             "and the effects of temperature are shown, but no plant dies of them."),
+            ("enforce", "Realistic",
+             "Mendel's Brno: ripe pods after about 85 days, sowing only when the season "
+             "allows, a few spots of the garden dry out faster than the rest, and autumn "
+             "frost ends the plants' year. The real challenge."),
+        )
+
+        def _ask_difficulty():
+            for w_ in row.winfo_children():
+                w_.destroy()
+            _ask = "How would you like to experience your garden?"
+            q_lbl.configure(text=_ask, font=("Segoe UI", 12, "bold"))
+            try:
+                for w_ in (name_lbl, stats_lbl):
+                    w_.pack_forget()
+            except Exception:
+                pass
+            # a box of fixed size: the window doesn't jump while the
+            # explanations (of different lengths) come and go
+            _ef = tkfont.Font(font=("Segoe UI", 12))
+            expl_box = tk.Frame(win, bg="#f5eee0", width=620,
+                                height=4 * _ef.metrics("linespace") + 8)
+            expl_box.pack_propagate(False)
+            expl_box.pack(before=row, padx=40, pady=(2, 12))
+            expl = tk.Label(expl_box, text="Hold the mouse over a choice to read about it.",
+                            font=("Segoe UI", 12), bg="#f5eee0", fg="#6b5a44",
+                            wraplength=600, justify="center")
+            expl.pack(expand=True)
+            cur = str(getattr(self, "_season_mode", "off") or "off")
+
+            def _choose(mode):
+                result["difficulty"] = mode
+                _pick("new")
+            for mode, label, text in _DIFF:
+                on = (mode == cur)
+                b = _make_flat_button_raw(row, label + ("  ✓" if on else ""),
+                                          lambda m=mode: _choose(m),
+                                          bg=("#7A9A3C" if on else "#e0dccf"),
+                                          fg=("white" if on else "#333333"),
+                                          font=("Segoe UI", 12, "bold"))
+                b.bind("<Enter>", lambda e, t=text, l=label: expl.configure(
+                    text=f"{l}: {t}", fg="#3b2a1a"), add="+")
+                b.bind("<Leave>", lambda e: expl.configure(
+                    text="Hold the mouse over a choice to read about it.", fg="#6b5a44"), add="+")
+                b.pack(side="left", padx=(0, 10))
+
+            def _back():
+                win.destroy()
+                result["v"] = "again"
+            _make_flat_button_raw(row, "◀ Back", _back, bg="#f5eee0", fg="#6b5a44",
+                                  font=("Segoe UI", 11)).pack(side="left", padx=(10, 0))
+            try:
+                _centre()
+            except Exception:
+                pass
+
         if has_save:
             _explain(_make_flat_button_raw(row, "Continue", lambda: _pick("continue"),
                                            bg="#7A9A3C", fg="white", font=("Segoe UI", 11, "bold")),
                      ("Continue the tutorial where you left it" if in_tutorial
                       else "Continue your latest garden")).pack(side="left", padx=(0, 10))
-        _explain(_make_flat_button_raw(row, "Start new", lambda: _pick("new"),
+        _explain(_make_flat_button_raw(row, "Start new", lambda: _ask_difficulty(),
                                        bg=("#e0dccf" if has_save else "#7A9A3C"),
                                        fg=("#333333" if has_save else "white"),
                                        font=("Segoe UI", 11) if has_save else ("Segoe UI", 11, "bold")),
@@ -16844,6 +17486,15 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass
         self.root.wait_window(win)
+        if result["v"] == "again":              # ◀ Back from the difficulty choice
+            return self._ask_continue_or_new(name, when, stats)
+        if result["v"] == "new" and result.get("difficulty"):
+            try:
+                if result["difficulty"] != getattr(self, "_season_mode", "off"):
+                    self._difficulty_var.set(result["difficulty"])
+                    self._on_difficulty_change()
+            except Exception:
+                logging.error("Setting the difficulty failed", exc_info=True)
         return result["v"]
 
     def _keep_on_top(self, win, interval_ms=300):
@@ -16997,9 +17648,13 @@ class GardenApp(InspectorMixin):
         # cancel the timers still waiting (otherwise Tk prints a list of
         # "invalid command name ..." errors while the window closes)
         try:
+            # (Tcl's own "after cancel": root.after_cancel would also delete
+            # the callback's command, which belongs to the widget that set
+            # the timer — that widget's destroy then failed with "can't
+            # delete Tcl command")
             for _a in self.root.tk.splitlist(self.root.tk.call("after", "info")):
                 try:
-                    self.root.after_cancel(_a)
+                    self.root.tk.call("after", "cancel", _a)
                 except Exception:
                     pass
         except Exception:
@@ -18524,88 +19179,148 @@ class GardenApp(InspectorMixin):
         named_saves.sort(key=lambda x: x[3], reverse=True)
         unnamed_saves.sort(key=lambda x: x[2], reverse=True)
 
+        # Same look as the other windows (start-up question, missions):
+        # warm paper colour, one card per garden, the date and a few
+        # numbers under its name; a click on a card loads it.
+        BG, CARD, EDGE = "#f5eee0", "#fbf7ee", "#d9cdb4"
+        HOVER, INK, MUTED = "#efe4cc", "#3b2a1a", "#7a6a55"
         win = tk.Toplevel(self.root)
         win.title("Load Garden")
-        win.configure(bg=self.grid_bg)
-        win.geometry("420x480")
+        win.configure(bg=BG)
         try:
             self._force_window_not_maximized(win)
         except Exception:
             pass
 
-        tk.Label(win, text="Load Garden", font=("Segoe UI", 16, "bold"),
-                 bg=self.grid_bg).pack(pady=(10, 6))
+        tk.Label(win, text="Load a garden", font=("Segoe UI", 16, "bold"),
+                 bg=BG, fg=INK).pack(padx=24, pady=(18, 2), anchor="w")
+        tk.Label(win, text="Click a garden to continue it.", font=("Segoe UI", 11, "italic"),
+                 bg=BG, fg=MUTED).pack(padx=24, pady=(0, 10), anchor="w")
 
-        outer = tk.Frame(win, bg=self.grid_bg)
-        outer.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        list_canvas = tk.Canvas(outer, bg=self.grid_bg, highlightthickness=0)
+        outer = tk.Frame(win, bg=BG)
+        outer.pack(fill="both", expand=True, padx=(20, 12), pady=(0, 8))
+        list_canvas = tk.Canvas(outer, bg=BG, highlightthickness=0, width=500, height=420)
         scrollbar = ttk.Scrollbar(outer, orient="vertical", command=list_canvas.yview)
-        list_frame = tk.Frame(list_canvas, bg=self.grid_bg)
-
-        list_frame.bind(
-            "<Configure>",
-            lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all")),
-        )
-        list_canvas.create_window((0, 0), window=list_frame, anchor="nw")
+        list_frame = tk.Frame(list_canvas, bg=BG)
+        list_frame.bind("<Configure>",
+                        lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all")))
+        _lw = list_canvas.create_window((0, 0), window=list_frame, anchor="nw")
+        list_canvas.bind("<Configure>", lambda e: list_canvas.itemconfigure(_lw, width=e.width))
         list_canvas.configure(yscrollcommand=scrollbar.set)
-
         list_canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        btn_kwargs = dict(
-            bg=self.button_style.get("bg", "#F4F4F4"),
-            hover_bg=self.button_style.get("activebackground", "#E4E4E4"),
-            font=self.button_style.get("font", self.font_button),
-            padx=self.button_style.get("padx", 12),
-            pady=self.button_style.get("pady", 6),
-        )
+        def _wheel(e):
+            try:
+                d = -1 if (getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0) else 1
+                list_canvas.yview_scroll(d, "units")
+            except Exception:
+                pass
+        for _seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            win.bind(_seq, _wheel)
 
-        def _row(label, filepath):
-            def _do_load():
+        _months = ["January", "February", "March", "April", "May", "June", "July",
+                   "August", "September", "October", "November", "December"]
+
+        def _summary(filepath):
+            """(garden time, a few numbers) of a save, for its card."""
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                g = data.get("garden", {}) or {}
+                sim = f"{_months[int(g['month']) - 1]} {int(g['year'])}"
+            except Exception:
+                return "", ""
+            try:
+                import re as _re
+                growing = len(data.get("plants", []) or [])
+                gens = [pd.get("generation") for pd in (data.get("plants", []) or [])]
+                gens += [pd.get("generation") for pd in
+                         ((data.get("archive") or {}).get("plants", {}) or {}).values()
+                         if isinstance(pd, dict)]
+                top = max([int(m_.group()) for m_ in (_re.search(r"\d+", str(gv)) for gv in gens)
+                           if m_] or [-1])
+                seeds = len((data.get("inventory") or {}).get("seeds", []) or [])
+                parts = [f"{growing} growing"]
+                if top >= 1:
+                    parts.append(f"up to F{top}")
+                parts.append(f"{seeds} seeds")
+                return sim, "  \u00b7  ".join(parts)
+            except Exception:
+                return sim, ""
+
+        def _card(title, saved, filepath):
+            sim, stats = _summary(filepath)
+            card = tk.Frame(list_frame, bg=CARD, highlightbackground=EDGE, highlightthickness=1,
+                            padx=12, pady=8, cursor="hand2")
+            card.pack(fill="x", pady=3, padx=(0, 6))
+            t = tk.Label(card, text=title, font=("Segoe UI", 12, "bold"), bg=CARD, fg=INK,
+                         anchor="w", justify="left", wraplength=440)
+            t.pack(fill="x")
+            sub = "  \u00b7  ".join(x for x in (f"saved {saved}", sim) if x)
+            l2 = tk.Label(card, text=sub, font=("Segoe UI", 10), bg=CARD, fg=MUTED, anchor="w")
+            l2.pack(fill="x")
+            parts = [card, t, l2]
+            if stats:
+                l3 = tk.Label(card, text=stats, font=("Segoe UI", 10, "italic"), bg=CARD,
+                              fg=MUTED, anchor="w")
+                l3.pack(fill="x")
+                parts.append(l3)
+
+            def _do_load(e=None):
                 win.destroy()
                 self._load_garden_from_file(filepath, confirm=confirm)
-            btn = _FlatIconButton(list_frame, text=label, command=_do_load, **btn_kwargs)
-            btn.pack(fill="x", pady=2)
+
+            def _hover(on):
+                for w_ in parts:
+                    try:
+                        w_.configure(bg=(HOVER if on else CARD))
+                    except Exception:
+                        pass
+            for w_ in parts:
+                self._bind_click(w_, _do_load)
+                w_.bind("<Enter>", lambda e: _hover(True), add="+")
+                w_.bind("<Leave>", lambda e: _hover(False), add="+")
+                try:
+                    w_.configure(cursor="hand2")
+                except Exception:
+                    pass
+
+        def _heading(text, first=False):
+            tk.Label(list_frame, text=text, font=("Segoe UI", 12, "bold"), bg=BG,
+                     fg=MUTED).pack(anchor="w", pady=((0 if first else 12), 4))
 
         if not named_saves and not unnamed_saves:
-            tk.Label(list_frame, text="(No save files found)",
-                     font=("Segoe UI", 11, "italic"), fg="#666666",
-                     bg=self.grid_bg).pack(pady=10)
+            tk.Label(list_frame, text="No saved gardens yet.", font=("Segoe UI", 12, "italic"),
+                     fg=MUTED, bg=BG).pack(pady=20)
 
         if named_saves:
-            tk.Label(list_frame, text="Named Gardens", font=("Segoe UI", 12, "bold"),
-                     bg=self.grid_bg).pack(anchor="w", pady=(4, 2))
+            _heading("Named gardens", first=True)
             for garden_name, filename, filepath, mtime, timestamp_str in named_saves:
-                try:
-                    if len(timestamp_str) == 15:
-                        date_part = timestamp_str[:8]
-                        time_part = timestamp_str[9:]
-                        display_date = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
-                        display_time = f"{time_part[:2]}:{time_part[2:4]}"
-                        display_name = f"{garden_name} ({display_date} {display_time})"
-                    else:
-                        display_name = garden_name
-                except Exception:
-                    display_name = garden_name
-                _row(display_name, filepath)
+                _card(garden_name,
+                      dt.datetime.fromtimestamp(mtime).strftime("%d %b %Y, %H:%M"),
+                      filepath)
 
         if unnamed_saves:
-            tk.Label(list_frame, text="Recent Autosaves", font=("Segoe UI", 12, "bold"),
-                     bg=self.grid_bg).pack(anchor="w", pady=(10, 2))
+            _heading("Autosaves", first=not named_saves)
             for filename, filepath, mtime in unnamed_saves:
-                try:
-                    parts = filename.replace("garden_", "").replace(".json", "")
-                    date_part = parts[:8]
-                    time_part = parts[9:]
-                    display_date = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
-                    display_time = f"{time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
-                    display_name = f"{display_date} {display_time}"
-                except Exception:
-                    display_name = filename
-                _row(display_name, filepath)
+                when = dt.datetime.fromtimestamp(mtime).strftime("%d %b %Y, %H:%M")
+                sim, _st = _summary(filepath)
+                _card(f"Your garden in {sim}" if sim else "Your garden", when, filepath)
 
-        _FlatIconButton(win, text="Close", command=win.destroy, **btn_kwargs).pack(pady=(0, 10))
+        bar = tk.Frame(win, bg=BG)
+        bar.pack(fill="x", padx=24, pady=(4, 16))
+        _make_flat_button_raw(bar, "Close", win.destroy, bg="#e0dccf", fg="#333333",
+                              font=("Segoe UI", 11)).pack(side="right")
+        try:
+            win.update_idletasks()
+            n = len(named_saves) + len(unnamed_saves)
+            h = min(420, max(120, list_frame.winfo_reqheight()))
+            list_canvas.configure(height=h)
+            if n and list_frame.winfo_reqheight() <= 420:
+                scrollbar.pack_forget()
+        except Exception:
+            pass
         return win
 
     def _serialize_garden_state(self):
@@ -18809,6 +19524,8 @@ class GardenApp(InspectorMixin):
                             (getattr(self, "cross_dates", {}) or {}).items()},
             'wildlife_visits': {k: dict(v) for k, v in
                                 (getattr(self, "wildlife_visits", {}) or {}).items()},
+            # Realistic: the spots of the garden that dry out faster
+            'soil_dry': sorted([list(k) for k in (getattr(self, "_soil_dry_plots", None) or ())]),
         }
 
         return save_data
@@ -18841,6 +19558,11 @@ class GardenApp(InspectorMixin):
 
     def _deserialize_garden_state(self, save_data):
         """Restore garden state from serialized data."""
+        try:
+            sd = save_data.get("soil_dry")
+            self._soil_dry_plots = ({(int(a), int(b)) for a, b in sd} if sd else None)
+        except Exception:
+            self._soil_dry_plots = None
         # The player's notes on plants (plant id -> text).
         try:
             self.plant_notes = {str(k): str(v) for k, v in
@@ -20369,9 +21091,14 @@ class GardenApp(InspectorMixin):
         # Total wall time for one simulated hour ≈ per_hour seconds
         sub_total = per_hour * (sub_ratio_total / total)  # seconds across 3 substeps
 
-        # Milliseconds per substep / phase
-        self.sub_ms = max(50, int((sub_total / 3.0) * 1000))                 # ms per substep
-        self.phase_ms = max(50, int((per_hour * (phase_ratio / total)) * 1000))  # ms after phase advance
+        # Milliseconds per substep / phase (the loop keeps to them exactly,
+        # see _schedule_on_time — so no 50 ms minimum any more, which made
+        # the fastest speed run at about 0.22 s per hour)
+        # (2 substeps: next_hour() sets 3 temperature steps and does the
+        # first itself, so the loop waits through the other two)
+        self.sub_ms = max(1, int(round((sub_total / 2.0) * 1000)))                 # ms per substep
+        self.phase_ms = max(1, int(round((per_hour * (phase_ratio / total)) * 1000)))  # ms after phase advance
+        self._loop_deadline = None
 
     def archive_snapshot(self, plant, **extras):
         """
@@ -20687,6 +21414,7 @@ class _PlantRenderPool:
         self._q = queue.Queue()
         self._procs = []
         self._load = []
+        self._outq = []                     # per helper: jobs waiting to be sent
         self._next = 0
         script = os.path.join(_SIM_DIR, "pea_worker.py")
         exe = sys.executable or ""
@@ -20711,7 +21439,10 @@ class _PlantRenderPool:
             k = len(self._procs)
             self._procs.append(p)
             self._load.append(0)
+            q = queue.Queue()
+            self._outq.append(q)
             threading.Thread(target=self._reader, args=(k, p), daemon=True).start()
+            threading.Thread(target=self._writer, args=(k, p, q), daemon=True).start()
         self.ok = True
         self.n = n
         print(f"[render helpers] {n} started ({sys.platform}, {os.cpu_count()} CPU cores)")
@@ -20735,9 +21466,37 @@ class _PlantRenderPool:
                 self.why = f"a helper ended (exit code {code}) — see pea_worker_errors.log"
                 print(f"[render helpers] {self.why}; plants are drawn in the game itself now")
 
+    def _writer(self, k, p, q):
+        """Sends the queued jobs to helper k. The game never waits for this:
+        writing into a full pipe (a helper still busy drawing — on the Mac
+        a pipe holds only 16 KB) used to stall the whole window until the
+        helper had caught up. A picture that is out of date before it is
+        even sent (the plant has grown since) is dropped here."""
+        while True:
+            item = q.get()
+            if item is None:
+                return
+            jid, data = item
+            ent = self.jobs.get(jid)
+            if ent is None:
+                self._load[k] = max(0, self._load[k] - 1)
+                continue
+            plant, key, _args, extra = (tuple(ent) + (None,))[:4]
+            if extra is None and plant.__dict__.get("_want_key") != key:
+                self.jobs.pop(jid, None)
+                self._load[k] = max(0, self._load[k] - 1)
+                continue
+            try:
+                p.stdin.write(data)
+                p.stdin.flush()
+            except Exception:
+                self.ok = False
+                return
+
     def submit(self, plant, key, args, size, traits, extra=None):
         """extra: what the result is for (None = the plant's tile picture;
-        ("tframe", n) = a bent-tendril frame)."""
+        ("tframe", n) = a bent-tendril frame). Returns at once; the job is
+        sent by a writer thread (see _writer)."""
         import pickle
         if not self.ok:
             return False
@@ -20748,13 +21507,12 @@ class _PlantRenderPool:
         job = (jid, dict(traits), _pr.variant_seed(getattr(plant, "id", 0)), args, int(size),
                float(getattr(plant, "health", 100) or 0))
         try:
-            pickle.dump(job, self._procs[k].stdin, protocol=pickle.HIGHEST_PROTOCOL)
-            self._procs[k].stdin.flush()
+            data = pickle.dumps(job, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception:
-            self.ok = False
             return False
-        self._load[k] += 1
         self.jobs[jid] = (plant, key, args, extra)
+        self._load[k] += 1
+        self._outq[k].put((jid, data))
         return True
 
     def drain(self):
@@ -20768,6 +21526,11 @@ class _PlantRenderPool:
 
     def close(self):
         self.ok = False
+        for q in self._outq:
+            try:
+                q.put(None)
+            except Exception:
+                pass
         for p in self._procs:
             try:
                 p.stdin.close()

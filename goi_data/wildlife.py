@@ -24,6 +24,11 @@ import random
 import tkinter as tk
 
 try:
+    import numpy as _np
+except Exception:
+    _np = None
+
+try:
     from PIL import Image, ImageTk
     _PIL = True
 except ImportError:
@@ -235,10 +240,43 @@ def _discover_variants(icon_dir: str, prefix: str) -> list:
 # ---------------------------------------------------------------------------
 # Pixel scanning and clustering
 # ---------------------------------------------------------------------------
+def _scan_spots_np(pil_img, pods_only: bool):
+    """_scan_spots with numpy: the same pixels, in the same order, about a
+    hundred times faster (the pixel-by-pixel loop took ~40 ms per plant,
+    a hitch you could feel whenever a butterfly or bee landed)."""
+    if _np is None or getattr(pil_img, "mode", None) != "RGBA":
+        return None
+    a = _np.asarray(pil_img)
+    if a.ndim != 3 or a.shape[2] != 4:
+        return None
+    rgb = a[:, :, :3].astype(_np.int32)
+    ok = a[:, :, 3] >= 80
+
+    def near(targets, tol):
+        m = _np.zeros(ok.shape, dtype=bool)
+        t2 = tol * tol
+        for t in targets:
+            d = rgb - _np.array(t, dtype=_np.int32)
+            m |= (d * d).sum(axis=2) <= t2
+        return m
+    if pods_only:
+        m = near(_POD_GREEN + _POD_YELLOW, _POD_TOL)
+    else:
+        m = near(_PURPLE_FLOWER + _WHITE_FLOWER, _FLOWER_TOL)
+    ys, xs = _np.nonzero(m & ok)
+    return list(zip(xs.tolist(), ys.tolist()))
+
+
 def _scan_spots(pil_img, pods_only: bool) -> list:
     """Return (x,y) flower/pod pixel positions in the PIL image."""
     if pil_img is None:
         return []
+    try:
+        fast = _scan_spots_np(pil_img, pods_only)
+    except Exception:
+        fast = None
+    if fast is not None:
+        return fast
     try:
         data = pil_img.load()
         w, h = pil_img.size
@@ -303,8 +341,9 @@ def _centroid(cluster):
 class _Creature:
     def __init__(self, mgr, type_name: str, pods_only: bool,
                  tile, cx: int, cy: int, variant: _Variant,
-                 cluster_key: tuple, home=None):
+                 cluster_key: tuple, home=None, tutorial=False):
         self.mgr         = mgr
+        self._tutorial   = tutorial  # the tutorial's weevil: stays until caught
         self._home       = home    # (hive tile, x, y): flies out from / back to it
         self.type_name   = type_name
         self.pods_only   = pods_only
@@ -380,9 +419,12 @@ class _Creature:
             return
 
         stay = random.randint(MIN_STAY_MS, MAX_STAY_MS)
+        if self._tutorial:
+            stay = 30 * 60 * 1000          # waits to be caught (half an hour at most)
         self._later(FRAME_MS,  self._tick_anim)
         self._later(WANDER_MS, self._wander)
-        if self.type_name == "bruchus" and random.random() < BRUCHUS_FLOWER_CHANCE:
+        if (self.type_name == "bruchus" and not self._tutorial
+                and random.random() < BRUCHUS_FLOWER_CHANCE):
             self._later(random.randint(2500, 6000), self._seek_flower)
         if self.flier:
             if target is not None:
@@ -989,6 +1031,37 @@ class WildlifeManager:
                 self._occupied.discard(cluster_key)
         except Exception as exc:
             log.error("Wildlife _spawn(%s) error: %s", type_name, exc)
+
+    def spawn_tutorial_weevil(self, tile=None):
+        """Abbot Cyril's lesson: a pea weevil on `tile` (or on any flowering
+        plot on screen) that stays in sight until it is caught — it doesn't
+        creep into a flower or leave. The creature, or None."""
+        pool = self._pools.get("bruchus", [])
+        if not pool:
+            return None
+        others = []
+        for t in list(getattr(self.app, "tiles", []) or []):
+            plant = getattr(t, "plant", None)
+            if t is not tile and plant and getattr(plant, "alive", False) \
+                    and int(getattr(plant, "stage", 0)) >= 5:
+                others.append(t)
+        random.shuffle(others)
+        for t in ([tile] if tile is not None else []) + others:
+            try:
+                res = self._pick_pixel(t, False)
+            except Exception:
+                res = None
+            if res is None:
+                continue
+            cx, cy, key = res
+            self._occupied.add(key)
+            c = _Creature(self, "bruchus", False, t, cx, cy, random.choice(pool), key,
+                          tutorial=True)
+            if c._alive:
+                self._active.append(c)
+                return c
+            self._occupied.discard(key)
+        return None
 
     def _departed(self, creature: _Creature):
         try:

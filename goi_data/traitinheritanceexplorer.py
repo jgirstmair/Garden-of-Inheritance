@@ -1860,19 +1860,21 @@ class TraitInheritanceExplorer(tk.Toplevel):
         # bottom. That list benefits from the extra room far more (it's
         # a scrollable list of however many plants), so it's the one
         # that now gets expand=True instead.
-        traits_box = tk.LabelFrame(left, text="Traits", bg=self.PANEL, fg=self.FG, labelanchor="nw")
+        traits_box = tk.LabelFrame(left, text="Traits", bg=self.PANEL, fg=self.FG, labelanchor="nw",
+                                   font=("Segoe UI", 12, "bold"))
         traits_box.pack(fill="x", expand=False, padx=self.PAD, pady=(self.PAD, self.PAD))
         self._traits_box = traits_box
 
         self.traits_container = tk.Frame(traits_box, bg=self.PANEL)
         self.traits_container.pack(fill="both", expand=True, padx=6, pady=6)
 
-        list_box = tk.LabelFrame(left, text="Archived plants", bg=self.PANEL, fg=self.FG, labelanchor="nw")
+        list_box = tk.LabelFrame(left, text="Archived plants", bg=self.PANEL, fg=self.FG, labelanchor="nw",
+                                 font=("Segoe UI", 12, "bold"))
         list_box.pack(fill="both", expand=True, padx=self.PAD, pady=(0, self.PAD))
         self._list_box = list_box
         list_wrap = tk.Frame(list_box, bg=self.PANEL)
         list_wrap.pack(fill="both", expand=True, padx=6, pady=6)
-        self.listbox = tk.Listbox(list_wrap, height=10, font=("Segoe UI", 11),
+        self.listbox = tk.Listbox(list_wrap, height=10, width=6, font=("Segoe UI", 12),
                                   bg=self.CARD, fg=self.FG, relief="flat",
                                   highlightthickness=1, highlightbackground="#d9cdb4",
                                   selectbackground="#8B4226", selectforeground="#ffffff")
@@ -2117,6 +2119,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
 
         cross_ctrl = tk.Frame(cross_outer, bg=self.PANEL)
         cross_ctrl.pack(side="top", fill="x", padx=self.PAD, pady=(self.PAD, 4))
+        self._cross_ctrl = cross_ctrl          # (its width: the least the tab needs)
 
         self._cross_mode = tk.StringVar(value="Monohybrid")
         tk.Label(cross_ctrl, text="Type:", bg=self.PANEL, fg=self.FG,
@@ -2153,7 +2156,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             self._punnett_large = not self._punnett_large
             _punnett_size_btn.config(
                 text="－" if self._punnett_large else "＋")
-            pid_ = getattr(self, "current_pid", None)
+            pid_ = self._punnett_pid()
             if pid_:
                 self._render_cross_tab(pid_)
         _punnett_size_btn = tk.Button(
@@ -4000,6 +4003,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         if not snap:
             return
         self.preview_pid = str(pid)
+        self._cross_pid = None
         def g(k, default=None): return snap.get(k, default) if isinstance(snap, dict) else getattr(snap, k, default)
         self.lbl_left_title.config(text=f"Plant {g('generation','F?')} #{g('id', pid)}")
         self.lbl_left_parents.config(text=f"Parents: ♀ #{g('mother_id','?')}  |  ♂ #{g('father_id','?')}")
@@ -4794,6 +4798,19 @@ class TraitInheritanceExplorer(tk.Toplevel):
         this session has actually measured anything yet (e.g. right at
         initial window construction).
         """
+        st = getattr(self, "_sections", None) or dict(self._SECTIONS_DEFAULT)
+        if st.get("archive") and not st.get("plant"):
+            # only the list of archived plants: as wide as its longest entry
+            # (plant numbers are short — no need for a wide empty box)
+            try:
+                f = tkfont.Font(font=self.listbox.cget("font"))
+                items = self.listbox.get(0, "end") or ("#0000",)
+                w = max(f.measure(str(x)) for x in items) + 70     # + scrollbar, margins
+                lf = tkfont.Font(font=self._list_box.cget("font"))
+                w = max(w, lf.measure(self._list_box.cget("text")) + 44)
+                return max(150, min(320, w))
+            except Exception:
+                return 170
         return max(300, getattr(self, "_traits_content_w", 0))
 
     def _build_trait_icon_widget(self, row, im, name, icon_w, icon_h):
@@ -7081,7 +7098,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
             self._render_siblings(pods_pid)
         elif tab_idx == 1:  # Punnett Square
             self._on_cross_settings_changed(_skip_render=True)
-            self._render_cross_tab(pods_pid)
+            self._render_cross_tab(getattr(self, "_cross_pid", None) or pods_pid)
         elif tab_idx == 2:  # Trait Ratio
             self._render_ratio_tab(pods_pid)
 
@@ -7199,8 +7216,15 @@ class TraitInheritanceExplorer(tk.Toplevel):
                 CROSS_CTRL_H = 46
                 pw_canvas = getattr(self, "_punnett_content_w", 0)
                 ph_canvas = getattr(self, "_punnett_content_h", 0)
-                notebook_w = max(820, pw_canvas + PAD + 30)
-                notebook_h = max(420, ph_canvas + CROSS_CTRL_H + HEADER_H + 60)
+                # as wide as the square itself (2×2 for 3:1, 4×4 for 9:3:3:1)
+                # and the Type line above it — a fixed 820 px floor left the
+                # small 3:1 square in a much too wide window
+                try:
+                    ctrl_w = self._cross_ctrl.winfo_reqwidth() + 2 * self.PAD + 20
+                except Exception:
+                    ctrl_w = 480
+                notebook_w = max(ctrl_w, pw_canvas + PAD + 30)
+                notebook_h = max(360, ph_canvas + CROSS_CTRL_H + HEADER_H + 60)
             elif tab_idx == 0:
                 # Pod Seeds: measure pods_row live after update_idletasks so
                 # _redraw_card has already run and card canvases have correct sizes
@@ -7386,6 +7410,7 @@ class TraitInheritanceExplorer(tk.Toplevel):
         self._pods_pid = None
         self._img_refs = []
         self._pods_page = 0   # reset pagination on new plant
+        self._cross_pid = None    # (a »Best fit« family gives way to the new plant)
         self.current_pid = pid
         snap = self._get_snap(pid)
         if not snap:
@@ -7456,7 +7481,13 @@ class TraitInheritanceExplorer(tk.Toplevel):
         except Exception:
             tab_idx = -1
         if tab_idx == 1:
-            self._render_cross_tab(pid)
+            self._render_cross_tab(self._punnett_pid())
+
+    def _punnett_pid(self):
+        """The plant the Punnett square shows: the family »Best fit« found,
+        else a plant clicked in the family tree, else the selected plant."""
+        return (getattr(self, "_cross_pid", None) or getattr(self, "preview_pid", None)
+                or getattr(self, "current_pid", None))
 
 
     def _cross_auto_detect(self):
@@ -7653,21 +7684,24 @@ class TraitInheritanceExplorer(tk.Toplevel):
                     pass
                 return
 
-        # ── select winning plant in listbox and redraw canvas ─────────────────
+        # ── show the winning family in the Punnett square ─────────────────────
+        # Only the Punnett square switches to it: the selected plant, its
+        # family tree and the rest of the window stay as they were (it used
+        # to select that plant, so the family tree being studied was lost).
         if found_pid is not None:
+            self._cross_pid = str(found_pid)
             try:
-                ids = [str(x) for x in self._ids]
-                if str(found_pid) in ids:
-                    idx = ids.index(str(found_pid))
-                    self.listbox.selection_clear(0, "end")
-                    self.listbox.selection_set(idx)
-                    self.listbox.see(idx)
-                    self.current_pid = str(found_pid)
+                _tr = self._cross_t1.get()
+                if self._cross_mode.get() == "Dihybrid":
+                    _tr += " × " + self._cross_t2.get()
+                app._toast(f"Best fit: #{found_pid} and its siblings ({_tr.lower()}). The "
+                           f"family tree still shows #{getattr(self, 'current_pid', '?')}.",
+                           level="info")
             except Exception:
                 pass
 
         self._on_cross_settings_changed(_skip_render=True)
-        self._render_cross_tab(getattr(self, "current_pid", None))
+        self._render_cross_tab(self._punnett_pid())
 
 
     def _render_cross_tab(self, pid):

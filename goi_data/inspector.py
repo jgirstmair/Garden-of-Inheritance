@@ -1014,7 +1014,7 @@ class InspectorMixin:
             b = tk.Label(tabs, text=label, font=("Segoe UI", 12, "bold"), padx=10, pady=4,
                          cursor="hand2", relief="flat")
             b.pack(side="left", padx=(0, 6))
-            b.bind("<Button-1>", lambda e, k=key: _toggle(k))
+            self._bind_click(b, lambda k=key: _toggle(k))
             btns[key] = b
             _style_btn(key)
 
@@ -1228,10 +1228,22 @@ class InspectorMixin:
         tk.Label(own_cell, text="planted seed", font=("Segoe UI", 14), bg=BG, fg="#999").pack()
         own_slots = tk.Frame(own_cell, bg=BG)
         own_slots.pack()
+        # »The Magnificent Seven«: each form is named in the notebook, so
+        # the seed's two forms get a caption (or »Record«) of their own
+        seven_own = self._seven_mode(plant)
+        own_caps = []
         for _key, _val in (("seed_color", own_seed_color), ("seed_shape", own_seed_shape)):
-            own_slot = tk.Frame(own_slots, bg=BG, height=64, width=64)
+            own_col = tk.Frame(own_slots, bg=BG)
+            own_col.pack(side="left", padx=(0, 4) if seven_own else 0)
+            own_slot = tk.Frame(own_col, bg=BG, height=64, width=64)
             own_slot.pack_propagate(False)
-            own_slot.pack(side="left")
+            own_slot.pack()
+            if seven_own:
+                _oc = tk.Label(own_col, text=str(_val or ""), font=("Segoe UI", 14), bg=BG,
+                               fg="#555")
+                _oc.pack()
+                self._seven_cap_bind(_oc, plant, _key)
+                own_caps.append((_oc, _key, str(_val or ""), [None]))
             img = None
             if _val:
                 try:
@@ -1247,8 +1259,18 @@ class InspectorMixin:
                 tk.Label(own_slot, text="?", font=("Segoe UI", 34, "bold"),
                          bg=BG, fg="#888888").place(relx=0.5, rely=0.5, anchor="center")
         _own_txt = ", ".join(str(v) for v in (own_seed_color, own_seed_shape) if v)
-        if _own_txt:
+        if _own_txt and not seven_own:
             tk.Label(own_cell, text=_own_txt, font=("Segoe UI", 14), bg=BG, fg="#555").pack()
+        if own_caps:
+            def _upd_own():
+                for _oc, _k, _t, _last in own_caps:
+                    try:
+                        if _oc.winfo_exists():
+                            _last[0] = self._seven_cap_paint(_oc, plant, _k, _t, BG, _last[0])
+                    except Exception:
+                        pass
+            _upd_own()
+            self._insp_live.append(_upd_own)
         _vsep()
 
         group = tk.Frame(row, bg=BG)
@@ -1268,6 +1290,7 @@ class InspectorMixin:
             cap = tk.Label(cell, text="", font=("Segoe UI", 14), bg=BG)
             cap.pack()
             cells[k] = (ic, cap, [None])
+            self._seven_cap_bind(cap, plant, k)
 
         def _icon_path(k, v, revealed):
             path = None
@@ -1295,7 +1318,7 @@ class InspectorMixin:
                 if k in revealed:
                     v = revealed[k]
                     path = _icon_path(k, v, revealed)
-                    key = ("v", v, path)
+                    key = ("v", v, path, self._seven_state(plant, k))
                     if last[0] != key:
                         img = None
                         try:
@@ -1306,12 +1329,14 @@ class InspectorMixin:
                                      font=("Segoe UI", 14), fg="#555")
                         ic.image = img
                         cap.configure(text=str(v), fg="#555")
+                        self._seven_cap_paint(cap, plant, k, str(v), BG)
                         last[0] = key
                 else:
                     if last[0] != "?":
                         ic.configure(image="", text="?", font=("Segoe UI", 34, "bold"), fg="#888888")
                         ic.image = None
-                        cap.configure(text=k.replace("_", " "), fg="#999")
+                        cap.configure(text=k.replace("_", " "), fg="#999", bg=BG, cursor="",
+                                      padx=0)
                         last[0] = "?"
         _upd_traits()
         self._insp_live.append(_upd_traits)
@@ -1352,6 +1377,69 @@ class InspectorMixin:
                     pass
         _upd_tally()
         self._insp_live.append(_upd_tally)
+
+    # ---- »The Magnificent Seven«: naming each form in the notebook -------
+    def _seven_mode(self, plant):
+        """The mission runs and this plant counts (grown from a harvested seed)."""
+        try:
+            import missions as _ms
+            return bool(_ms.seven_active(self) and _ms._plant_counts(plant))
+        except Exception:
+            return False
+
+    def _seven_state(self, plant, trait):
+        try:
+            import missions as _ms
+            return _ms.seven_status(self, plant, trait)
+        except Exception:
+            return None
+
+    def _seven_cap_bind(self, cap, plant, trait):
+        """A click on the caption opens the notebook question (only while the
+        form still waits to be named)."""
+        def _go():
+            try:
+                import missions as _ms
+                if _ms.seven_status(self, plant, trait) == "record":
+                    _ms.open_seven_record(self, plant, trait, on_done=self._seven_refresh,
+                                          near=cap)
+            except Exception:
+                pass
+        try:
+            import missions as _ms
+            _ms._click(self, cap, _go)
+        except Exception:
+            pass
+
+    def _seven_cap_paint(self, cap, plant, trait, text, BG, last=None):
+        """The caption under a trait: its name, or »✎ Record« while the form
+        waits to be named (the name stays hidden until then)."""
+        st = self._seven_state(plant, trait)
+        if st == last and last is not None:
+            return st
+        if st == "record":
+            cap.configure(text="\u270e Record", fg="#3b2a1a", bg="#e8e0cf", cursor="hand2",
+                          padx=6, font=("Segoe UI", 13, "bold"))
+        elif st == "locked":
+            cap.configure(text="\u270e tomorrow", fg="#b0a48c", bg=BG, cursor="", padx=0,
+                          font=("Segoe UI", 13, "italic"))
+        elif st == "recorded":
+            cap.configure(text=f"{text} \u2713", fg="#4f7d3a", bg=BG, cursor="", padx=0,
+                          font=("Segoe UI", 14))
+        else:
+            cap.configure(text=text, fg="#555", bg=BG, cursor="", padx=0, font=("Segoe UI", 14))
+        return st
+
+    def _seven_refresh(self):
+        for fn in list(getattr(self, "_insp_live", None) or []):
+            try:
+                fn()
+            except Exception:
+                pass
+        try:
+            self._refresh_traits_only_if_open(force=True)
+        except Exception:
+            pass
 
     def _open_traits_only(self):
         pos = None
@@ -1588,10 +1676,18 @@ class InspectorMixin:
                 tk.Label(r, image=img2, bg=BG).pack(side="left")
             return r
 
+        def _hide(k, v, short=True):
+            # »The Magnificent Seven«: a form not yet named in the notebook
+            # keeps its name hidden here, too
+            if self._seven_state(plant, k) in ("record", "locked"):
+                return "?" if short else "? \u2014 \u270e Record it in Inspect"
+            return v
+
         own = (getattr(plant, "traits", {}) or {}).get("seed_color")
         own_shape = (getattr(plant, "traits", {}) or {}).get("seed_shape")
         row(trait_icon_path("seed_color", own) if own else None,
-            ", ".join(str(v) for v in (own, own_shape) if v) or "?", "planted seed",
+            ", ".join(str(_hide(k_, v)) for k_, v in (("seed_color", own), ("seed_shape", own_shape))
+                      if v) or "?", "planted seed",
             unknown=not own,
             path2=trait_icon_path("seed_shape", own_shape) if own_shape else None)
         tk.Frame(body, height=1, bg="#c8c0ac").pack(fill="x", pady=3)
@@ -1612,7 +1708,7 @@ class InspectorMixin:
                 except Exception:
                     path = None
                 known = bool(shp or colr)
-                r = row(path, f"{shp or '?'}",
+                r = row(path, f"{_hide('pod_shape', shp, False) if shp else '?'}",
                         "pod" if known else "pod — not discovered yet",
                         unknown=not known)
                 self._traits_only_harvest_buttons(r, plant, BG)
@@ -1631,7 +1727,7 @@ class InspectorMixin:
                     path = path or trait_icon_path(k, v)
                 except Exception:
                     path = None
-                row(path, str(v), name)
+                row(path, str(_hide(k, v, False)), name)
             else:
                 row(None, name, "not discovered yet", unknown=True)
         tk.Frame(body, height=1, bg="#c8c0ac").pack(fill="x", pady=3)
@@ -1817,7 +1913,7 @@ class InspectorMixin:
                 lbl.bind("<Leave>", lambda e, k=k: _pod_hover(k, False), add="+")
                 last["labels"].append((lbl, can))
                 if can:
-                    lbl.bind("<Button-1>", lambda e, l=lbl: _harvest_one(l))
+                    self._bind_click(lbl, lambda l=lbl: _harvest_one(l))
             tk.Label(box, text=hint_txt,
                      font=("Segoe UI", 12, "italic"), fg="#888", bg=BG).pack(anchor="w", pady=(2, 0))
             info.pack(anchor="w")
@@ -2156,7 +2252,7 @@ class InspectorMixin:
                          relief="flat", cursor="hand2")
             b.image = img
             b.pack(side="left", padx=(padl, 0))
-            b.bind("<Button-1>", lambda e: cmd())
+            self._bind_click(b, cmd)
             try:
                 _attach_tooltip(b, tip)
             except Exception:
@@ -2322,7 +2418,7 @@ class InspectorMixin:
                                    compound="left", font=("Segoe UI", 12, "bold"),
                                    bg="#7A9A3C", fg="white", padx=8, pady=3, cursor="hand2")
                     pbn.pack(side="left", padx=(4, 0))
-                    pbn.bind("<Button-1>", lambda e: run("pollen"))
+                    self._bind_click(pbn, lambda: run("pollen"))
                     try:
                         _attach_tooltip(pbn, "Collect pollen with a camel-hair brush from the "
                                              "selected open flower")

@@ -275,34 +275,54 @@ def _rain_image(path, style, frame, step=0, flash=False, whole_loop=True):
     key = (path, style, step, frame, flash)
     if key in _rain_photos:
         return _rain_photos[key]
-    if not _rain_photos and not flash and whole_loop:               # first frame of this picture:
-        for f in range(_nframes(style)):               # build the whole loop now so
-            if f != frame % _nframes(style):              # the animation never stalls
-                _rain_image_build(path, style, f, step, False)
+    # Each frame is made when it is first needed (`whole_loop` is no
+    # longer used): the dimmed picture underneath is prepared only once
+    # per picture, darkness step and flash (_rain_base), so a frame only
+    # adds its streaks. Building all frames at once — from the file, at
+    # every new darkness step during dusk and at every lightning flash —
+    # made the window stall now and then.
     return _rain_image_build(path, style, frame, step, flash)
+
+
+_rain_bases = {}            # (path, style, step, flash) -> dimmed RGBA picture
+
+
+def _rain_base(path, style, step, flash):
+    """The picture at `path` dimmed for rain (and dusk/night, and a
+    lightning flash), without streaks. Cached."""
+    key = (path, style, step, flash)
+    im = _rain_bases.get(key)
+    if im is not None:
+        return im
+    from PIL import Image, ImageEnhance
+    amt = _RAIN_STYLES[style][1]
+    im = Image.open(path).convert("RGBA")
+    r, g, b, a = im.split()
+    rgb = Image.merge("RGB", (r, g, b))
+    if step > 0:                                  # dusk/night as well
+        dn = step / float(_NIGHT_STEPS)
+        rgb = ImageEnhance.Brightness(rgb).enhance(1.0 - 0.58 * dn)
+        rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (28, 44, 96)), 0.22 * dn)
+    rgb = ImageEnhance.Brightness(rgb).enhance(1 - 0.40 * amt)
+    rgb = ImageEnhance.Color(rgb).enhance(1 - 0.30 * amt)
+    rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (70, 84, 110)), 0.16 * amt)
+    r, g, b = rgb.split()
+    if flash:                                     # lightning: bright, bluish-white
+        rgb = ImageEnhance.Brightness(Image.merge("RGB", (r, g, b))).enhance(2.3)
+        rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (225, 235, 255)), 0.30)
+        r, g, b = rgb.split()
+    im = Image.merge("RGBA", (r, g, b, a))
+    if len(_rain_bases) > 24:
+        _rain_bases.clear()
+    _rain_bases[key] = im
+    return im
 
 
 def _rain_image_build(path, style, frame, step, flash=False):
     key = (path, style, step, frame, flash)
     try:
-        from PIL import Image, ImageEnhance, ImageTk
-        amt = _RAIN_STYLES[style][1]
-        im = Image.open(path).convert("RGBA")
-        r, g, b, a = im.split()
-        rgb = Image.merge("RGB", (r, g, b))
-        if step > 0:                                  # dusk/night as well
-            dn = step / float(_NIGHT_STEPS)
-            rgb = ImageEnhance.Brightness(rgb).enhance(1.0 - 0.58 * dn)
-            rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (28, 44, 96)), 0.22 * dn)
-        rgb = ImageEnhance.Brightness(rgb).enhance(1 - 0.40 * amt)
-        rgb = ImageEnhance.Color(rgb).enhance(1 - 0.30 * amt)
-        rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (70, 84, 110)), 0.16 * amt)
-        r, g, b = rgb.split()
-        if flash:                                     # lightning: bright, bluish-white
-            rgb = ImageEnhance.Brightness(Image.merge("RGB", (r, g, b))).enhance(2.3)
-            rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (225, 235, 255)), 0.30)
-            r, g, b = rgb.split()
-        im = Image.merge("RGBA", (r, g, b, a))
+        from PIL import Image, ImageTk
+        im = _rain_base(path, style, step, flash)
         im = Image.alpha_composite(im, _rain_overlay_frames(im.size, style)[frame % _nframes(style)])
         photo = ImageTk.PhotoImage(im)
     except Exception:

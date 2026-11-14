@@ -32,6 +32,89 @@ BTN_BG = "#e0dccf"
 BTN_HOVER = "#d0c8b7"
 
 
+_MISSING = object()
+
+
+def _icfg(dlg, item, **kw):
+    """canvas.itemconfig only for values that change: Tk redraws an item
+    on every itemconfig, even with the same values (on the Mac each such
+    redraw of the big flower picture is slow)."""
+    c = dlg.__dict__.setdefault("_icfg_cache", {})
+    ch = {k: v for k, v in kw.items() if c.get((item, k), _MISSING) != v}
+    if ch:
+        dlg.canvas.itemconfig(item, **ch)
+        for k, v in ch.items():
+            c[(item, k)] = v
+
+
+def _set_cursor(dlg, name):
+    """The canvas cursor, only when it changes (a canvas configure redraws
+    the whole canvas)."""
+    if dlg.__dict__.get("_cur_cursor") != name:
+        dlg.canvas.config(cursor=name)
+        dlg._cur_cursor = name
+
+
+def _coords(dlg, item, x, y):
+    if dlg.__dict__.get("_last_xy", {}).get(item) != (x, y):
+        dlg.canvas.coords(item, x, y)
+        dlg.__dict__.setdefault("_last_xy", {})[item] = (x, y)
+
+
+def bind_motion_coalesced(dlg, handler, ms=14):
+    """Mouse moves arrive far more often than the screen can show them;
+    only the latest one is handled, at most every `ms` milliseconds. The
+    handler gets an event with x, y and path: every point the mouse
+    passed since the last handled one (so hover checks follow the whole
+    way in between)."""
+    state = {"job": None, "xy": None, "prev": None, "pts": []}
+
+    def _flush():
+        state["job"] = None
+        xy = state["xy"]
+        if xy is None:
+            return
+        path = [state["prev"] or state["pts"][0]] + state["pts"]
+        state["pts"] = []
+        ev = type("E", (), {"x": xy[0], "y": xy[1], "path": path})()
+        state["prev"] = xy
+        try:
+            handler(ev)
+        except Exception:
+            pass
+
+    def _in(event):
+        state["xy"] = (event.x, event.y)
+        if len(state["pts"]) < 200:
+            state["pts"].append(state["xy"])
+        if state["job"] is None:
+            try:
+                state["job"] = dlg.after(ms, _flush)
+            except Exception:
+                pass
+    dlg.canvas.bind("<Motion>", _in)
+    return _in
+
+
+def path_dist(px, py, event):
+    """Distance of point p from the mouse's way (event.path, see
+    bind_motion_coalesced), or from the mouse point."""
+    path = getattr(event, "path", None) or [(event.x, event.y)]
+    if len(path) == 1:
+        return math.hypot(px - path[0][0], py - path[0][1])
+    return min(seg_dist(px, py, a[0], a[1], b[0], b[1]) for a, b in zip(path, path[1:]))
+
+
+def seg_dist(px, py, ax, ay, bx, by):
+    """Distance of point p from the segment a-b."""
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    if L2 <= 0:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
 class _FlatButton(tk.Label):
     """A flat button like the inspector's (configure(command=...) works)."""
 
@@ -296,14 +379,14 @@ class EmasculationDialog(tk.Toplevel):
         
         # Bind click event
         self.canvas.bind("<Button-1>", self._on_canvas_click)
-        self.canvas.bind("<Motion>", self._on_mouse_move)
+        bind_motion_coalesced(self, self._on_mouse_move)
         # the forceps close while the mouse button is held down
         self.canvas.bind("<ButtonPress-1>", lambda e: (setattr(self, "_last_ptr", (e.x, e.y)),
                                                        self._forceps_grip(True)), add="+")
         self.canvas.bind("<ButtonRelease-1>", lambda e: self._forceps_release(), add="+")
         
         # Set default cursor
-        self.canvas.config(cursor="crosshair")
+        _set_cursor(self, "crosshair")
         
         tk.Label(self, text=FLOWER_PETALS_NOTE, font=("Segoe UI", 10, "italic"),
                  bg=BG, fg=MUTED, wraplength=max(260, self.canvas_width),
@@ -531,11 +614,11 @@ class EmasculationDialog(tk.Toplevel):
             if distance < self.click_tolerance:  # Use scaled tolerance
                 hovering = True
                 # Highlight the anther with thicker bright orange outline
-                self.canvas.itemconfig(anther["body"], outline="#ff6600", width=max(5, int(6 * self.scale_factor)))
+                _icfg(self, anther["body"], outline="#ff6600", width=max(5, int(6 * self.scale_factor)))
             else:
                 # Reset to normal orange outline
                 outline_width = max(4, int(5 * self.scale_factor))
-                self.canvas.itemconfig(anther["body"], outline="#ff8c00", width=outline_width)
+                _icfg(self, anther["body"], outline="#ff8c00", width=outline_width)
         
         # Update cursor (the closed forceps stay in view while they are
         # closed — no crosshair in between)
@@ -547,21 +630,21 @@ class EmasculationDialog(tk.Toplevel):
                     self._last_ptr = (event.x, event.y)
                     self._place_forceps()
                 else:
-                    self.canvas.coords(self.cursor_icon, event.x, event.y)
-                self.canvas.itemconfig(self.cursor_icon, state='normal')
+                    _coords(self, self.cursor_icon, event.x, event.y)
+                _icfg(self, self.cursor_icon, state='normal')
                 # Hide system cursor
-                self.canvas.config(cursor="none")
+                _set_cursor(self, "none")
             else:
                 # Fallback to hand cursor
-                self.canvas.config(cursor="hand2")
+                _set_cursor(self, "hand2")
         else:
             if self.has_custom_cursor and self.cursor_icon:
                 # Hide custom cursor icon
-                self.canvas.itemconfig(self.cursor_icon, state='hidden')
+                _icfg(self, self.cursor_icon, state='hidden')
                 # Show crosshair
-                self.canvas.config(cursor="crosshair")
+                _set_cursor(self, "crosshair")
             else:
-                self.canvas.config(cursor="crosshair")
+                _set_cursor(self, "crosshair")
     
     def _place_forceps(self):
         """The forceps' tip exactly on the mouse point (open or closed
@@ -570,9 +653,9 @@ class EmasculationDialog(tk.Toplevel):
         if ptr is None or not getattr(self, "cursor_icon", None):
             return
         tx, ty = getattr(self, "_tip", (0, FORCEPS_PX - 1))
-        self.canvas.itemconfig(self.cursor_icon, anchor="nw")
-        self.canvas.coords(self.cursor_icon, ptr[0] - tx - FORCEPS_TIP_DX,
-                           ptr[1] - ty + FORCEPS_TIP_DY)
+        _icfg(self, self.cursor_icon, anchor="nw")
+        _coords(self, self.cursor_icon, ptr[0] - tx - FORCEPS_TIP_DX,
+                ptr[1] - ty + FORCEPS_TIP_DY)
 
     FORCEPS_CLOSED_MIN_MS = 150     # the forceps stay closed at least this long
 
@@ -615,11 +698,11 @@ class EmasculationDialog(tk.Toplevel):
             self._forceps_closed = bool(closed)
             self._tip = (getattr(self, "_tip_closed", None) if closed
                          else getattr(self, "_tip_open", None)) or (0, FORCEPS_PX - 1)
-            self.canvas.itemconfig(self.cursor_icon, image=img)
+            _icfg(self, self.cursor_icon, image=img)
             self._place_forceps()
             if closed:
-                self.canvas.itemconfig(self.cursor_icon, state="normal")
-                self.canvas.config(cursor="none")
+                _icfg(self, self.cursor_icon, state="normal")
+                _set_cursor(self, "none")
             else:
                 # open again: show what the mouse is over now (forceps over
                 # an anther, otherwise the crosshair)
@@ -832,7 +915,7 @@ class BrushDialog(EmasculationDialog):
         self.tweezer_cursor = ImageTk.PhotoImage(im)
         if getattr(self, "cursor_icon", None):
             try:
-                self.canvas.itemconfig(self.cursor_icon, image=self.tweezer_cursor, anchor="nw")
+                _icfg(self, self.cursor_icon, image=self.tweezer_cursor, anchor="nw")
             except Exception:
                 pass
 
@@ -841,24 +924,30 @@ class BrushDialog(EmasculationDialog):
             return
         tx, ty = getattr(self, "_brush_tip", (0, BRUSH_PX))
         # the brush follows the mouse with its tip exactly on the pointer
-        self.canvas.itemconfig(self.cursor_icon, anchor="nw", state="normal")
-        self.canvas.coords(self.cursor_icon, event.x - tx, event.y - ty)
-        self.canvas.tag_raise(self.cursor_icon)
-        self.canvas.config(cursor="none")
+        _icfg(self, self.cursor_icon, anchor="nw", state="normal")
+        _coords(self, self.cursor_icon, event.x - tx, event.y - ty)
+        if not getattr(self, "_cursor_on_top", False):
+            self.canvas.tag_raise(self.cursor_icon)
+            self._cursor_on_top = True
+        _set_cursor(self, "none")
         if self.completed:
             return
-        # moving the brush tip over an anther is enough (no click needed)
-        hit = None
+        # moving the brush tip over an anther is enough (no click needed) —
+        # along the whole way since the last handled mouse position
+        hits = []
         for anther in self.anthers:
             d = math.hypot(event.x - anther["x"], event.y - anther["y"])
+            dpath = path_dist(anther["x"], anther["y"], event)
             near = d < self.click_tolerance and anther["id"] not in self.touched
-            if hit is None and near and d < self.click_tolerance * HOVER_TOUCH_FRAC:
-                hit = anther
-            self.canvas.itemconfig(anther["body"], outline="#ff6600" if near else "#ff8c00",
-                                   width=max(5, int(6 * self.scale_factor)) if near
-                                   else max(4, int(5 * self.scale_factor)))
-        if hit is not None:
-            self._touch_anther(hit)
+            if (anther["id"] not in self.touched
+                    and dpath < self.click_tolerance * HOVER_TOUCH_FRAC):
+                hits.append(anther)
+            _icfg(self, anther["body"], outline="#ff6600" if near else "#ff8c00",
+                  width=max(5, int(6 * self.scale_factor)) if near
+                  else max(4, int(5 * self.scale_factor)))
+        for hit in hits:
+            if not self.completed:
+                self._touch_anther(hit)
 
     # -- touching an anther -------------------------------------------------
     def _on_canvas_click(self, event):
