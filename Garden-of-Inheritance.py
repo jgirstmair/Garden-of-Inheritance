@@ -2010,6 +2010,39 @@ tk.Wm.wm_geometry = tk.Wm.geometry = _screen_capped_geometry
 tk.Wm.wm_minsize = tk.Wm.minsize = _screen_capped_minsize
 
 
+# On a Mac in full screen, every new window would open full screen too, in
+# a Space of its own (Inspect, the TIE, every dialog). A window that is
+# "transient" for the main window stays in the main window's Space and
+# floats above it instead. So on a Mac, a window opened while the main
+# window is full screen becomes transient for it. (Little windows without
+# a frame — tooltips, the loading picture — are left as they were.)
+if sys.platform == "darwin":
+    _orig_toplevel_init = tk.Toplevel.__init__
+    _orig_overrideredirect = tk.Wm.wm_overrideredirect
+
+    def _mac_toplevel_init(self, *a, **kw):
+        _orig_toplevel_init(self, *a, **kw)
+        try:
+            root = self._root()
+            if root is not self and bool(int(root.attributes("-fullscreen"))):
+                self.wm_transient(root)
+                self._goi_fs_transient = True
+        except Exception:
+            pass
+
+    def _mac_overrideredirect(self, boolean=None):
+        if boolean and getattr(self, "_goi_fs_transient", False):
+            try:
+                self.wm_transient("")
+                self._goi_fs_transient = False
+            except Exception:
+                pass
+        return _orig_overrideredirect(self, boolean)
+
+    tk.Toplevel.__init__ = _mac_toplevel_init
+    tk.Wm.wm_overrideredirect = tk.Wm.overrideredirect = _mac_overrideredirect
+
+
 def _plant_px():
     """Size of a plant's picture on its plot: the drawings are made for
     64 px on the classic 85 px plot and keep that proportion on the
@@ -5865,6 +5898,8 @@ class GardenApp(InspectorMixin):
                 # Slow down to 160 ms when nothing is transitioning (saves CPU)
                 is_transitioning = getattr(self, "_daynight_transitioning", False)
                 delay = 40 if (is_transitioning or getattr(self, "_lt_seq", None) is not None) else 100
+                # where a repaint is slow (a Mac), dusk and dawn take fewer, bigger steps
+                delay = max(delay, int(3000 * float(getattr(self, "_repaint_cost", 0.0))))
                 self.root.after(delay, _tick)
             except Exception:
                 self._daynight_anim_running = False
@@ -7725,6 +7760,8 @@ class GardenApp(InspectorMixin):
                 lbl.configure(text=self._speed_indicator_text())
             age = now - getattr(self, "_speed_ind_changed_at", now)
             t = 0.0 if age <= 5.0 else min(1.0, (age - 5.0) / 1.0)
+            if float(getattr(self, "_repaint_cost", 0.0)) > 0.1 and t > 0.0:
+                t = 1.0                 # slow repaints: no fade, just gone
             if t != getattr(self, "_speed_ind_t", None):
                 self._speed_ind_t = t
                 fg = (0x55, 0x55, 0x55)
@@ -8316,7 +8353,7 @@ class GardenApp(InspectorMixin):
                     self.garden.drift_temperature_once()
                     if n % 2 == 0 and self._auto_render_due():
                         self.render_all()
-                    else:
+                    elif self._top_clock_due():
                         self._update_top_clock()    # (the temperature in the top line)
                     self._frame_skip_counter = n + 1
                 except Exception:
@@ -8331,7 +8368,8 @@ class GardenApp(InspectorMixin):
             # the clock in the top line moves on with every hour, even when
             # the garden itself isn't redrawn this time (see below)
             try:
-                self._update_top_clock()
+                if self._top_clock_due():
+                    self._update_top_clock()
             except Exception:
                 pass
 
@@ -8414,13 +8452,31 @@ class GardenApp(InspectorMixin):
             self._ensure_auto_loop(delay_ms=getattr(self, 'phase_ms', 600))
 
 
+    def _top_clock_due(self):
+        """The clock in the top line moves on with every hour — unless one
+        repaint is slow (a Mac: any change at all repaints the whole
+        window, ~0.1–0.2 s). Then it moves on at most every ~3 repaints,
+        a few hours at a time at the fastest speeds; otherwise the window
+        would do nothing but repaint the clock and hardly answer clicks."""
+        cost = float(getattr(self, "_repaint_cost", 0.0))
+        if cost < 0.05:
+            return True
+        now = time.perf_counter()
+        if now - getattr(self, "_last_top_clock", 0.0) < max(AUTO_RENDER_MIN_S, 3.0 * cost):
+            return False
+        self._last_top_clock = now
+        return True
+
     def _auto_render_due(self):
         """The running game redraws the garden at most every AUTO_RENDER_MIN_S
         seconds: at the fastest speeds the hours pass faster than anyone
         can watch, and every redraw of a full garden costs (on the Mac most
         of all). The game itself runs at full speed regardless."""
         now = time.perf_counter()
-        if now - getattr(self, "_last_auto_render", 0.0) < AUTO_RENDER_MIN_S:
+        # where one repaint is slow (a Mac: ~0.2 s for any change at all),
+        # at most about a third of the time goes into repainting
+        gap = max(AUTO_RENDER_MIN_S, 3.0 * float(getattr(self, "_repaint_cost", 0.0)))
+        if now - getattr(self, "_last_auto_render", 0.0) < gap:
             return False
         self._last_auto_render = now
         return True
@@ -10837,6 +10893,69 @@ class GardenApp(InspectorMixin):
         threading.Thread(target=_sampler, daemon=True, name="perf-sampler").start()
         self.root.after(int(seconds * 1000), self._performance_report_done)
 
+    def _measure_repaint_cost(self, tries=0):
+        """How long Tk takes to show one small change (one top-line label).
+        On Windows and Linux that is a few ms; on a Mac Tk repaints the
+        whole window for any change, which with a big garden takes 0.2 s
+        and more. The game then paces what keeps changing on its own:
+        how often the running garden is redrawn, the animals' flight
+        steps, the rain in Mendel's picture."""
+        r = self.root
+        lbl = getattr(self, "phase_label_pre", None)
+        try:
+            busy = (getattr(self, "fast_forward", False)
+                    or any(isinstance(w, tk.Toplevel) and w.winfo_ismapped()
+                           and not w.overrideredirect()
+                           for w in r.winfo_children()))
+        except Exception:
+            busy = True
+        if lbl is None or busy or not lbl.winfo_ismapped():
+            if tries < 20:
+                r.after(3000, lambda: self._measure_repaint_cost(tries + 1))
+            return
+        # The game is paused for the moment it takes (well under a second):
+        # with the clock running, update() on a Mac keeps finding new work
+        # (the next hour, the next repaint…) and hardly comes back.
+        was_running = getattr(self, "running", False)
+        self.running = False
+        cost = None
+        try:
+            txt0 = lbl.cget("text")
+            r.update_idletasks()
+            ts = []
+            for _ in range(3):
+                lbl.configure(text=txt0 + " ")
+                t0 = time.perf_counter()
+                r.update()
+                ts.append(time.perf_counter() - t0)
+                lbl.configure(text=txt0)
+                r.update()
+            ts.sort()
+            cost = ts[1]
+        except Exception:
+            pass
+        finally:
+            self.running = was_running
+            self._loop_deadline = None
+        if cost is not None:
+            self._set_repaint_cost(cost)
+
+    def _set_repaint_cost(self, cost):
+        self._repaint_cost = float(cost)
+        slow = cost > 0.1
+        try:
+            import wildlife as _wl
+            _wl.set_repaint_cost(cost)
+        except Exception:
+            pass
+        try:
+            import mendel_portrait as _mp
+            _mp.set_repaint_cost(cost)
+        except Exception:
+            pass
+        logging.info("repaint cost %.0f ms%s", cost * 1000,
+                     " (slow: pacing animations)" if slow else "")
+
     def _redraw_probe(self):
         """How long one repaint takes, for a few kinds of change: nothing,
         one top-line label, one garden plot, the label and one plot at
@@ -10868,11 +10987,24 @@ class GardenApp(InspectorMixin):
                     pass
         txt0 = lbl.cget("text")
 
+        def _lbl():
+            cur = getattr(self, "phase_label_pre", None)
+            try:
+                if cur is not None and cur.winfo_exists():
+                    return cur
+            except Exception:
+                pass
+            return None
+
         def lab():
-            lbl.configure(text=txt0 + " ")
+            w_ = _lbl()
+            if w_ is not None:
+                w_.configure(text=txt0 + " ")
 
         def undo_lab():
-            lbl.configure(text=txt0)
+            w_ = _lbl()
+            if w_ is not None:
+                w_.configure(text=txt0)
 
         cases = [
             ("no change", lambda: None, lambda: None),
@@ -10886,17 +11018,52 @@ class GardenApp(InspectorMixin):
             for how, fn in (("update idletasks", r.update_idletasks), ("update", r.update)):
                 for name, change, undo in cases:
                     ts = []
-                    for _ in range(7):
+                    try:
+                        for _ in range(4):
+                            fn()
+                            change()
+                            t0 = time.perf_counter()
+                            fn()
+                            ts.append((time.perf_counter() - t0) * 1000.0)
+                            undo()
                         fn()
-                        change()
-                        t0 = time.perf_counter()
-                        fn()
-                        ts.append((time.perf_counter() - t0) * 1000.0)
-                        undo()
-                    fn()
+                    except Exception as e:
+                        out.append(f"  {how:16s} {name:32s} (skipped: {e})")
+                        continue
                     ts.sort()
                     out.append(f"  {how:16s} {name:32s} median {ts[len(ts) // 2]:6.1f} ms   "
                                f"(min {ts[0]:.1f}, max {ts[-1]:.1f})")
+            # The same label change with the garden taken off the screen:
+            # if that is much quicker, the many plot canvases are the cost
+            gf = getattr(self, "grid_frame", None)
+            if gf is not None and gf.winfo_manager() == "pack":
+                info = gf.pack_info()
+                sl = gf.master.pack_slaves()
+                i = sl.index(gf)
+                nxt = sl[i + 1] if i + 1 < len(sl) else None
+                opts = {k: v for k, v in info.items() if k != "in"}
+                gf.pack_forget()
+                try:
+                    r.update()
+                    ts = []
+                    for _ in range(4):
+                        lab()
+                        t0 = time.perf_counter()
+                        r.update()
+                        ts.append((time.perf_counter() - t0) * 1000.0)
+                        undo_lab()
+                        r.update()
+                    ts.sort()
+                    out.append(f"  {'update':16s} {'one label, garden hidden':32s} median "
+                               f"{ts[len(ts) // 2]:6.1f} ms   (min {ts[0]:.1f}, max {ts[-1]:.1f})")
+                finally:
+                    if nxt is not None:
+                        gf.pack(before=nxt, **opts)
+                    else:
+                        gf.pack(**opts)
+                    r.update()
+            out.append(f"  repaint cost the game adapts to: "
+                       f"{1000 * float(getattr(self, '_repaint_cost', 0.0)):.0f} ms")
         except Exception as e:
             out.append(f"  (redraw test stopped: {e})")
         finally:
@@ -10936,6 +11103,8 @@ class GardenApp(InspectorMixin):
             lines = [
                 "Garden of Inheritance - performance report",
                 f"computer: {_pf.platform()}  ({os.cpu_count()} cores)",
+                f"game file: {time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(os.path.abspath(__file__))))}"
+                f" ({sum(1 for _ in open(os.path.abspath(__file__), encoding='utf-8', errors='replace'))} lines)",
                 f"Python {sys.version.split()[0]}, Tk {self.root.tk.call('info', 'patchlevel')}"
                 f", window {w}x{h}, {len(list(self._all_plot_tiles()))} plots",
                 f"recorded {dur:.1f} s: {frames / max(dur, 0.01):.1f} FPS, slowest frame {worst * 1000:.0f} ms"
@@ -10966,6 +11135,11 @@ class GardenApp(InspectorMixin):
             for k, c in sorted(S["self"].items(), key=lambda kv: -kv[1])[:30]:
                 lines.append(f"  {100.0 * c / n:5.1f} %  {c * per:7.0f} ms  {k}")
             lines += ["", "===== REDRAW TEST (game paused for a moment) ====="]
+            try:
+                self._toast("Measuring the repaints: the game pauses for a few seconds…",
+                            level="info")
+            except Exception:
+                pass
             lines += self._redraw_probe()
             path = os.path.join(_SIM_DIR, "performance_report.txt")
             with open(path, "w", encoding="utf-8") as f:
@@ -11153,6 +11327,7 @@ class GardenApp(InspectorMixin):
         called by the running game at every hour and temperature step, so
         the clock moves on at its exact pace even when the garden isn't
         redrawn that time (only changed values are written)."""
+        self._last_top_clock = time.perf_counter()
         try:
             mon_names = ['January','February','March','April','May','June','July','August','September','October','November','December']
             mon = mon_names[getattr(self.garden, 'month', 4)-1] if 1 <= getattr(self.garden, 'month', 4) <= 12 else str(getattr(self.garden, 'month', 4))
@@ -11163,8 +11338,8 @@ class GardenApp(InspectorMixin):
             wx  = getattr(self.garden, 'weather', '')
             tmp = f"{getattr(self.garden, 'temp', 0.0):.1f}°C" if hasattr(self.garden, 'temp') else ''
             clock = f"{int(hh):02d}:{int(mm):02d}"
-            self._cfg(self.phase_label_pre, text=f"{dom} {mon} {yr} — {clock} —")
-            self._cfg(self.phase_label_post, text=tmp)
+            self._cfg_steady(self.phase_label_pre, f"{dom} {mon} {yr} — {clock} —", "e")
+            self._cfg_steady(self.phase_label_post, tmp, "w")
             # Only touch the icon widget when weather actually changed —
             # this runs on every render_all(), and re-loading/re-
             # configuring an image every single call would be pure waste
@@ -11239,6 +11414,35 @@ class GardenApp(InspectorMixin):
             else:
                 tk.Label(container, text=part, font=base_font).pack(side="left")
         return container
+
+    def _cfg_steady(self, widget, text, anchor):
+        """Text for a top-line label that changes all the time (the clock,
+        the temperature). On a Mac, every change in a label's size makes
+        Tk lay out the whole window again — with Tk 9 that costs ~0.1 s,
+        every hour of game time. So there the label keeps its width: it
+        only ever grows (to the longest text so far), and the text sits
+        against the weather icon (anchor), so nothing else moves."""
+        if sys.platform != "darwin":
+            self._cfg(widget, text=text)
+            return
+        try:
+            st = widget.__dict__.get("_steady")
+            if st is None:
+                import tkinter.font as _tkf
+                f = _tkf.Font(font=widget.cget("font"))
+                st = widget._steady = {"f": f, "zero": max(1, f.measure("0")), "w": 0}
+                widget.configure(anchor=anchor)
+            # measured only when the text is about as long as the longest
+            # so far (a shorter one fits: the width has 2 characters spare)
+            if len(text) > st.get("n", 0) - 2:
+                need = int(st["f"].measure(text) / st["zero"]) + 2
+                st["n"] = max(st.get("n", 0), len(text))
+                if need > st["w"]:
+                    st["w"] = need
+                    widget.configure(width=need)
+        except Exception:
+            pass
+        self._cfg(widget, text=text)
 
     @staticmethod
     def _cfg(widget, **kw):
@@ -16610,22 +16814,46 @@ class GardenApp(InspectorMixin):
             pass
 
 
+    _SEED_CSV_FIELDS = ["id", "source_id", "generation", "flower_position",
+                        "flower_color", "pod_color"]
+
     def _append_seed_csv(self, seed: dict):
-        os.makedirs(os.path.dirname(SEEDS_CSV), exist_ok=True)
-        file_exists = os.path.exists(SEEDS_CSV)
-        with open(SEEDS_CSV, "a", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=["id","source_id","generation","flower_position","flower_color","pod_color"])
-            if not file_exists:
-                writer.writeheader()
-            traits = seed.get("traits", {})
-            writer.writerow({
-                "id": seed.get("id",""),
-                "source_id": seed.get("source_id",""),
-                "generation": seed.get("generation",""),
-                "flower_position": traits.get("flower_position",""),
-                "flower_color": traits.get("flower_color",""),
-                "pod_color": traits.get("pod_color",""),
-            })
+        """Notes a harvested seed for seeds.csv. The rows are collected and
+        written in one go once the harvest is done (opening the file once
+        per seed made a big harvest stall, on a Mac most of all)."""
+        traits = seed.get("traits", {}) or {}
+        row = {
+            "id": seed.get("id", ""),
+            "source_id": seed.get("source_id", ""),
+            "generation": seed.get("generation", ""),
+            "flower_position": traits.get("flower_position", ""),
+            "flower_color": traits.get("flower_color", ""),
+            "pod_color": traits.get("pod_color", ""),
+        }
+        buf = self.__dict__.setdefault("_seed_csv_buf", [])
+        buf.append(row)
+        if not getattr(self, "_seed_csv_job", None):
+            try:
+                self._seed_csv_job = self.root.after_idle(self._flush_seed_csv)
+            except Exception:
+                self._flush_seed_csv()
+
+    def _flush_seed_csv(self):
+        self._seed_csv_job = None
+        buf = self.__dict__.get("_seed_csv_buf") or []
+        if not buf:
+            return
+        self._seed_csv_buf = []
+        try:
+            os.makedirs(os.path.dirname(SEEDS_CSV), exist_ok=True)
+            file_exists = os.path.exists(SEEDS_CSV)
+            with open(SEEDS_CSV, "a", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=self._SEED_CSV_FIELDS)
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerows(buf)
+        except Exception:
+            logging.error("Writing seeds.csv failed", exc_info=True)
 
     def plant_seed(self, seed: Seed, slot: int):
         """
@@ -17781,6 +18009,12 @@ class GardenApp(InspectorMixin):
         return True
 
     def _on_fast_forward(self):
+        # While a Fast Forward runs, the button (or its key) stops it: the
+        # running loop sees the flag at its next hour and lands there.
+        if getattr(self, "fast_forward", False):
+            self.fast_forward = False
+            self._toast("Fast Forward stopped.", level="info")
+            return
         # Off during the first tutorial parts (see tutorial._set_ff_locked).
         if getattr(self, "_tutorial_ff_locked", False):
             return
@@ -17981,8 +18215,35 @@ class GardenApp(InspectorMixin):
 
         def _ui_free(hours=1):
             _ui["hours"] += hours
-            return (_ui["hours"] >= 24
-                    or time.perf_counter() - _ui["t"] >= max(0.05, 1.2 * _ui["cost"]))
+            gap = time.perf_counter() - _ui["t"]
+            # once a simulated day the garden is shown anyway — unless one
+            # repaint is slow (a Mac with a big garden: 0.3 s and more);
+            # then Fast Forward would spend nearly all its time repainting
+            # and the window would hardly answer a click
+            daily = _ui["hours"] >= 24 and (_ui["cost"] < 0.08 or gap >= 0.6)
+            # a slow repaint: at most a third of the time goes into it
+            factor = 1.2 if _ui["cost"] < 0.1 else 2.0
+            return daily or gap >= max(0.05, factor * _ui["cost"])
+
+        # Between two repaints, clicks and keys are still taken in (every
+        # 40 ms, without repainting: on a Mac the repaint is what costs),
+        # so the window keeps answering — e.g. the Fast Forward button.
+        import _tkinter as _tki
+        _pump_flags = (_tki.DONT_WAIT | _tki.WINDOW_EVENTS | _tki.FILE_EVENTS
+                       | _tki.TIMER_EVENTS)
+        _pump = {"t": time.perf_counter()}
+
+        def _pump_input():
+            now_ = time.perf_counter()
+            if now_ - _pump["t"] < 0.04:
+                return
+            _pump["t"] = now_
+            try:
+                for _k in range(60):
+                    if not self.root.tk.dooneevent(_pump_flags):
+                        break
+            except Exception:
+                pass
 
         def _ui_done(cost):
             _ui["t"] = time.perf_counter()
@@ -18100,6 +18361,9 @@ class GardenApp(InspectorMixin):
                     pass
 
             # ---------------- UI refresh logic ----------------
+            _pump_input()
+            if not getattr(self, "fast_forward", False):
+                break                   # stopped from the window meanwhile
             try:
                 # Auto-adjust (if on) decides daily-vs-interval based on
                 # how many days THIS run was actually asked to cover,
@@ -18892,6 +19156,10 @@ class GardenApp(InspectorMixin):
             self._force_exit()
             return
         self._closing = True
+        try:
+            self._flush_seed_csv()
+        except Exception:
+            pass
         try:
             if getattr(self, "_tutorial_active", False):
                 import tutorial as _tut
@@ -23755,6 +24023,8 @@ def main():
         logging.error("Start-up garden prompt failed", exc_info=True)
     # a moment for Mendel's picture and the plants to be drawn
     root.after(450, cover.close)
+    # how slow a repaint is here (a Mac: much slower) — see _measure_repaint_cost
+    root.after(5000, app._measure_repaint_cost)
 
     # The Monastery window no longer opens by itself; the map button
     # (tooltip "Tutorial / Settings") opens it.

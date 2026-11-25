@@ -204,11 +204,25 @@ _SNOW_FRAMES = 48               # snow falls slowly, so its loop is longer
 def _frame_ms(style):
     # On a Mac every new picture makes Tk repaint far more of the window,
     # so the rain there falls at half the frame rate (still smooth).
-    return _RAIN_FRAME_MS * (2 if sys.platform == "darwin" else 1)
+    ms = _RAIN_FRAME_MS * (2 if sys.platform == "darwin" else 1)
+    return max(ms, int(3000 * _REPAINT_COST_S))
+
+
+# How long one repaint of the window takes (measured by the game). Where
+# it is slow (a Mac with a big garden: Tk repaints the whole window for
+# every new rain frame), the rain stays a still picture.
+_REPAINT_COST_S = 0.0
+
+
+def set_repaint_cost(cost):
+    global _REPAINT_COST_S
+    _REPAINT_COST_S = max(0.0, float(cost or 0.0))
 
 
 def _anim_on(app):
     """Game Settings > "Animate rain and snow in Mendel's picture"."""
+    if _REPAINT_COST_S > 0.1:
+        return False
     return bool(getattr(app, "_portrait_weather_anim", True))
 
 

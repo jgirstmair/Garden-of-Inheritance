@@ -135,6 +135,24 @@ MAX_STAY_MS = 42000
 
 # Flight (bees and top-view butterflies glide from flower to flower)
 FLY_STEP_MS   = 40          # ~25 fps, only while actually flying
+
+# How long one repaint of the window takes (measured by the game). On a
+# Mac Tk repaints the whole window for every flight step, so there the
+# steps get longer (and bigger: a flight takes as long as before).
+_REPAINT_COST_S = 0.0
+
+
+def set_repaint_cost(cost):
+    global _REPAINT_COST_S
+    _REPAINT_COST_S = max(0.0, float(cost or 0.0))
+
+
+def _fly_step_ms():
+    return max(FLY_STEP_MS, int(2500 * _REPAINT_COST_S))
+
+
+def _walk_step_ms():
+    return max(BRUCHUS_WALK_STEP_MS, int(2500 * _REPAINT_COST_S))
 FLAP_STEPS    = 3           # swap wing frame every 3 flight steps
 HOP_MIN_MS    = 2500        # pause on a flower before maybe flying on
 HOP_MAX_MS    = 5500
@@ -484,7 +502,7 @@ class _Creature:
         butterfly = self.type_name == "butterfly"
         speed = random.uniform(55, 85) if butterfly else random.uniform(80, 120)  # px/s
         speed = max(speed, dist / MAX_FLIGHT_S)      # far flights go faster
-        steps = max(6, int(dist / speed * 1000 / FLY_STEP_MS))
+        steps = max(6, int(dist / speed * 1000 / _fly_step_ms()))
         arc = random.uniform(-0.35, 0.35) * dist if butterfly else random.uniform(-0.15, 0.15) * dist
         arc = max(-60.0, min(60.0, arc))
         wob = 1.6 if butterfly else 0.7
@@ -547,7 +565,7 @@ class _Creature:
             except Exception:
                 return
             if state["i"] < steps:
-                self._later(FLY_STEP_MS, step)
+                self._later(_fly_step_ms(), step)
             else:
                 self._flying = False
                 if then is not self._depart:
@@ -555,7 +573,7 @@ class _Creature:
                 if then:
                     then()
 
-        self._later(FLY_STEP_MS, step)
+        self._later(_fly_step_ms(), step)
 
     @staticmethod
     def _root_of(tile, rects):
@@ -751,18 +769,19 @@ class _Creature:
             return
         dx, dy = tx - self.cx, ty - self.cy
         dist = math.hypot(dx, dy)
-        if dist <= BRUCHUS_WALK_PX:
+        step_px = BRUCHUS_WALK_PX * _walk_step_ms() / BRUCHUS_WALK_STEP_MS
+        if dist <= step_px:
             self.cx, self.cy = tx, ty
             self._move_item()
             self._walking = False
             self._crawl_in()
             return
-        k = BRUCHUS_WALK_PX / dist
+        k = step_px / dist
         # a little side-to-side, like a beetle picking its way along
         self.cx += dx * k + random.uniform(-0.4, 0.4)
         self.cy += dy * k + random.uniform(-0.4, 0.4)
         self._move_item()
-        self._later(BRUCHUS_WALK_STEP_MS, lambda: self._walk_step(tx, ty))
+        self._later(_walk_step_ms(), lambda: self._walk_step(tx, ty))
 
     def _move_item(self):
         try:
