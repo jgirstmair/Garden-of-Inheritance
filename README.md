@@ -57,8 +57,6 @@ first start, and the garden-size wizard recommends a garden that fits.
 - Pythons with Tk 8.6 (e.g. Miniforge/conda) work, but feel slower with
   a big garden. The game then paces itself: the clock and the animals
   move in bigger steps, and the rain in Mendel's picture stays still.
-- If it still feels slow, choose a smaller garden in the garden-size
-  wizard, or play in a smaller window.
 - Full screen is off by default on a Mac.
 
 ## Standard library modules (already included with Python)
