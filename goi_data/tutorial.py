@@ -867,7 +867,7 @@ LECTURE_CROSS_2_DIALOGUE = [
       "portrait": "mendel", "pause": True, "no_skip": True,
       "wait_for_condition": "crossing_section_open"}),
     # Waits until an open flower of the father is selected.
-    ("Cyril", "Do bear in mind that the anthers are only ready in the morning.",
+    ("Cyril", "Remember that the anthers are only ready in the morning.",
      {"highlight_plants": "father", "glow_targets": ["inspector_father_cell"],
       "auto_advance_ms": 1500}),
     # Waits until the flower Cyril marked (ripe anthers) is selected.
@@ -2133,8 +2133,8 @@ def _ratio_moral(app):
     r = p / float(w) if w else 0.0
     if 2.5 <= r <= 3.6:
         return "Three to one, Gregor. That ratio might be worth remembering."
-    return ("With so few plants, chance has its say. Grow more, and the count comes ever "
-            "closer to three to one.")
+    return ("With so few plants, a lot is left to chance, Gregor. The more you grow, "
+            "the closer your count will come to the real ratio.")
 
 
 def _close_question(app):

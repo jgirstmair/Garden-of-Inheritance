@@ -191,7 +191,7 @@ class EmasculationDialog(tk.Toplevel):
     """
     
     def __init__(self, parent, flower_color="purple", callback=None, starting_removed=0,
-                 title=None, heading=None, cancel_text=None):
+                 title=None, heading=None, cancel_text=None, show_parts=True):
         """
         Initialize the emasculation dialog.
         
@@ -210,6 +210,8 @@ class EmasculationDialog(tk.Toplevel):
                 player having to redo them.
         """
         super().__init__(parent)
+        # the names of the flower parts and the petals note: the tutorial only
+        self._show_parts = bool(show_parts)
         self.configure(bg=BG)
         
         # Also used to collect pollen (take one or more anthers): then the
@@ -364,8 +366,10 @@ class EmasculationDialog(tk.Toplevel):
         # Create anthers AFTER flower so they're on top
         self._create_anthers()
 
-        # the names of the main parts of the flower
+        # the names of the main parts of the flower (the tutorial only)
         try:
+            if not getattr(self, "_show_parts", True):
+                raise StopIteration
             self._part_labels = draw_flower_labels(self.canvas, self.scale_factor,
                                                    self.canvas_width, self.canvas_height)
             if getattr(self, "_flower_item", None):
@@ -373,6 +377,8 @@ class EmasculationDialog(tk.Toplevel):
                 self.canvas.tag_raise("part_label", self._flower_item)
             if self.cursor_icon:
                 self.canvas.tag_raise(self.cursor_icon)
+        except StopIteration:
+            self._part_labels = {}
         except Exception as e:
             print(f"Could not draw the flower labels: {e}")
             self._part_labels = {}
@@ -388,9 +394,10 @@ class EmasculationDialog(tk.Toplevel):
         # Set default cursor
         _set_cursor(self, "crosshair")
         
-        tk.Label(self, text=FLOWER_PETALS_NOTE, font=("Segoe UI", 10, "italic"),
-                 bg=BG, fg=MUTED, wraplength=max(260, self.canvas_width),
-                 justify="center").pack(padx=20, pady=(0, 2))
+        if getattr(self, "_show_parts", True):
+            tk.Label(self, text=FLOWER_PETALS_NOTE, font=("Segoe UI", 10, "italic"),
+                     bg=BG, fg=MUTED, wraplength=max(260, self.canvas_width),
+                     justify="center").pack(padx=20, pady=(0, 2))
 
         # Success message frame (pre-allocated, initially empty)
         self.success_frame = tk.Frame(self, bg=BG, height=0)
@@ -890,12 +897,12 @@ class BrushDialog(EmasculationDialog):
     on the flower; the brush tip turns more yellow with every anther.
     callback(success, anthers_touched)."""
 
-    def __init__(self, parent, flower_color="purple", callback=None):
+    def __init__(self, parent, flower_color="purple", callback=None, show_parts=True):
         self.touched = set()
         super().__init__(parent, flower_color, callback, starting_removed=0,
                          title="Collect pollen",
                          heading="Brush over the tips of five anthers",
-                         cancel_text="Cancel")
+                         cancel_text="Cancel", show_parts=show_parts)
         self.progress_label.config(text=f"Anthers touched: 0 / {BRUSH_TOUCHES}", fg=MUTED)
 
     # -- the brush as the mouse cursor ------------------------------------

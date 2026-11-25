@@ -3195,6 +3195,11 @@ class GardenApp(InspectorMixin):
         if (getattr(self, "_genotype_revealed", False)
                 and not str(key).startswith("tutorial")):
             return False
+        # The tutorial earns only its own parts: weevils, visitors named,
+        # a self-pollination by hand… count in a garden of one's own
+        if (getattr(self, "_tutorial_active", False)
+                and not str(key).startswith("tutorial")):
+            return False
         data = self._load_achievements()
         if key in data:
             return False
@@ -3259,7 +3264,8 @@ class GardenApp(InspectorMixin):
         # The long note about the weevil: the first catch in a garden (and
         # the very first ever); after that a short line, the jar counts
         n_here = int(getattr(self, "_bruchus_caught", 0) or 0)
-        if (patrol or n_here > 1) and "pea_weevil" in (self._load_achievements() or {}):
+        tut = bool(getattr(self, "_tutorial_active", False))
+        if (patrol or n_here > 1) and (tut or "pea_weevil" in (self._load_achievements() or {})):
             try:
                 _play_sound("click.ogg")
             except Exception:
@@ -3269,6 +3275,10 @@ class GardenApp(InspectorMixin):
                             level="info")
             return
         win = self._show_bruchus_popup(beetle_img)
+        # The tutorial shows the note about the weevil, but the achievement
+        # is earned only in a garden of one's own
+        if tut:
+            return
         if self._award_achievement("pea_weevil") and win is not None:
             # First catch ever: Abbot Cyril comes by once "Good catch!" closes.
             def _on_close(e):
@@ -6727,7 +6737,12 @@ class GardenApp(InspectorMixin):
         self.auto_water_normal = tk.BooleanVar(value=False) # ☐
         # cross_random removed - was non-functional legacy setting
         self.auto_record_temperature = tk.BooleanVar(value=False)  # ☐ "Auto-record temperature"
-        self.show_breed_dialogs = tk.BooleanVar(value=True)       # ✅ "Show Emasculation/Pollination dialogs"
+        # ✅ "Show Emasculation / Pollination windows": the player's own
+        # preference, kept in the settings file (not in each garden's save,
+        # where an old garden or the tutorial's could switch it off unseen)
+        self.show_breed_dialogs = tk.BooleanVar(value=_load_show_breed_dialogs())
+        self.show_breed_dialogs.trace_add(
+            "write", lambda *_: _save_show_breed_dialogs(self.show_breed_dialogs.get()))
 
         # Wildlife settings
         self._wildlife_enabled_var = tk.BooleanVar(value=True)
@@ -7446,6 +7461,16 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass
 
+    def _breed_dialogs_on(self):
+        """The emasculation / pollen / pollination windows: as the player
+        set it — and always in the tutorial, which teaches them."""
+        if getattr(self, "_tutorial_active", False):
+            return True
+        try:
+            return bool(self.show_breed_dialogs.get())
+        except Exception:
+            return True
+
     def _on_emasculate_selected(self, flower_no=None, instant=False, quiet=False, also=None,
                                 gate=True):
         """instant: no dialog (several at once); quiet: no toast;
@@ -7543,14 +7568,19 @@ class GardenApp(InspectorMixin):
         try:
             flower_color = plant.traits.get("flower_color", "purple")
             starting_removed = int(f.get("anthers_removed", 0) or 0)
-            if instant or not self.show_breed_dialogs.get():
+            if instant or not self._breed_dialogs_on():
                 on_emasculation_complete(True)
             else:
-                EmasculationDialog(self.root, flower_color, on_emasculation_complete,
-                                   starting_removed=starting_removed,
-                                   show_parts=bool(getattr(self, "_tutorial_active", False)))
+                try:
+                    EmasculationDialog(self.root, flower_color, on_emasculation_complete,
+                                       starting_removed=starting_removed,
+                                       show_parts=bool(getattr(self, "_tutorial_active", False)))
+                except TypeError:
+                    # an older emasculation_dialog.py (without show_parts)
+                    EmasculationDialog(self.root, flower_color, on_emasculation_complete,
+                                       starting_removed=starting_removed)
         except Exception as e:
-            print(f"Error opening emasculation dialog: {e}")
+            logging.error(f"Error opening emasculation dialog: {e}", exc_info=True)
             on_emasculation_complete(True)
 
     def _center_on_screen(self, win):
@@ -11599,11 +11629,15 @@ class GardenApp(InspectorMixin):
                     pass
 
         try:
-            if not self.show_breed_dialogs.get():
+            if not self._breed_dialogs_on():
                 on_done(True, 5)
             else:
-                BrushDialog(self.root, plant.traits.get("flower_color", "purple"), on_done,
-                            show_parts=bool(getattr(self, "_tutorial_active", False)))
+                try:
+                    BrushDialog(self.root, plant.traits.get("flower_color", "purple"), on_done,
+                                show_parts=bool(getattr(self, "_tutorial_active", False)))
+                except TypeError:
+                    # an older emasculation_dialog.py (without show_parts)
+                    BrushDialog(self.root, plant.traits.get("flower_color", "purple"), on_done)
         except Exception as e:
             print(f"Error opening the brush dialog: {e}")
             on_done(True, 5)
@@ -11873,7 +11907,7 @@ class GardenApp(InspectorMixin):
         
         # Show the interactive pollination dialog
         try:
-            if not self.show_breed_dialogs.get():
+            if not self._breed_dialogs_on():
                 # Dialogs disabled — pollinate immediately without the interactive step
                 on_pollination_complete(True)
             else:
@@ -21065,7 +21099,7 @@ class GardenApp(InspectorMixin):
         self.auto_water_normal.set(ui_settings.get('auto_water_normal', False))
         # self.cross_random removed (non-functional legacy setting)
         self.auto_record_temperature.set(ui_settings.get('auto_record_temperature', True))
-        self.show_breed_dialogs.set(ui_settings.get('show_breed_dialogs', True))
+        # (show_breed_dialogs: a preference of its own now, see __init__)
         self.available_seeds = ui_settings.get('available_seeds', 10)
         
         # Check if grid size changed
@@ -23056,6 +23090,22 @@ def _save_portrait_weather_anim(enabled):
     settings = _load_display_settings()
     settings["portrait_weather_anim"] = bool(enabled)
     _save_display_settings(settings)
+
+
+def _load_show_breed_dialogs():
+    try:
+        return bool(_load_display_settings().get("show_breed_dialogs", True))
+    except Exception:
+        return True
+
+
+def _save_show_breed_dialogs(enabled):
+    try:
+        settings = _load_display_settings()
+        settings["show_breed_dialogs"] = bool(enabled)
+        _save_display_settings(settings)
+    except Exception:
+        pass
 
 
 def _load_screen_fit():

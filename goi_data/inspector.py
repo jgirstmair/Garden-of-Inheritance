@@ -2250,7 +2250,7 @@ class InspectorMixin:
             emasc = kind == "emasc"
             act = "Emasculate" if emasc else "Pollinate"
             what = "buds / flowers" if emasc else "flowers"
-            if not bool(self.show_breed_dialogs.get()):
+            if not self._breed_dialogs_on():
                 return "all"
             heading = f"{act} {n} {what}?"
             seq = str(getattr(self, "_season_mode", "off")) == "enforce"
@@ -2296,7 +2296,7 @@ class InspectorMixin:
                     rest = list(targets[1:])
                     if how == "all":
                         sel.clear()
-                        if not bool(self.show_breed_dialogs.get()):
+                        if not self._breed_dialogs_on():
                             self._emasculate_many(plant, targets)
                             update()
                             return
