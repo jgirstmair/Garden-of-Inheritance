@@ -22,7 +22,45 @@ from PIL import Image, ImageTk
 
 from plant import STAGE_NAMES
 from icon_loader import (ICONS_DIR, budding_icon_path_hi, flower_icon_path_hi,
-                         pod_shape_icon_path, safe_image, trait_icon_path)
+                         pod_shape_icon_path, trait_icon_path)
+from icon_loader import safe_image as _safe_image_full
+
+# The game's screen fit (Garden-of-Inheritance.py, _fit_ui_to_screen): on
+# small screens the pictures in the Inspect window shrink with the text.
+_UI_SCALE = 1.0
+_scaled_cache = {}
+
+
+def set_ui_scale(u):
+    global _UI_SCALE
+    try:
+        _UI_SCALE = max(0.5, min(1.0, float(u)))
+    except Exception:
+        _UI_SCALE = 1.0
+    _scaled_cache.clear()
+
+
+def _isc(px):
+    """A picture size in the Inspect window, scaled for the screen."""
+    return max(1, int(round(px * _UI_SCALE)))
+
+
+def safe_image(path):
+    """icon_loader.safe_image, shrunk by the screen fit."""
+    if _UI_SCALE >= 0.999 or not path:
+        return _safe_image_full(path)
+    key = (path, _UI_SCALE)
+    hit = _scaled_cache.get(key)
+    if hit is not None:
+        return hit
+    try:
+        im = Image.open(path).convert("RGBA")
+        w, h = max(1, _isc(im.width)), max(1, _isc(im.height))
+        img = ImageTk.PhotoImage(im.resize((w, h), Image.LANCZOS))
+    except Exception:
+        return _safe_image_full(path)
+    _scaled_cache[key] = img
+    return img
 
 # Defined in Garden-of-Inheritance.py (filled in by install()).
 GAME_NAMES = ("_attach_tooltip", "_load_display_settings", "_save_display_settings")
@@ -468,6 +506,7 @@ class InspectorMixin:
     def _small_trait_icon(self, key, value, px):
         """A trait icon scaled to fit px x px (cached), or None."""
         cache = self.__dict__.setdefault("_small_trait_icons", {})
+        px = _isc(px)
         k = (key, value, px)
         if k in cache:
             return cache[k]
@@ -551,9 +590,27 @@ class InspectorMixin:
 
         frame = tk.Frame(parent, bg=BG)
         total = sum(pvis.values())
-        tk.Label(frame, text=(f"Visitors \u2014 {total} visit{'s' if total != 1 else ''} "
-                              f"to plant #{getattr(plant, 'id', '?')}"),
-                 font=("Segoe UI", 14, "bold"), bg=BG, fg=INK).pack(anchor="w")
+        head = tk.Frame(frame, bg=BG)
+        head.pack(fill="x")
+        tk.Label(head, text=(f"Visitors \u2014 {total} visit{'s' if total != 1 else ''} "
+                             f"to plant #{getattr(plant, 'id', '?')}"),
+                 font=("Segoe UI", 14, "bold"), bg=BG, fg=INK).pack(side="left", anchor="w")
+        # the weevil jar, always at hand: a small picture, click to open it
+        try:
+            import beetle_jar as _bj
+            n_jar = int(getattr(self, "_bruchus_caught", 0) or 0)
+            pil = _bj.jar_icon(n_jar, os.path.join(ICONS_DIR, "wildlife",
+                                                   "bruchus_pisi_frame1.png"), bg=BG)
+            ph = ImageTk.PhotoImage(pil) if pil is not None else None
+            jb = tk.Label(head, image=ph, text=f" {n_jar}", compound="left",
+                          font=("Segoe UI", 13, "bold"), bg=BG, fg=INK, cursor="hand2")
+            jb.image = ph
+            jb.pack(side="right", padx=(12, 0))
+            jb.bind("<Button-1>", lambda e: self._open_weevil_jar(
+                parent=frame.winfo_toplevel()))
+            _attach_tooltip(jb, "Your weevil jar: click to look at it")
+        except Exception:
+            pass
         tbl = tk.Frame(frame, bg=BG)
         tbl.pack(anchor="w", pady=(4, 0))
         HF = ("Segoe UI", 13, "bold")
@@ -567,14 +624,32 @@ class InspectorMixin:
             for c, h in enumerate(("", "Visitor", "Species identification", "Season", "Visits")):
                 tk.Label(tbl, text=h, font=HF, bg=BG, fg=MUTED).grid(
                     row=0, column=b * 6 + c, sticky="w", padx=(0, 14))
-        info = tk.Label(frame, text="", font=("Segoe UI", 12), bg="#FBF3D9", fg="#5a4a20",
-                        wraplength=560, justify="left", padx=8, pady=6)
+        info = tk.Frame(frame, bg="#FBF3D9", padx=8, pady=6)
+        info_txt = tk.Label(info, text="", font=("Segoe UI", 12), bg="#FBF3D9", fg="#5a4a20",
+                            wraplength=420, justify="left")
+        info_txt.pack(side="left", anchor="n", fill="x", expand=True)
+        jar_box = tk.Frame(info, bg="#FBF3D9")
+        jar_box.pack(side="right", anchor="n", padx=(12, 0))
 
         def _weevil_info(e=None):
-            info.configure(text=(
+            n = int(getattr(self, "_bruchus_caught", 0) or 0)
+            info_txt.configure(text=(
                 "\u2691  This little beetle comes when the plants carry pods. "
                 "It can carry pollen from flower to flower and, now and then, spoil "
-                "a cross. You can catch it: when you see one on a plant, click it!"))
+                "a cross. You can catch it: when you see one on a plant, click it!"
+                + ("\n\nYour jar is still empty." if n == 0 else
+                   f"\n\nYour jar: {n} pea weevil{'s' if n != 1 else ''} caught in this "
+                   "garden.")))
+            # the jar with every weevil caught in this garden
+            for c in jar_box.winfo_children():
+                c.destroy()
+            try:
+                import beetle_jar as _bj
+                _bj.BeetleJar(jar_box, n, os.path.join(ICONS_DIR, "wildlife",
+                                                       "bruchus_pisi_frame1.png"),
+                              bg="#FBF3D9", width=120, height=155).pack()
+            except Exception:
+                pass
             if not info.winfo_ismapped():
                 info.pack(fill="x", pady=(6, 0))
                 try:
@@ -760,7 +835,7 @@ class InspectorMixin:
     # Icons and text the same size as in the Inspect window.
     _TRAITS_ONLY_ICON = 64
 
-    _INSPECTOR_SECTIONS_DEFAULT = {"crossing": False, "traits": True,
+    _INSPECTOR_SECTIONS_DEFAULT = {"crossing": True, "traits": True,
                                    "harvest": True, "wildlife": False}
 
     def _inspector_sections(self):
@@ -1189,6 +1264,20 @@ class InspectorMixin:
                                    bg="#e0dccf", fg="#333333",
                                    font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
 
+        # The Hidden / Dominant Seven: the player shows the plant to Cyril
+        try:
+            import missions as _ms
+            _kind = _ms.seven_claim_kind(self)
+        except Exception:
+            _kind = None
+        if _kind:
+            _word = "recessive" if _kind == "rec" else "dominant"
+            self._make_flat_button(
+                bottom_row, f"\u2691  All seven {_word}",
+                lambda p=plant: _ms.claim_seven(self, p, parent=win),
+                bg="#d9c27a", fg="#3b2a1a",
+                font=("Segoe UI", 14, "bold")).pack(side="left", padx=6)
+
         self._insp_fit = _fit_window
         try:
             self._inspector_last_sig = self._compute_inspector_sig(getattr(self, "selected_index", None), plant)
@@ -1492,7 +1581,7 @@ class InspectorMixin:
             _ip = os.path.join(ICONS_DIR, "inspect.png")
             if os.path.exists(_ip):
                 _im = Image.open(_ip).convert("RGBA")
-                _im.thumbnail((28, 28), Image.LANCZOS)
+                _im.thumbnail((_isc(28), _isc(28)), Image.LANCZOS)
                 mag = ImageTk.PhotoImage(_im)
         except Exception:
             mag = None
@@ -1544,7 +1633,7 @@ class InspectorMixin:
             hp = os.path.join(ICONS_DIR, "harvest.png")
             if os.path.exists(hp):
                 im = Image.open(hp).convert("RGBA")
-                im.thumbnail((30, 30), Image.LANCZOS)
+                im.thumbnail((_isc(30), _isc(30)), Image.LANCZOS)
                 img = ImageTk.PhotoImage(im)
         except Exception:
             img = None
@@ -1597,7 +1686,7 @@ class InspectorMixin:
         ph = None
         try:
             im = Image.open(path).convert("RGBA")
-            im.thumbnail((self._TRAITS_ONLY_ICON, self._TRAITS_ONLY_ICON), Image.LANCZOS)
+            im.thumbnail((_isc(self._TRAITS_ONLY_ICON), _isc(self._TRAITS_ONLY_ICON)), Image.LANCZOS)
             ph = ImageTk.PhotoImage(im)
         except Exception:
             ph = None
@@ -1656,7 +1745,7 @@ class InspectorMixin:
         def row(path, value, caption, unknown=False, path2=None):
             r = tk.Frame(body, bg=BG)
             r.pack(anchor="w", fill="x", pady=1)
-            slot = tk.Frame(r, bg=BG, width=self._TRAITS_ONLY_ICON + 4, height=self._TRAITS_ONLY_ICON + 2)
+            slot = tk.Frame(r, bg=BG, width=_isc(self._TRAITS_ONLY_ICON) + 4, height=_isc(self._TRAITS_ONLY_ICON) + 2)
             slot.pack_propagate(False)
             slot.pack(side="left")
             img = self._traits_only_icon(path) if (path and not unknown) else None
@@ -1942,7 +2031,7 @@ class InspectorMixin:
         key = getattr(plant, "_icon_key", None)
         if (args and isinstance(key, tuple) and key and key[0] == "grown"):
             try:
-                return ImageTk.PhotoImage(self._grown_pil_render(plant, args, 128))
+                return ImageTk.PhotoImage(self._grown_pil_render(plant, args, _isc(128)))
             except Exception:
                 logging.debug("Big plant portrait failed", exc_info=True)
         if small is None:
@@ -2158,18 +2247,27 @@ class InspectorMixin:
             simultaneously (one window counts for all). Returns "seq",
             "all" or None (cancelled)."""
             n = len(targets)
-            act, noun = (("Emasculate", "emasculation") if kind == "emasc"
-                         else ("Pollinate", "pollination"))
-            what = "buds / flowers" if kind == "emasc" else "flowers"
+            emasc = kind == "emasc"
+            act = "Emasculate" if emasc else "Pollinate"
+            what = "buds / flowers" if emasc else "flowers"
             if not bool(self.show_breed_dialogs.get()):
                 return "all"
-            if str(getattr(self, "_season_mode", "off")) == "enforce":
-                ok = _ask(act, f"{act} the {n} selected {what} one after the other?",
-                          yes_text=f"Yes \u2014 each {noun} in its own window")
-                return "seq" if ok else None
-            ok = _ask(act, f"{act} the {n} selected {what} simultaneously?",
-                      yes_text=f"Yes \u2014 one {noun} counts for all of them")
-            return "all" if ok else None
+            heading = f"{act} {n} {what}?"
+            seq = str(getattr(self, "_season_mode", "off")) == "enforce"
+            if seq:
+                body = (f"Each one gets its own {'forceps' if emasc else 'brush'} window, "
+                        "one after the other.")
+            elif emasc:
+                body = "One forceps window counts for all of them."
+            else:
+                body = "One brush stroke counts for all of them."
+            try:
+                ok = self._ask_styled(heading, body, f"{act} all {n}", parent=win)
+            except Exception:
+                ok = True
+            if not ok:
+                return None
+            return "seq" if seq else "all"
 
         def run(kind):
             ks = sorted(sel)

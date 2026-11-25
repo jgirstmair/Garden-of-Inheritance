@@ -150,6 +150,164 @@ _MENDEL_QUOTES = (
 )
 
 
+class _LoadingCover:
+    """A "Loading…" screen over the main window while the game is built
+    and fitted to the screen, so the player doesn't see the window being
+    put together (the plain garden, Mendel's start-up picture). Shows the
+    monastery garden (icons/MonasteryGarden_<season>.png), fading to the
+    next season every few seconds while the event loop runs (during the
+    start-up question, between building steps). A borderless window
+    exactly over the main one; closed once the game is ready (see main)."""
+
+    SEASONS = ("spring", "summer", "autumn", "winter")
+    SHOW_MS = 5000          # one season
+    FADE_STEPS = 12         # cross-fade frames ...
+    FADE_MS = 40            # ... this far apart
+
+    def __init__(self, root):
+        self.root = root
+        self.win = None
+        self._status = None
+        self._pic = None
+        self._pils = []
+        self._photo = None
+        self._job = None
+        self._seasons = []          # the seasons of self._pils, in order
+        self._listeners = []        # called with the next season when it fades in
+        try:
+            root.update()
+            x, y = root.winfo_rootx(), root.winfo_rooty()
+            w, h = root.winfo_width(), root.winfo_height()
+            if w < 300 or h < 200:
+                x, y = 0, 0
+                w, h = root.winfo_screenwidth(), root.winfo_screenheight()
+            bg, fg = "#f6efe0", "#3b2a1a"
+            win = tk.Toplevel(root, bg=bg)
+            win.overrideredirect(True)
+            # (the plain Tk call: popup sizes are otherwise capped to the screen)
+            _orig_wm_geometry(win, f"{w}x{h}+{x}+{y}")
+            box = tk.Frame(win, bg=bg)
+            box.place(relx=0.5, rely=0.5, anchor="center")
+            tk.Label(box, text="Garden of Inheritance", font=("Segoe UI", 28, "bold"),
+                     bg=bg, fg=fg).pack(pady=(0, 10))
+
+            # the four seasons of the monastery garden, fitted to the window
+            pic_h = max(120, min(int(h - 300), int(w * 0.62 / 1.5)))
+            try:
+                for season in self.SEASONS:
+                    path = os.path.join(ICONS_DIR, f"MonasteryGarden_{season}.png")
+                    if os.path.isfile(path):
+                        im = Image.open(path).convert("RGB")
+                        pw = max(1, int(round(im.width * pic_h / float(im.height))))
+                        self._pils.append(im.resize((pw, pic_h), Image.LANCZOS))
+                        self._seasons.append(season)
+            except Exception:
+                self._pils = []
+            if self._pils:
+                self._idx = random.randrange(len(self._pils))
+                self._photo = ImageTk.PhotoImage(self._pils[self._idx], master=win)
+                self._pic = tk.Label(box, image=self._photo, bg=bg, bd=0)
+                self._pic.pack()
+
+            self._status = tk.Label(box, text="Loading\u2026", font=("Segoe UI", 15, "italic"),
+                                    bg=bg, fg="#7a6a55")
+            self._status.pack(pady=(10, 12))
+            try:
+                de, en = random.choice(_MENDEL_QUOTES)
+                tk.Label(box, text="\u201c" + en + "\u201d", font=("Segoe UI", 12, "italic"),
+                         bg=bg, fg=fg, wraplength=min(760, int(w * 0.7)),
+                         justify="center").pack()
+                tk.Label(box, text="\u2014 Gregor Mendel, Versuche \u00fcber Pflanzenhybriden (1866)",
+                         font=("Segoe UI", 10), bg=bg, fg="#7a6a55").pack(pady=(8, 0))
+            except Exception:
+                pass
+            win.lift()
+            win.update()
+            self.win = win
+            if len(self._pils) > 1:
+                self._job = win.after(self.SHOW_MS, self._next_season)
+        except Exception:
+            logging.debug("Loading screen failed", exc_info=True)
+            self.win = None
+
+    def _next_season(self):
+        self._job = None
+        if self.win is None or self._pic is None:
+            return
+        a = self._pils[self._idx]
+        self._idx = (self._idx + 1) % len(self._pils)
+        b = self._pils[self._idx]
+        for fn in list(self._listeners):
+            try:
+                fn(self._seasons[self._idx])
+            except Exception:
+                pass
+        if b.size != a.size:
+            b = b.resize(a.size, Image.LANCZOS)
+        self._fade(a, b, 1)
+
+    def _fade(self, a, b, step):
+        self._job = None
+        if self.win is None:
+            return
+        try:
+            t = step / float(self.FADE_STEPS)
+            frame = b if step >= self.FADE_STEPS else Image.blend(a, b, t)
+            self._photo = ImageTk.PhotoImage(frame, master=self.win)
+            self._pic.configure(image=self._photo)
+        except Exception:
+            return
+        if step < self.FADE_STEPS:
+            self._job = self.win.after(self.FADE_MS, lambda: self._fade(a, b, step + 1))
+        else:
+            self._job = self.win.after(self.SHOW_MS, self._next_season)
+
+    def season(self):
+        """The season shown now (None without pictures)."""
+        try:
+            return self._seasons[self._idx] if self._seasons else None
+        except Exception:
+            return None
+
+    def add_listener(self, fn):
+        self._listeners.append(fn)
+
+    def remove_listener(self, fn):
+        try:
+            self._listeners.remove(fn)
+        except ValueError:
+            pass
+
+    def set_status(self, text):
+        try:
+            if self._status is not None and self.win is not None:
+                self._status.configure(text=text)
+                self.win.update_idletasks()
+        except Exception:
+            pass
+
+    def lift(self):
+        try:
+            if self.win is not None:
+                self.win.lift()
+        except Exception:
+            pass
+
+    def close(self):
+        try:
+            if self.win is not None and self._job is not None:
+                self.win.after_cancel(self._job)
+        except Exception:
+            pass
+        self._job = None
+        try:
+            if self.win is not None:
+                self.win.destroy()
+        except Exception:
+            pass
+        self.win = None
+
+
 def _print_loading_banner():
     """Prints "Loading Garden of Inheritance..." followed, after a blank
     line, by a randomly chosen sentence from Mendel's 1866 paper —
@@ -242,7 +400,8 @@ _mixer_ready = False
 # once those two helpers exist.
 _sfx_enabled = True
 _music_enabled = True
-_sfx_volume = 0.75
+DEFAULT_SFX_VOLUME = 1.0
+_sfx_volume = DEFAULT_SFX_VOLUME
 _music_volume = 0.75
 
 
@@ -262,6 +421,13 @@ def _init_sound_system():
     try:
         pygame.mixer.init()
         _mixer_ready = True
+        try:
+            # channel 0 is the rain's own (see _update_rain_sound)
+            if pygame.mixer.get_num_channels() < 12:
+                pygame.mixer.set_num_channels(12)
+            pygame.mixer.set_reserved(1)
+        except Exception:
+            pass
     except Exception:
         _mixer_ready = False
         return
@@ -269,7 +435,7 @@ def _init_sound_system():
         s = _load_audio_settings()
         _sfx_enabled = bool(s.get("sfx_enabled", True))
         _music_enabled = bool(s.get("music_enabled", True))
-        _sfx_volume = max(0.0, min(1.0, float(s.get("sfx_volume", 0.75))))
+        _sfx_volume = max(0.0, min(1.0, float(s.get("sfx_volume", DEFAULT_SFX_VOLUME))))
         _music_volume = max(0.0, min(1.0, float(s.get("music_volume", 0.75))))
     except Exception:
         pass
@@ -409,54 +575,107 @@ def _update_rain_sound(is_raining):
     Falls back gracefully to whichever variant(s) actually exist; does
     nothing if none are present yet.
     """
-    global _rain_channel, _rain_active, _rain_sound
+    global _rain_channel, _rain_active, _rain_sound, _rain_fade_t
     if not _mixer_ready:
         return
-    if not _music_enabled:
-        if _rain_channel is not None:
-            try:
-                _rain_channel.stop()
-            except Exception:
-                pass
-            _rain_channel = None
-        _rain_active = False
-        return
+    want = bool(is_raining) and _music_enabled
+    ch = _rain_ch()
     try:
-        if is_raining and not _rain_active:
+        if want:
+            busy = ch is not None and ch.get_busy() and _rain_fade_t is None
+            if _rain_active and busy:
+                return                              # rain is playing: nothing to do
+            # start (or start again — e.g. after a fade that was still
+            # running when rain came back)
             candidates = glob.glob(os.path.join(SOUNDS_DIR, "rain*.ogg"))
             if not candidates:
                 return
-            path = random.choice(candidates)
-            key = os.path.basename(path)
-            snd = _sound_cache.get(key)
-            if snd is None:
-                snd = pygame.mixer.Sound(path)
-                _sound_cache[key] = snd
-            if _rain_sound is not None:
-                try:
-                    _rain_sound.stop()          # never two rain loops at once
-                except Exception:
-                    pass
-            _rain_channel = _play_on_channel(snd, _music_volume * 0.5, 1500)
-            _rain_sound = snd
+            if _rain_sound is None or not _rain_active:
+                path = random.choice(candidates)
+                key = os.path.basename(path)
+                snd = _sound_cache.get(key)
+                if snd is None:
+                    snd = pygame.mixer.Sound(path)
+                    _sound_cache[key] = snd
+                _rain_sound = snd
+            _rain_sounds_used.add(_rain_sound)
+            if ch is not None:
+                ch.stop()
+                ch.set_volume(max(0.0, min(1.0, _music_volume * 0.5)))
+                ch.play(_rain_sound, loops=-1, fade_ms=1500)
+                _rain_channel = ch
+            else:
+                _rain_channel = _play_on_channel(_rain_sound, _music_volume * 0.5, 1500)
             _rain_active = True
-        elif not is_raining and (_rain_active or (_rain_sound is not None
-                                                  and _rain_sound.get_num_channels() > 0)):
-            # Fade the rain Sound wherever it plays: its channel may have
-            # been taken over meanwhile (another sound claimed it), and
-            # fading "the channel" then left the rain running elsewhere.
-            if _rain_sound is not None:
+            _rain_fade_t = None
+            return
+        # not raining (or music off): the rain has to stop — wherever it plays
+        _rain_active = False
+        if not _music_enabled:
+            _stop_all_rain()
+            return
+        playing = _rain_playing_channels()
+        if not playing:
+            _rain_fade_t = None
+            _rain_sound = None
+            return
+        now = time.time()
+        if _rain_fade_t is None:
+            _rain_fade_t = now
+            for c in playing:
                 try:
-                    _rain_sound.fadeout(1500)
+                    c.fadeout(1500)
                 except Exception:
                     pass
-                _rain_sound = None          # fading: don't restart the fade each tick
-            elif _rain_channel is not None:
-                _rain_channel.fadeout(1500)
-            _rain_channel = None
-            _rain_active = False
+        elif now - _rain_fade_t > 2.5:
+            # the fade should long be over: still playing → stop it
+            _stop_all_rain()
+    except Exception:
+        logging.debug("rain sound", exc_info=True)
+
+
+_rain_fade_t = None          # when the fade-out of the rain began (or None)
+_rain_sounds_used = set()    # every rain Sound played this session
+
+
+def _rain_ch():
+    """The mixer channel kept for the rain alone (reserved, so no other
+    sound — and no find_channel(True) — can take it over)."""
+    try:
+        return pygame.mixer.Channel(0)
+    except Exception:
+        return None
+
+
+def _rain_playing_channels():
+    """Every channel that is playing a rain sound right now."""
+    out = []
+    try:
+        for i in range(pygame.mixer.get_num_channels()):
+            c = pygame.mixer.Channel(i)
+            if c.get_busy() and c.get_sound() in _rain_sounds_used:
+                out.append(c)
     except Exception:
         pass
+    return out
+
+
+def _stop_all_rain():
+    global _rain_channel, _rain_sound, _rain_fade_t, _rain_active
+    for c in _rain_playing_channels():
+        try:
+            c.stop()
+        except Exception:
+            pass
+    for snd in list(_rain_sounds_used):
+        try:
+            snd.stop()
+        except Exception:
+            pass
+    _rain_channel = None
+    _rain_sound = None
+    _rain_fade_t = None
+    _rain_active = False
 
 
 # Background music: maintheme.ogg loops from the moment the sim starts,
@@ -1503,10 +1722,30 @@ def phenotype_from_genotype(geno):
     ph['pod_shape']     = 'constricted' if (is_homo('P','p') or is_homo('V','v')) else 'inflated'
     ph['flower_position']= 'axial'  if (not is_homo('Fa','fa') or is_homo('Mfa','mfa')) else 'terminal'
     return ph
+def _keep_tip_on_screen(tip, widget, x, y, above=False):
+    """Moves a just-built tooltip so it stays on the screen: above the
+    widget when there is no room below it (e.g. the »Unlock« button at
+    the bottom of a full-screen window), and left when it would run off
+    the right edge."""
+    try:
+        tip.update_idletasks()
+        w, h = tip.winfo_reqwidth(), tip.winfo_reqheight()
+        sw, sh = widget.winfo_screenwidth(), widget.winfo_screenheight()
+        # (above: also when the taskbar may cover the bottom of the screen)
+        if above or y + h > sh - 60:
+            y = widget.winfo_rooty() - h - 4
+        if x + w > sw - 4:
+            x = sw - w - 4
+        tip.wm_geometry(f"+{max(0, x)}+{max(0, y)}")
+    except Exception:
+        pass
+
+
 class _Tooltip:
-    def __init__(self, widget, text):
+    def __init__(self, widget, text, above=False):
         self.widget = widget
         self.text = text
+        self.above = above
         self.tip = None
         widget.bind("<Enter>", self._show, add="+")
         widget.bind("<Leave>", self._hide, add="+")
@@ -1538,6 +1777,7 @@ class _Tooltip:
         lbl = tk.Label(self.tip, text=resolved, justify="left",
                        relief="solid", borderwidth=1, font=("Segoe UI", 12), bg="#ffffe0")
         lbl.pack(ipadx=4, ipady=2)
+        _keep_tip_on_screen(self.tip, self.widget, x, y, self.above)
 
     def _hide(self, event=None):
         try:
@@ -1578,6 +1818,7 @@ class _DelayedTip:
                 pass
             tk.Label(self.tip, text=self.text, font=("Segoe UI", 11), bg="#fff8dc",
                      relief="solid", borderwidth=1).pack(ipadx=5, ipady=2)
+            _keep_tip_on_screen(self.tip, self.widget, x, y)
         except Exception:
             self.tip = None
 
@@ -1596,9 +1837,9 @@ class _DelayedTip:
         self.tip = None
 
 
-def _attach_tooltip(widget, text):
+def _attach_tooltip(widget, text, above=False):
     try:
-        _Tooltip(widget, text)
+        _Tooltip(widget, text, above=above)
     except Exception:
         pass
 ROWS = 7
@@ -1636,6 +1877,8 @@ DAYNIGHT_FAST_STEP = 50
 # Also what the tutorial sets itself to on start (see tutorial.py's
 # _TUTORIAL_DAY_LENGTH_S) so a novice plant actually takes hours to grow
 # rather than racing by.
+# Share of dwarf plants among the starting seeds (see _starter_traits_for_next_seed)
+STARTER_DWARF_SHARE = 0.15
 SPEED_REAL_TIME_SECS = 3600.0
 
 # The speed-up / slow-down steps (_step_game_speed): the presets
@@ -1659,6 +1902,147 @@ HEALTH_BAR_H = max(3, TILE_SIZE // 14)   # ~6 @85-90, ~4 @64, ~9 @128
 WATER_BAR_H = TILE_SIZE
 WATER_BAR_MAX = int(TILE_SIZE * 0.80)
 BORDER_THICKNESS = max(2, TILE_SIZE // 21)
+
+# ---- Fitting the main window to the screen (see _fit_ui_to_screen) ----
+# UI_SCALE shrinks the main window's text, paddings, Mendel's picture and
+# the map button on small screens (1.0 = full size); TILE_SIZE (above) is
+# chosen to match. Both are set once at start-up, before the UI is built.
+UI_SCALE = 1.0
+TILE_SIZE_MIN = 48
+TILE_SIZE_MAX = 100
+
+
+FONTS_TK_SCALED = False   # True: every font is shrunk by Tk itself (tk scaling)
+
+
+def _uf(n):
+    """A padding / picture size scaled by UI_SCALE."""
+    return max(1, int(round(n * UI_SCALE)))
+
+
+def _ufont(n):
+    """A font size for the main window. With FONTS_TK_SCALED, Tk already
+    shrinks every font (in all windows: Inspect, TIE, missions, ...), so
+    the size stays as written."""
+    return n if FONTS_TK_SCALED else _uf(n)
+
+
+PORTRAIT_SCALE = 1.0   # Mendel's picture in the left column
+
+
+class _PortraitLabel(tk.Label):
+    """The left-column picture (Mendel, the garden, the tutorial's
+    portraits). Every picture given to it is shown at PORTRAIT_SCALE, so
+    the many places that set it (mendel_portrait.py, tutorial.py) need
+    not know about the screen fit."""
+
+    _cache = {}            # str(photo) -> scaled PhotoImage
+    _CACHE_MAX = 96
+
+    def _scaled(self, img):
+        if not img or PORTRAIT_SCALE >= 0.999:
+            return img
+        key = (str(img), round(PORTRAIT_SCALE, 3))
+        hit = _PortraitLabel._cache.get(key)
+        if hit is not None:
+            return hit
+        try:
+            from PIL import ImageTk as _ITk, Image as _Im
+            pil = _ITk.getimage(img)
+            w = max(1, int(round(pil.width * PORTRAIT_SCALE)))
+            h = max(1, int(round(pil.height * PORTRAIT_SCALE)))
+            out = _ITk.PhotoImage(pil.resize((w, h), _Im.LANCZOS), master=self)
+        except Exception:
+            return img
+        if len(_PortraitLabel._cache) >= _PortraitLabel._CACHE_MAX:
+            _PortraitLabel._cache.pop(next(iter(_PortraitLabel._cache)))
+        _PortraitLabel._cache[key] = out
+        return out
+
+    def configure(self, cnf=None, **kw):
+        if isinstance(cnf, dict) and "image" in cnf:
+            cnf = dict(cnf, image=self._scaled(cnf["image"]))
+        if "image" in kw:
+            kw["image"] = self._scaled(kw["image"])
+        return super().configure(cnf, **kw)
+
+    config = configure
+
+    def __setitem__(self, key, value):
+        if key == "image":
+            value = self._scaled(value)
+        super().__setitem__(key, value)
+
+
+# Windows opened with a fixed size (the Observatory 950x700, the seed
+# picker 760x640, ...) are kept inside small screens: any width x height
+# given to a popup window, or as its minimum size, is capped at the screen.
+_orig_wm_geometry = tk.Wm.wm_geometry
+_orig_wm_minsize = tk.Wm.wm_minsize
+
+
+def _screen_capped_geometry(self, newGeometry=None):
+    if newGeometry and not isinstance(self, tk.Tk):
+        try:
+            m = re.match(r"^(\d+)x(\d+)(.*)$", str(newGeometry))
+            if m:
+                w, h, rest = int(m.group(1)), int(m.group(2)), m.group(3)
+                sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+                w2, h2 = min(w, sw - 20), min(h, sh - 100)
+                if (w2, h2) != (w, h):
+                    newGeometry = f"{max(200, w2)}x{max(150, h2)}{rest}"
+        except Exception:
+            pass
+    return _orig_wm_geometry(self, newGeometry)
+
+
+def _screen_capped_minsize(self, width=None, height=None):
+    if width is not None and height is not None and not isinstance(self, tk.Tk):
+        try:
+            width = min(int(width), self.winfo_screenwidth() - 20)
+            height = min(int(height), self.winfo_screenheight() - 100)
+        except Exception:
+            pass
+    return _orig_wm_minsize(self, width, height)
+
+
+tk.Wm.wm_geometry = tk.Wm.geometry = _screen_capped_geometry
+tk.Wm.wm_minsize = tk.Wm.minsize = _screen_capped_minsize
+
+
+def _plant_px():
+    """Size of a plant's picture on its plot: the drawings are made for
+    64 px on the classic 85 px plot and keep that proportion on the
+    smaller or larger plots of a fitted window."""
+    if TILE_SIZE == 85:
+        return 64
+    return max(32, int(round(64 * TILE_SIZE / 85.0)))
+
+
+def _plant_pic_fit(pil):
+    """A 64 px plant picture (the classic pictures) brought to _plant_px()."""
+    px = _plant_px()
+    try:
+        if pil is not None and px < pil.width and pil.width == pil.height:
+            return pil.resize((px, px), Image.LANCZOS)
+    except Exception:
+        pass
+    return pil
+
+
+def _apply_tile_size(ts):
+    """Sets TILE_SIZE and everything derived from it."""
+    global TILE_SIZE, INNER_ICON, BAR_THICK, WATER_BAR_W, HEALTH_BAR_H
+    global WATER_BAR_H, WATER_BAR_MAX, BORDER_THICKNESS
+    TILE_SIZE = int(ts)
+    INNER_ICON = int(TILE_SIZE * 0.8125)
+    BAR_THICK = max(4, TILE_SIZE // 8)
+    WATER_BAR_W = BAR_THICK
+    HEALTH_BAR_H = max(3, TILE_SIZE // 14)
+    WATER_BAR_H = TILE_SIZE
+    WATER_BAR_MAX = int(TILE_SIZE * 0.80)
+    BORDER_THICKNESS = max(2, TILE_SIZE // 21)
+
 
 ROOT_DIR = _SIM_DIR
 EXPORT_DIR = os.path.join(ROOT_DIR, "export")
@@ -2212,22 +2596,133 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass
         self._bruchus_caught = int(getattr(self, "_bruchus_caught", 0) or 0) + 1   # (the tutorial asks)
+        # the jar's notebook: when and where each one was caught
+        try:
+            log_ = getattr(self, "_bruchus_log", None)
+            if not isinstance(log_, list):
+                log_ = self._bruchus_log = []
+            log_.append({"when": self._sim_when(),
+                         "plant": getattr(getattr(tile, "plant", None), "id", None),
+                         "mission": bool(getattr(self, "_active_mission", None))})
+        except Exception:
+            pass
+        # outside missions the catches of this garden count for the
+        # Weevil Hunter achievements (5, 10, 20)
+        if not getattr(self, "_active_mission", None) and not getattr(self, "_tutorial_active",
+                                                                         False):
+            self._bruchus_free = int(getattr(self, "_bruchus_free", 0) or 0) + 1
         try:
             self.root.after(10, lambda: self._after_bruchus_catch(beetle_img))
         except Exception:
             pass
         return True
 
-    def _show_bruchus_popup(self, beetle_img=None):
+    WEEVIL_HUNTS = ((20, "weevil_20"), (10, "weevil_10"), (5, "weevil_5"))
+
+    def _open_weevil_jar(self, parent=None):
+        """The jar of the weevils caught in this garden, crawling about, and
+        the notes: when and on which plant each one was caught."""
         BG = self.INSPECTOR_BG
         INK = "#3b2a1a"
+        MUT = "#6b5a44"
+        old = getattr(self, "_jar_win", None)
+        try:
+            if old is not None and old.winfo_exists():
+                old.lift()
+                return old
+        except Exception:
+            pass
+        n = int(getattr(self, "_bruchus_caught", 0) or 0)
+        log_ = list(getattr(self, "_bruchus_log", None) or [])
+        win = tk.Toplevel(parent or self.root)
+        self._jar_win = win
+        win.withdraw()
+        win.title("Your weevil jar")
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        self._force_window_not_maximized(win)
+        outer = tk.Frame(win, bg=BG, padx=24, pady=18)
+        outer.pack(fill="both", expand=True)
+        tk.Label(outer, text="Your weevil jar", font=("Segoe UI", 18, "bold"), bg=BG,
+                 fg=INK).pack(anchor="w")
+        tk.Label(outer, text=("Empty so far: click a pea weevil on a plant to catch it."
+                              if n == 0 else
+                              f"{n} pea weevil{'s' if n != 1 else ''} caught in this garden"),
+                 font=("Segoe UI", 13, "italic"), bg=BG, fg=MUT).pack(anchor="w", pady=(0, 10))
+        body = tk.Frame(outer, bg=BG)
+        body.pack(fill="both", expand=True)
+        try:
+            import beetle_jar as _bj
+            _bj.BeetleJar(body, n, os.path.join(ICONS_DIR, "wildlife", "bruchus_pisi_frame1.png"),
+                          bg=BG, width=190, height=245).pack(side="left", anchor="n")
+        except Exception:
+            logging.debug("beetle jar failed", exc_info=True)
+        notes = tk.Frame(body, bg=BG)
+        notes.pack(side="left", fill="both", expand=True, padx=(18, 0), anchor="n")
+        tk.Label(notes, text="Notes", font=("Segoe UI", 14, "bold"), bg=BG,
+                 fg=INK).pack(anchor="w")
+        box = tk.Text(notes, width=34, height=11, font=("Segoe UI", 12), bg="#FBF7EE", fg=INK,
+                      relief="flat", highlightthickness=1, highlightbackground="#d9cdb4",
+                      wrap="word", padx=8, pady=6)
+        sb = tk.Scrollbar(notes, command=box.yview)
+        box.configure(yscrollcommand=sb.set)
+        box.pack(side="left", fill="both", expand=True, pady=(4, 0))
+        sb.pack(side="left", fill="y", pady=(4, 0))
+        if n == 0 and not log_:
+            box.insert("end", "No catches noted yet.")
+        elif n > len(log_):
+            k_ = n - len(log_)
+            box.insert("end", f"({k_} caught before the jar kept notes)\n")
+        for i, e in enumerate(log_, 1):
+            when = e.get("when") or "?"
+            pl = e.get("plant")
+            line = f"{i}.  {when}" + (f"  \u2014  on plant #{pl}" if pl is not None else "")
+            if e.get("mission"):
+                line += "  (mission)"
+            box.insert("end", line + "\n")
+        box.configure(state="disabled")
+        box.see("end")
+        free = int(getattr(self, "_bruchus_free", 0) or 0)
+        # (catches from before the count existed, in a garden without a
+        # mission: they count too)
+        noted = len(log_)
+        if (not getattr(self, "_active_mission", None) and free < n - noted
+                and not any(e.get("mission") for e in log_)):
+            free = self._bruchus_free = n - noted + sum(1 for e in log_ if not e.get("mission"))
+        got = self._load_achievements() or {}
+        goals = "   ".join(("\u2605" if key in got else "\u2606") + f" {need}"
+                           for need, key in sorted(self.WEEVIL_HUNTS))
+        tk.Label(outer, text=f"Weevil Hunter (one garden, not in missions): {free} caught   {goals}",
+                 font=("Segoe UI", 12), bg=BG, fg=MUT).pack(anchor="w", pady=(12, 0))
+        bar = tk.Frame(outer, bg=BG)
+        bar.pack(fill="x", pady=(12, 0))
+        _make_flat_button_raw(bar, "Close", win.destroy, bg="#e8e0cf", fg=INK,
+                              font=("Segoe UI", 13, "bold")).pack(side="right")
+        win.bind("<Escape>", lambda e: win.destroy())
+        self._center_on_screen(win)
+        win.deiconify()
+        try:
+            # above the inspection window (which is itself kept on top)
+            win.attributes("-topmost", True)
+            win.lift()
+            win.focus_force()
+        except Exception:
+            pass
+        return win
+
+    def _show_bruchus_popup(self, beetle_img=None):
+        """»Good catch!«: three short pages (Next), the last one with the jar
+        of weevils caught in this garden. Close is on every page."""
+        BG = self.INSPECTOR_BG
+        INK = "#3b2a1a"
+        MUT = "#6b5a44"
         win = tk.Toplevel(self.root)
         win.withdraw()
         win.title("Good catch!")
         win.configure(bg=BG)
         win.resizable(False, False)
         self._force_window_not_maximized(win)
-        outer = tk.Frame(win, bg=BG, padx=22, pady=18)
+        outer = tk.Frame(win, bg=BG, padx=24, pady=18)
         outer.pack(fill="both", expand=True)
         head = tk.Frame(outer, bg=BG)
         head.pack(fill="x")
@@ -2237,34 +2732,99 @@ class GardenApp(InspectorMixin):
             lbl.pack(side="left", padx=(0, 14))
         titles = tk.Frame(head, bg=BG)
         titles.pack(side="left", anchor="w")
-        tk.Label(titles, text="Good catch!", font=("Segoe UI", 16, "bold"),
+        tk.Label(titles, text="Good catch!", font=("Segoe UI", 18, "bold"),
                  bg=BG, fg=INK).pack(anchor="w")
-        tk.Label(titles, text="The pea weevil — Bruchus pisi",
-                 font=("Segoe UI", 11, "italic"), bg=BG, fg="#6b5a44").pack(anchor="w")
-        text = (
-            "Pea flowers are normally very well sealed: the pollen ripens inside "
-            "the closed keel, so each flower fertilises itself before it even "
-            "opens. That is exactly what made peas so reliable for Mendel's "
-            "experiments.\n\n"
-            "This little beetle was the one visitor he worried about. The female "
-            "lays her eggs in the closed buds and flowers and opens the keel to do "
-            "so. Mendel even saw pollen grains on the legs of a beetle he caught "
-            "in a flower. In larger numbers, such beetles could carry foreign "
-            "pollen from plant to plant — and quietly spoil a carefully planned cross.\n\n"
-            "That is one reason Mendel also grew some of his peas in pots in the "
-            "monastery's glass house: shut away from beetles and other visitors, "
-            "they served as a check that no outside pollen had crept into his results."
-        )
-        tk.Label(outer, text=text, font=("Segoe UI", 12), bg=BG, fg=INK,
-                 wraplength=460, justify="left").pack(anchor="w", pady=(14, 0))
+        tk.Label(titles, text="The pea weevil \u2014 Bruchus pisi",
+                 font=("Segoe UI", 13, "italic"), bg=BG, fg=MUT).pack(anchor="w")
+        n_caught = max(1, int(getattr(self, "_bruchus_caught", 0) or 0))
+        pages_text = [
+            ("Well sealed",
+             "Pea flowers are normally very well sealed: the pollen ripens inside the closed "
+             "keel, so each flower fertilises itself before it even opens. That is exactly "
+             "what made peas so reliable for Mendel's experiments."),
+            ("The one visitor he worried about",
+             "The female lays her eggs in the closed buds and flowers and opens the keel to "
+             "do so. Mendel even saw pollen grains on the legs of a beetle he caught in a "
+             "flower. In larger numbers, such beetles could carry foreign pollen from plant "
+             "to plant \u2014 and quietly spoil a carefully planned cross."),
+            ("Shut away",
+             "That is one reason Mendel also grew some of his peas in pots in the monastery's "
+             "glass house: shut away from beetles and other visitors, they served as a check "
+             "that no outside pollen had crept into his results. This one goes into your jar."),
+        ]
+        stack = tk.Frame(outer, bg=BG)
+        stack.pack(fill="both", expand=True, pady=(14, 0))
+        stack.grid_columnconfigure(0, weight=1)
+        pages = []
+        for i, (sub, txt) in enumerate(pages_text):
+            pg = tk.Frame(stack, bg=BG)
+            pg.grid(row=0, column=0, sticky="nsew")
+            body = tk.Frame(pg, bg=BG)
+            body.pack(fill="both", expand=True)
+            col = tk.Frame(body, bg=BG)
+            col.pack(side="left", fill="both", expand=True, anchor="n")
+            tk.Label(col, text=sub, font=("Segoe UI", 14, "bold"), bg=BG,
+                     fg=INK).pack(anchor="w")
+            tk.Label(col, text=txt, font=("Segoe UI", 13), bg=BG, fg=INK,
+                     wraplength=(330 if i == 2 else 470), justify="left").pack(
+                         anchor="w", pady=(6, 0))
+            if i == 2:
+                jcol = tk.Frame(body, bg=BG)
+                jcol.pack(side="right", anchor="n", padx=(16, 0))
+                try:
+                    import beetle_jar as _bj
+                    _bj.BeetleJar(jcol, n_caught,
+                                  os.path.join(ICONS_DIR, "wildlife", "bruchus_pisi_frame1.png"),
+                                  bg=BG, width=150, height=195).pack()
+                except Exception:
+                    logging.debug("beetle jar failed", exc_info=True)
+                tk.Label(jcol, text=(f"{n_caught} pea weevil{'s' if n_caught != 1 else ''} "
+                                     "caught"), font=("Segoe UI", 11, "italic"), bg=BG,
+                         fg=MUT).pack()
+            pages.append(pg)
         bar = tk.Frame(outer, bg=BG)
         bar.pack(fill="x", pady=(14, 0))
-        _make_flat_button_raw(bar, "Close", win.destroy, bg="#7A9A3C", fg="white",
-                              font=("Segoe UI", 11, "bold")).pack(side="right")
+        dots = tk.Label(bar, text="", font=("Segoe UI", 12), bg=BG, fg=MUT)
+        dots.pack(side="left")
+        state = {"i": 0}
+        BTN_FONT = ("Segoe UI", 13, "bold")
+        close_btn = _make_flat_button_raw(bar, "Close", win.destroy, bg="#e8e0cf", fg=INK,
+                                          font=BTN_FONT)
+        close_btn.pack(side="right")
+        next_btn = _make_flat_button_raw(bar, "Next \u25b6", lambda: _go(1), bg="#7A9A3C",
+                                         fg="white", font=BTN_FONT)
+        next_btn.pack(side="right", padx=(0, 8))
+        back_btn = _make_flat_button_raw(bar, "\u25c0 Back", lambda: _go(-1), bg="#e8e0cf",
+                                         fg=INK, font=BTN_FONT)
+
+        def _show(i):
+            state["i"] = i
+            pages[i].tkraise()
+            dots.configure(text="  ".join("\u25cf" if k == i else "\u25cb"
+                                          for k in range(len(pages))))
+            # (left to right: Back, Next, Close — Close always at the right)
+            try:
+                for b_ in (close_btn, next_btn, back_btn):
+                    b_.pack_forget()
+                close_btn.pack(side="right")
+                if i < len(pages) - 1:
+                    next_btn.pack(side="right", padx=(0, 8))
+                if i > 0:
+                    back_btn.pack(side="right", padx=(0, 8))
+            except Exception:
+                pass
+
+        def _go(d):
+            _show(max(0, min(len(pages) - 1, state["i"] + d)))
+
+        _show(0)
         win.bind("<Escape>", lambda e: win.destroy())
+        win.bind("<Right>", lambda e: _go(1))
+        win.bind("<Left>", lambda e: _go(-1))
         self._center_on_screen(win)
         win.deiconify()
         try:
+            win.attributes("-topmost", True)    # above the inspection window
             win.lift()
             win.focus_force()
         except Exception:
@@ -2288,6 +2848,12 @@ class GardenApp(InspectorMixin):
          "Read the beehive's story to the very last page."),
         ("read_station", "Weather Watcher",
          "Read the measuring station's story to the very last page."),
+        ("weevil_5", "Weevil Hunter",
+         "Caught 5 pea weevils in one garden (missions not counted)."),
+        ("weevil_10", "Weevil Warden",
+         "Caught 10 pea weevils in one garden (missions not counted)."),
+        ("weevil_20", "Scourge of the Weevils",
+         "Caught 20 pea weevils in one garden (missions not counted)."),
         ("pea_weevil", "Weevil Catcher",
          "Caught a pea weevil (Bruchus pisi) before it could meddle with a cross."),
         ("species_3", "Field Naturalist",
@@ -2312,13 +2878,28 @@ class GardenApp(InspectorMixin):
          "Pollinated a flower with pollen from the very same plant: a self-pollination by hand."),
         ("pooled_three", "Three to One, Exactly",
          "A pooled ratio of exactly 3,00 : 1 in the TIE, over more than 300 plants."),
+        ("mission_season", "A Season in the Garden",
+         "Mission (easy): raised five pea plants from the seed to ripe pods."),
         ("mission_pure_line", "True Breeders",
          "Mission (easy): found two true breeders for one trait, one for each form."),
+        ("mission_wrinkled", "The Hidden Form Breeds True",
+         "Mission (medium): a wrinkled or green pea bred true, a round or yellow one was put "
+         "to the test, and the peas were counted in the TIE."),
+        ("mission_mixed_pod", "A Mixed Pod",
+         "Mission (medium): found a pod holding two kinds of pea and sowed both kinds again."),
+        ("mission_just_in_time", "Just in Time",
+         "Mission (easy): emasculated three flowers while they were still buds."),
+        ("mission_weevils", "Weevil Patrol",
+         "Mission (easy): caught five pea weevils in a garden in full bloom."),
+        ("mission_contrast", "Contrasting Characters",
+         "Mission (easy): crossed the two forms of one trait."),
+        ("mission_self_generations", "Four Generations",
+         "Mission (easy): a line of peas pollinated itself for four generations."),
         ("mission_seven", "The Magnificent Seven",
-         "Mission (easy): found both forms of all seven of Mendel's characters in your own harvest."),
+         "Mission (medium): found both forms of all seven of Mendel's characters in your own harvest."),
         ("mission_islands", "White Islands",
-         "Mission (easy): three white-flowering plants, each completely surrounded by purple "
-         "ones, all in flower at once."),
+         "Mission (medium): three white-flowering plants, each completely surrounded by purple "
+         "ones, all in bud or in flower at once."),
         ("mission_reciprocal", "Equal Partners",
          "Mission (medium): showed with reciprocal crosses that mother and father contribute "
          "equally to their offspring."),
@@ -2327,8 +2908,10 @@ class GardenApp(InspectorMixin):
          "and the Law of Segregation was unlocked with it."),
         ("mission_test_cross", "The Test Cross",
          "Mission (medium): a hybrid crossed with a recessive plant gave about 1 : 1."),
+        ("mission_dominant_seven", "The Dominant Seven",
+         "Mission (medium): bred one plant showing all seven dominant forms."),
         ("mission_hidden_seven", "The Hidden Seven",
-         "Mission (medium): bred one plant showing all seven recessive forms."),
+         "Mission (hard): bred one plant showing all seven recessive forms."),
         ("mission_roulette", "Plant Roulette",
          "Mission (medium): predicted three traits of a plant's offspring from its family tree."),
         ("mission_close_ratio", "Mendel's Numbers",
@@ -2357,14 +2940,19 @@ class GardenApp(InspectorMixin):
         ("Laws of Inheritance", ("law_dominance", "law_segregation", "law_independent",
                                  "law_complementary", "law_epistasis", "pooled_three")),
         ("Breeding", ("first_cross", "self_by_hand")),
-        ("Missions", ("mission_pure_line", "mission_seven", "mission_islands",
+        ("Missions", ("mission_season", "mission_pure_line",
+                      "mission_just_in_time", "mission_weevils",
+                      "mission_contrast", "mission_self_generations",
+                      "mission_wrinkled", "mission_mixed_pod",
+                      "mission_seven", "mission_islands",
                       "mission_reciprocal", "mission_three_to_one", "mission_test_cross",
-                      "mission_hidden_seven", "mission_roulette",
-                      "mission_close_ratio", "mission_true_to_type", "mission_six_generations",
+                      "mission_dominant_seven", "mission_roulette",
+                      "mission_hidden_seven", "mission_close_ratio", "mission_true_to_type", "mission_six_generations",
                       "mission_dihybrid")),
         ("Weather Observer", ("temp_day", "temp_week", "temp_month", "temp_year",
                               "storm_watcher")),
-        ("Garden Visitors", ("pea_weevil", "species_3", "species_all", "all_on_one")),
+        ("Garden Visitors", ("pea_weevil", "weevil_5", "weevil_10", "weevil_20",
+                             "species_3", "species_all", "all_on_one")),
         ("Abbey Grounds", ("read_beehive", "read_station")),
     )
 
@@ -2650,6 +3238,36 @@ class GardenApp(InspectorMixin):
             self._show_cyril_congrats(title, text)
 
     def _after_bruchus_catch(self, beetle_img):
+        # Weevil Patrol counts every catch; there the note about the weevil
+        # pops up only for the very first catch (the message bar counts)
+        patrol = False
+        try:
+            import missions as _ms
+            patrol = _ms.weevil_patrol(self)
+            _ms.note_weevil_caught(self)
+        except Exception:
+            pass
+        # Weevil Hunter: 5, 10 and 20 caught in one garden (not in a mission)
+        free = int(getattr(self, "_bruchus_free", 0) or 0)
+        for need, key in self.WEEVIL_HUNTS:
+            if free >= need and self._award_achievement(key):
+                title = next((t for k_, t, _d in self.ACHIEVEMENTS if k_ == key), key)
+                self.root.after(400, lambda t=title, n=need: self._show_cyril_congrats(
+                    t, f"{n} pea weevils in your jar, Gregor, all from this one garden! Not "
+                       "one of them will spoil a cross now."))
+                break
+        # The long note about the weevil: the first catch in a garden (and
+        # the very first ever); after that a short line, the jar counts
+        n_here = int(getattr(self, "_bruchus_caught", 0) or 0)
+        if (patrol or n_here > 1) and "pea_weevil" in (self._load_achievements() or {}):
+            try:
+                _play_sound("click.ogg")
+            except Exception:
+                pass
+            if not patrol:
+                self._toast(f"Into the jar: {n_here} pea weevils caught in this garden.",
+                            level="info")
+            return
         win = self._show_bruchus_popup(beetle_img)
         if self._award_achievement("pea_weevil") and win is not None:
             # First catch ever: Abbot Cyril comes by once "Good catch!" closes.
@@ -2663,7 +3281,8 @@ class GardenApp(InspectorMixin):
             win.bind("<Destroy>", _on_close, add="+")
 
     def _show_cyril_congrats(self, title, text, header="\u2605  Achievement unlocked",
-                             extra=None, button_text="Thank you, Father"):
+                             extra=None, button_text="Thank you, Father", actions=None,
+                             pictures=None):
         """Abbot Cyril, smiling, congratulates (achievement, named species)."""
         BG = self.INSPECTOR_BG
         INK = "#3b2a1a"
@@ -2700,6 +3319,23 @@ class GardenApp(InspectorMixin):
                  fg="#6b5a44").pack(anchor="w", pady=(10, 0))
         tk.Label(col, text=f"\u201c{text}\u201d", font=("Segoe UI", 12), bg=BG, fg=INK,
                  wraplength=340, justify="left").pack(anchor="w")
+        # pictures with a caption each (e.g. the two forms of a trait, which
+        # is dominant and which recessive)
+        if pictures:
+            prow = tk.Frame(col, bg=BG)
+            prow.pack(anchor="w", pady=(10, 0))
+            for pil_, cap_ in pictures:
+                cell = tk.Frame(prow, bg=BG)
+                cell.pack(side="left", padx=(0, 22))
+                try:
+                    ph_ = ImageTk.PhotoImage(pil_)
+                    il_ = tk.Label(cell, image=ph_, bg=BG)
+                    il_.image = ph_
+                    il_.pack()
+                except Exception:
+                    pass
+                tk.Label(cell, text=cap_, font=("Segoe UI", 11, "bold"), bg=BG, fg=INK,
+                         justify="center").pack()
         for line in (extra or []):
             tk.Label(col, text=line, font=("Segoe UI", 11, "bold"), bg=BG,
                      fg="#B8860B").pack(anchor="w", pady=(10, 0))
@@ -2709,8 +3345,24 @@ class GardenApp(InspectorMixin):
             pass
         bar = tk.Frame(outer, bg=BG)
         bar.pack(fill="x", pady=(14, 0))
-        _make_flat_button_raw(bar, button_text, win.destroy, bg="#7A9A3C", fg="white",
-                              font=("Segoe UI", 11, "bold")).pack(side="right")
+        _make_flat_button_raw(bar, button_text, win.destroy,
+                              bg=("#e8e0cf" if actions else "#7A9A3C"),
+                              fg=(INK if actions else "white"),
+                              font=("Segoe UI", 13, "bold")).pack(side="right")
+        # further buttons (e.g. »Start the mission again«): the window
+        # closes, then the action runs
+        for lbl_, fn_ in reversed(list(actions or [])):
+            def _do(fn_=fn_):
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+                try:
+                    self.root.after(50, fn_)
+                except Exception:
+                    pass
+            _make_flat_button_raw(bar, lbl_, _do, bg="#7A9A3C", fg="white",
+                                  font=("Segoe UI", 13, "bold")).pack(side="right", padx=(0, 8))
         win.bind("<Escape>", lambda e: win.destroy())
         self._center_on_screen(win)
         win.deiconify()
@@ -2812,9 +3464,10 @@ class GardenApp(InspectorMixin):
             pass
 
     def _refresh_mission_indicator(self):
-        """The active mission, shown at the top of the side bar, centred
-        above Mendel's portrait: "Mission" (hovered: the mission's name);
-        clicking it opens that mission's card. Nothing without a mission."""
+        """The active mission: a "Mission" badge centred at the top of the
+        portrait (Mendel's, or Cyril's); hovered, it shows the mission's
+        progress below it, clicked, the mission's card. Nothing without a
+        mission."""
         old = getattr(self, "_mission_badge", None)
         if old is not None:
             try:
@@ -2832,12 +3485,15 @@ class GardenApp(InspectorMixin):
             m = None
         if m is None:
             return
-        name = m.get("short") or m["title"]
         BG_, ON_ = "#FBF3D9", "#4f7d3a"
         badge = tk.Label(panel, text="\u2691 Mission", font=("Segoe UI", 12, "bold"),
                          bg=BG_, fg=ON_, padx=12, pady=3, cursor="hand2",
                          highlightbackground=ON_, highlightthickness=2)
-        badge.place(relx=0.5, y=2, anchor="n")
+        try:
+            # on the portrait itself, centred at its top
+            badge.place(in_=self.mendel_label, relx=0.5, y=8, anchor="n")
+        except Exception:
+            badge.place(relx=0.5, y=2, anchor="n")
         badge.lift()
         self._mission_badge = badge
 
@@ -2907,7 +3563,8 @@ class GardenApp(InspectorMixin):
             tip["win"] = w
 
         def _enter(e):
-            badge.configure(text=name, highlightbackground="#D9A520")
+            # (the name stays "Mission": the progress below names it)
+            badge.configure(highlightbackground="#D9A520")
             _hide_tip()
             tip["job"] = badge.after(300, _show_tip)
 
@@ -5542,7 +6199,7 @@ class GardenApp(InspectorMixin):
             # Already drawn here before (same look)? Then it comes from the cache.
             try:
                 pil = _pr.final_image(tr, _pr.variant_seed(getattr(plant, "id", 0)), args,
-                                      _pr.TILE, getattr(plant, "health", 100), draw=False)
+                                      _plant_px(), getattr(plant, "health", 100), draw=False)
             except Exception:
                 pil = None
             if pil is not None:
@@ -5559,7 +6216,7 @@ class GardenApp(InspectorMixin):
                 if plant.__dict__.get("_want_key") == key:
                     return True                   # already on its way
                 plant._want_key = key
-                if pool.submit(plant, key, args, _pr.TILE, tr):
+                if pool.submit(plant, key, args, _plant_px(), tr):
                     return True
                 plant._want_key = None            # couldn't hand it over: draw here
             if same_stage and old[3] == pods_vis:
@@ -5574,7 +6231,7 @@ class GardenApp(InspectorMixin):
                                      painterly=painted, staked=staked,
                                      sickness=sick, flowers_max=fl_vis, flipped=is_flipped,
                                      tint=(is_weak, is_late, needs_tint))
-            pil = self._grown_pil_render(plant, plant._grown_args, _pr.TILE)
+            pil = self._grown_pil_render(plant, plant._grown_args, _plant_px())
             self._fps_redraws = getattr(self, "_fps_redraws", 0) + 1     # for the F3 meter
             plant.img_obj = ImageTk.PhotoImage(pil)
             plant._grown_pil = pil              # wildlife looks for flowers/pods in it
@@ -5606,7 +6263,7 @@ class GardenApp(InspectorMixin):
                     a2 = dict(gargs) if gargs else None
                     if a2:
                         a2["staked"] = False
-                        base = self._grown_pil_render(plant, a2, _pr.TILE)
+                        base = self._grown_pil_render(plant, a2, _plant_px())
                 except Exception:
                     pass
             else:
@@ -5620,7 +6277,7 @@ class GardenApp(InspectorMixin):
                     marks=None, late=None, painterly=False, sickness=1.0, flowers_max=None,
                     flipped=bool(getattr(plant, "flipped_horizontally", False)),
                     tint=(False, False, False))
-                base = self._grown_pil_render(plant, args, _pr.TILE)
+                base = self._grown_pil_render(plant, args, _plant_px())
             im = base.convert("RGBA")
             bb = im.getbbox()
             if not bb:
@@ -5749,7 +6406,7 @@ class GardenApp(InspectorMixin):
                 photo = cache.get(new)
                 if photo is None:
                     a2 = dict(args, tframe=new)
-                    pil = _pr.final_image(tr, seed, a2, _pr.TILE, getattr(p, "health", 100), draw=False)
+                    pil = _pr.final_image(tr, seed, a2, _plant_px(), getattr(p, "health", 100), draw=False)
                     # not drawn yet: the helper processes draw it (shown on a
                     # later tick) — only without helpers is it drawn here
                     if pil is None:
@@ -5757,13 +6414,13 @@ class GardenApp(InspectorMixin):
                         if pool is not None and pool.ok:
                             pend = p.__dict__.setdefault("_tframe_pending", set())
                             if (key, new) not in pend and pool.submit(
-                                    p, key, a2, _pr.TILE, tr, extra=("tframe", new)):
+                                    p, key, a2, _plant_px(), tr, extra=("tframe", new)):
                                 pend.add((key, new))
                             continue
                     if pil is None and direct_left > 0:
                         direct_left -= 1
                         try:
-                            pil = _pr.final_image(tr, seed, a2, _pr.TILE, getattr(p, "health", 100))
+                            pil = _pr.final_image(tr, seed, a2, _plant_px(), getattr(p, "health", 100))
                         except Exception:
                             pil = None
                     if pil is None:
@@ -5970,14 +6627,24 @@ class GardenApp(InspectorMixin):
                     r = r.point(lambda v: min(255, int(v * r_m)))
                     g = g.point(lambda v: min(255, int(v * g_m)))
                     b = b.point(lambda v: max(0, int(v * b_m)))
-                    img = ImageTk.PhotoImage(Image.merge("RGBA", (r, g, b, a)))
+                    img = ImageTk.PhotoImage(_plant_pic_fit(Image.merge("RGBA", (r, g, b, a))))
                     plant.img_obj = img
                     plant._icon_key = key
                     return
                 except Exception:
                     pass  # fall through to normal loading
 
-            img = safe_image_maybe_flipped(icon_path, is_flipped)
+            if _plant_px() < 64:
+                # a smaller plot (fitted window): the picture shrinks with it
+                try:
+                    pil = Image.open(icon_path).convert("RGBA")
+                    if is_flipped:
+                        pil = pil.transpose(Image.FLIP_LEFT_RIGHT)
+                    img = ImageTk.PhotoImage(_plant_pic_fit(pil))
+                except Exception:
+                    img = safe_image_maybe_flipped(icon_path, is_flipped)
+            else:
+                img = safe_image_maybe_flipped(icon_path, is_flipped)
             if img is None:
                 return
 
@@ -5997,6 +6664,9 @@ class GardenApp(InspectorMixin):
         self.garden._app = self  # Give garden access to app for difficulty settings
         self.inventory = Inventory()
         _init_sound_system()
+        # the rain sound follows the weather even when nothing else is
+        # redrawn for a while (render_all checks it too)
+        self.root.after(2000, self._rain_watchdog)
         # Music no longer starts unconditionally right here at app
         # launch — see _toggle_run(), which now starts/pauses/resumes
         # background music in step with the simulation's own running
@@ -6391,12 +7061,18 @@ class GardenApp(InspectorMixin):
 
         """Remove all plants currently on the grid."""
         count = 0
+        kept = 0
 
         for tile in self.tiles:
             if tile.plant is not None:
+                if self._tut_keeps_plant(tile.plant):
+                    kept += 1
+                    continue
                 tile.plant = None
                 self._set_soil_linger(tile)
                 count += 1
+        if kept:
+            self._say_plant_kept(kept)
         try:
             self._toast(f"Removed {count} plants from the grid.")
         except Exception:
@@ -6626,7 +7302,7 @@ class GardenApp(InspectorMixin):
         for k in ks:
             fl = plant.ensure_flowers()
             if 0 <= k < len(fl) and not fl[k].get("emasc"):
-                self._on_emasculate_selected(k + 1, instant=True, quiet=True)
+                self._on_emasculate_selected(k + 1, instant=True, quiet=True, gate=False)
                 if fl[k].get("emasc"):
                     done += 1
         if done:
@@ -6706,10 +7382,11 @@ class GardenApp(InspectorMixin):
             return False
         k = q["ks"].pop(0)
         try:
+            # (allowed when the batch began: no night / rain check again)
             if kind == "emasc":
-                self._on_emasculate_selected(k + 1)
+                self._on_emasculate_selected(k + 1, gate=False)
             else:
-                self._on_pollinate(k + 1)
+                self._on_pollinate(k + 1, gate=False)
         except Exception:
             self._flower_queue = None
             return False
@@ -6769,15 +7446,19 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass
 
-    def _on_emasculate_selected(self, flower_no=None, instant=False, quiet=False, also=None):
+    def _on_emasculate_selected(self, flower_no=None, instant=False, quiet=False, also=None,
+                                gate=True):
         """instant: no dialog (several at once); quiet: no toast;
-        also: further flowers (0-based) this one forceps window counts for."""
+        also: further flowers (0-based) this one forceps window counts for;
+        gate=False: part of a batch already allowed when it began (the clock
+        may have run into the evening while the first window was open — the
+        rest of the selected flowers are done all the same)."""
         if also:
             quiet = True        # one message for all (see _emasculate_many)
         if flower_no is None:
             self._ask_pick_flower("emasculate")
             return
-        if not self._night_gate("emasculating") or not self._rain_gate():
+        if gate and (not self._night_gate("emasculating") or not self._rain_gate()):
             return
         idx = self.selected_index
         plant = self.tiles[idx].plant if (idx is not None and 0 <= idx < len(self.tiles)) else None
@@ -6866,7 +7547,8 @@ class GardenApp(InspectorMixin):
                 on_emasculation_complete(True)
             else:
                 EmasculationDialog(self.root, flower_color, on_emasculation_complete,
-                                   starting_removed=starting_removed)
+                                   starting_removed=starting_removed,
+                                   show_parts=bool(getattr(self, "_tutorial_active", False)))
         except Exception as e:
             print(f"Error opening emasculation dialog: {e}")
             on_emasculation_complete(True)
@@ -7750,7 +8432,32 @@ class GardenApp(InspectorMixin):
         # _forward_hotkeys.
         self._hotkeys = {}
 
+        # In the tutorial a shortcut may not do what its (still locked)
+        # button may not: X would otherwise remove plants long before
+        # »Remove plant« is explained.
+        _KEY_LOCK = {
+            '<w>': "water_btn", '<W>': "water_all_btn",
+            '<Shift-X>': "remove_btn", '<Delete>': "remove_btn",
+            '<x>': "remove_btn", '<X>': "remove_btn",
+            '<i>': "inspect_btn", '<I>': "inspect_btn", '<Return>': "inspect_btn",
+            '<f>': "fast_btn", '<F>': "fast_btn",
+            '<p>': "pollinate_btn", '<P>': "pollinate_btn",
+            '<e>': "emasc_btn", '<E>': "emasc_btn",
+            '<c>': "pollen_btn", '<C>': "pollen_btn",
+            '<Shift-G>': "genetics_btn",
+        }
+
         def _hk(seq, fn):
+            lock = _KEY_LOCK.get(seq)
+            if lock:
+                def fn(e, _fn=fn, _lock=lock):
+                    try:
+                        import tutorial as _tut
+                        if _tut.key_blocked(self, _lock):
+                            return "break"
+                    except Exception:
+                        pass
+                    return _fn(e)
             self.root.bind(seq, fn)
             self._hotkeys[seq] = fn
 
@@ -8014,8 +8721,18 @@ class GardenApp(InspectorMixin):
             }
 
         try:
-            rows, cols, show_dialog_next = _ask_grid_size(parent, cfg)
-            _apply_grid_size(rows, cols)
+            if getattr(self, "_tutorial_active", False):
+                self._toast("The garden size can be changed outside the tutorial.", level="info")
+                return
+            rows, cols, show_dialog_next = _ask_grid_size(parent, cfg, in_game=True)
+            try:
+                if bool(self._fullscreen_var.get()) != _load_fullscreen():
+                    self._set_fullscreen(_load_fullscreen())
+            except Exception:
+                pass
+            # Only stored: the garden on screen keeps its size until the
+            # restart (changing ROWS/COLS now would make saves record the
+            # new size for the old beds).
             _save_grid_config(rows, cols, show_dialog_next)
             # Current grid is already built, so we inform user a restart is needed
             try:
@@ -8487,128 +9204,93 @@ class GardenApp(InspectorMixin):
     def _build_ui(self):
 
         # ---- Menubar with larger font ----
+        # File · View · Game Settings · Help. Shortcut keys that already
+        # exist are shown next to their entries (accelerator= is display
+        # text only; the real bindings live in _bind_hotkeys).
         self.menubar = tk.Menu(self.root, font=("Segoe UI", 11)) if not hasattr(self, "menubar") else self.menubar
-        
+        _MF = ("Segoe UI", 11)
+
         # ---- File Menu ----
-        file_menu = tk.Menu(self.menubar, tearoff=0, font=("Segoe UI", 11))
-        file_menu.add_command(label="New Garden", command=self._on_new_garden)
-        file_menu.add_command(label="Save Garden", command=self._on_save_garden)
-        
+        file_menu = tk.Menu(self.menubar, tearoff=0, font=_MF)
+        file_menu.add_command(label="New Garden…", command=self._on_new_garden)
+        file_menu.add_command(label="Save Garden…", command=self._on_save_garden)
+
         # Load submenu (dynamically populated)
-        self.load_submenu = tk.Menu(file_menu, tearoff=0, font=("Segoe UI", 11), postcommand=lambda: self._build_load_menu(self.load_submenu))
+        self.load_submenu = tk.Menu(file_menu, tearoff=0, font=_MF, postcommand=lambda: self._build_load_menu(self.load_submenu))
         file_menu.add_cascade(label="Load Garden", menu=self.load_submenu)
-        
+
         file_menu.add_separator()
         file_menu.add_command(label="Delete Saves…", command=self._on_delete_saves)
-        
+
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_app_close)
         self.menubar.add_cascade(label="File", menu=file_menu)
-        
+
         # ---- View Menu ----
-        view_menu = tk.Menu(self.menubar, tearoff=0, font=("Segoe UI", 11))
-        
+        view_menu = tk.Menu(self.menubar, tearoff=0, font=_MF)
+
         # Meteorological Observatory
         def _open_observatory():
             if hasattr(self, 'temp_tracker') and self.temp_tracker:
                 self.temp_tracker.open_observatory()
             else:
                 self._silent_showinfo("Observatory", "Temperature tracker not available")
-        
-        view_menu.add_command(label="Help / Legend", command=self._show_help)
-        
-        view_menu.add_separator()
-        view_menu.add_command(
-            label="Genotype Viewer…",
-            command=self._on_genetics
-        )
-        view_menu.add_command(
-            label="Trait Inheritance Explorer (TIE)…",
-            command=self._open_tie_for_selected
-        )
-        
-        view_menu.add_separator()
-        view_menu.add_command(
-            label="Meteorological Observatory…",
-            command=_open_observatory
-        )
-        view_menu.add_command(label="Missions…", command=self._open_missions)
 
-        # Attach the View menu
-        self.menubar.add_cascade(label=" View", menu=view_menu)
-        self.root.config(menu=self.menubar)
+        view_menu.add_command(label="Monastery (Map)…", command=self._open_monastery_popup)
+        view_menu.add_separator()
+        view_menu.add_command(label="Inspect Plant…", accelerator="I",
+                              command=self._on_inspect_unified)
+        view_menu.add_command(label="Genotype Viewer…", accelerator="Shift+G",
+                              command=self._on_genetics)
+        view_menu.add_command(label="Trait Inheritance Explorer (TIE)…",
+                              command=self._open_tie_for_selected)
+        view_menu.add_command(label="Meteorological Observatory…",
+                              command=_open_observatory)
+        view_menu.add_separator()
+        view_menu.add_command(label="Missions…", command=self._open_missions)
+        view_menu.add_command(label="Achievements…", command=self._open_achievements_window)
+        self.menubar.add_cascade(label="View", menu=view_menu)
 
         # Shortcut for Genetics
         self.root.bind_all("<Control-g>", lambda e: self._on_genetics())
 
-        # --- NEW: Game Settings menu ---
-        game_menu = tk.Menu(self.menubar, tearoff=0, font=("Segoe UI", 11))
+        # ---- Game Settings menu ----
+        game_menu = tk.Menu(self.menubar, tearoff=0, font=_MF)
+        self._game_menu = game_menu
 
-        # ═══ Difficulty & Simulation — pacing and challenge ═══
-        difficulty_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
+        # The same settings, sorted into a window with categories
+        # (also reached through the garden shed on the Monastery map).
+        game_menu.add_command(label="All Settings…", command=self._open_game_settings_dialog)
+        game_menu.add_separator()
 
-        # Initialize difficulty variable if not exists
+        # ═══ Difficulty & pacing ═══
+        difficulty_menu = tk.Menu(game_menu, tearoff=0, font=_MF)
         if not hasattr(self, '_difficulty_var'):
             current_mode = getattr(self, '_season_mode', 'off')
             self._difficulty_var = tk.StringVar(value=current_mode)
-
-        difficulty_menu.add_radiobutton(
-            label="Casual — No environmental stress",
-            variable=self._difficulty_var,
-            value="off",
-            command=self._on_difficulty_change
-        )
-        difficulty_menu.add_radiobutton(
-            label="Moderate — Environmental effects (advisory)",
-            variable=self._difficulty_var,
-            value="overlay",
-            command=self._on_difficulty_change
-        )
-        difficulty_menu.add_radiobutton(
-            label="Realistic — Full Mendel-era conditions",
-            variable=self._difficulty_var,
-            value="enforce",
-            command=self._on_difficulty_change
-        )
+        for _lbl, _val in (("Casual — No environmental stress", "off"),
+                           ("Moderate — Environmental effects (advisory)", "overlay"),
+                           ("Realistic — Full Mendel-era conditions", "enforce")):
+            difficulty_menu.add_radiobutton(label=_lbl, variable=self._difficulty_var,
+                                            value=_val, command=self._on_difficulty_change)
         game_menu.add_cascade(label="Difficulty", menu=difficulty_menu)
-
-        game_menu.add_command(
-            label="Time Speed…",
-            command=self._open_speed_dialog
-        )
-        game_menu.add_command(
-            label="Fast Forward Rendering…",
-            command=self._open_ff_render_settings_dialog
-        )
-        game_menu.add_command(
-            label="Audio Settings…",
-            command=self._open_audio_settings_dialog
-        )
+        game_menu.add_command(label="Time Speed…", command=self._open_speed_dialog)
+        game_menu.add_command(label="Fast Forward Rendering…",
+                              command=self._open_ff_render_settings_dialog)
+        game_menu.add_command(label="Audio…", command=self._open_audio_settings_dialog)
 
         # ═══ Automation — things the game does for you ═══
-        game_menu.add_separator()
-        game_menu.add_checkbutton(label="Auto-water",
-                                    variable=self.auto_water_normal)
-        game_menu.add_checkbutton(label="Auto-water in FF",
-                                    variable=self.auto_water_ff)
-        game_menu.add_checkbutton(label="Auto-record temperature",
-                                    variable=self.auto_record_temperature)
-        game_menu.add_checkbutton(
-            label="Show Emasculation / Pollination dialogs",
-            variable=self.show_breed_dialogs
-        )
+        auto_menu = tk.Menu(game_menu, tearoff=0, font=_MF)
+        auto_menu.add_checkbutton(label="Auto-water", variable=self.auto_water_normal)
+        auto_menu.add_checkbutton(label="Auto-water in Fast Forward", variable=self.auto_water_ff)
+        auto_menu.add_checkbutton(label="Auto-record temperature",
+                                  variable=self.auto_record_temperature)
+        auto_menu.add_checkbutton(label="Show Emasculation / Pollination windows",
+                                  variable=self.show_breed_dialogs)
+        game_menu.add_cascade(label="Automation", menu=auto_menu)
 
-        # ═══ Visuals & Atmosphere — cosmetic, no gameplay effect ═══
-        game_menu.add_separator()
-
-        self.daynight_var = tk.BooleanVar(value=self.enable_daynight)
-        game_menu.add_checkbutton(
-            label="Day / Night cycle",
-            variable=self.daynight_var,
-            command=self._toggle_daynight
-        )
-
-        wildlife_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
+        # ═══ Wildlife ═══
+        wildlife_menu = tk.Menu(game_menu, tearoff=0, font=_MF)
         wildlife_menu.add_checkbutton(
             label="Enable wildlife",
             variable=self._wildlife_enabled_var,
@@ -8632,145 +9314,153 @@ class GardenApp(InspectorMixin):
         )
         game_menu.add_cascade(label="Wildlife", menu=wildlife_menu)
 
-        # ── Stone Border Size ──────────────────────────────────────────
-        self._stone_size_var = tk.IntVar(value=_load_stone_size_px())
+        # ═══ Visuals — cosmetic, no gameplay effect ═══
+        game_menu.add_separator()
 
-        # A real bound method (rather than keeping this a closure local
-        # to _build_ui) so the consolidated Game Settings popup
-        # (_open_game_settings_dialog) can call it too, not just this menu.
-        _set_stone_size = self._set_stone_size_px
-
-        stone_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
-        stone_menu.add_radiobutton(
-            label="Full  (16 px)",
-            variable=self._stone_size_var, value=16,
-            command=lambda: _set_stone_size(16)
-        )
-        stone_menu.add_radiobutton(
-            label="Half  (8 px)",
-            variable=self._stone_size_var, value=8,
-            command=lambda: _set_stone_size(8)
-        )
-        stone_menu.add_radiobutton(
-            label="Quarter  (4 px)",
-            variable=self._stone_size_var, value=4,
-            command=lambda: _set_stone_size(4)
-        )
-        stone_menu.add_separator()
-        stone_menu.add_command(
-            label="Hide stones",
-            command=lambda: _set_stone_size(0)
-        )
-        game_menu.add_cascade(label="Stone Border Size ▸", menu=stone_menu)
-
-        # ── Background Texture Blur ────────────────────────────────────
-        # Softens the grass/soil tile textures so they're less visually
-        # distracting from the plants. Applied once when textures are
-        # pre-baked (see _load_bg_textures) — never per-frame — so it has
-        # no effect on simulation or render performance.
-        self._texture_blur_var = tk.IntVar(value=getattr(self, "_texture_blur_pct", 0))
-
-        blur_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
-        for pct in TEXTURE_BLUR_PRESETS:
-            label = "Off" if pct == 0 else f"{pct}%"
-            blur_menu.add_radiobutton(
-                label=label,
-                variable=self._texture_blur_var,
-                value=pct,
-                command=lambda p=pct: self._set_texture_blur(p)
-            )
-        game_menu.add_cascade(label="Background Texture Blur ▸", menu=blur_menu)
-
-        # ── Show Background Texture ─────────────────────────────────────
-        # Off = tiles fall back to their existing plain solid-colour
-        # rendering (same path already used when PIL is unavailable).
-        self._bg_texture_enabled_var = tk.BooleanVar(value=getattr(self, "_bg_texture_enabled", True))
-        game_menu.add_checkbutton(
-            label="Show Background Texture",
-            variable=self._bg_texture_enabled_var,
-            command=lambda: self._set_bg_texture_enabled(self._bg_texture_enabled_var.get())
-        )
-
-        # ── Water Display ────────────────────────────────────────────
-        # Off (default) = the existing vertical fill bar; on = a single
-        # color-coded drop icon in the same spot, for a less cluttered
-        # grid. Purely cosmetic — same water values, same color legend.
-        self._water_drop_var = tk.BooleanVar(value=getattr(self, "_water_drop_enabled", False))
-        game_menu.add_checkbutton(
-            label="Water: show as drop icon",
-            variable=self._water_drop_var,
-            command=lambda: self._set_water_drop_enabled(self._water_drop_var.get())
-        )
-
-        self._plant_info_var = tk.BooleanVar(value=getattr(self, "_plant_info_visible", True))
-        game_menu.add_checkbutton(
-            label="Show selected plant info",
-            variable=self._plant_info_var,
-            command=lambda: self._set_plant_info_visible(self._plant_info_var.get())
-        )
-        self._garden_only_var = tk.BooleanVar(value=getattr(self, "_garden_only_portrait", False))
-        game_menu.add_checkbutton(
-            label="Garden view only (no Mendel)",
-            variable=self._garden_only_var,
-            command=lambda: self._set_garden_only_portrait(self._garden_only_var.get())
-        )
+        # -- Plants --
         self._plant_style_var = tk.StringVar(value=getattr(self, "_plant_style", DEFAULT_PLANT_STYLE))
-        style_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
+        self._plant_redraw_var = tk.StringVar(value=getattr(self, "_plant_redraw", DEFAULT_PLANT_REDRAW))
+        plants_menu = tk.Menu(game_menu, tearoff=0, font=_MF)
         for _lbl, _val in (("Grown, plain", "grown"),
                            ("Grown, staked", "grown_staked"),
                            ("Grown, painted", "grown_painted"),
                            ("Grown, staked + painted", "grown_staked_painted"),
                            ("Classic pictures", "classic")):
-            style_menu.add_radiobutton(label=_lbl, value=_val, variable=self._plant_style_var,
-                                       command=lambda v=_val: self._set_plant_style(v))
-        game_menu.add_cascade(label="Plant style", menu=style_menu)
-        self._plant_redraw_var = tk.StringVar(value=getattr(self, "_plant_redraw", DEFAULT_PLANT_REDRAW))
-        redraw_menu = tk.Menu(game_menu, tearoff=0, font=("Segoe UI", 11))
+            plants_menu.add_radiobutton(label=_lbl, value=_val, variable=self._plant_style_var,
+                                        command=lambda v=_val: self._set_plant_style(v))
+        plants_menu.add_separator()
+        plants_menu.add_command(label="Redraw growing plants:", state="disabled")
         for _lbl, _val in (("Every game day", "1"), ("Every 2 game days", "2"),
                            ("Every 4 game days", "4"), ("Only when the stage changes", "0")):
-            redraw_menu.add_radiobutton(label=_lbl, value=_val, variable=self._plant_redraw_var,
+            plants_menu.add_radiobutton(label=_lbl, value=_val, variable=self._plant_redraw_var,
                                         command=lambda v=_val: self._set_plant_redraw(v))
-        game_menu.add_cascade(label="Plant growth redraw", menu=redraw_menu)
+        game_menu.add_cascade(label="Plants", menu=plants_menu)
 
-        # ── Health Display ───────────────────────────────────────────
-        # Off (default) = the existing horizontal fill bar; on = a row of
-        # 4 heart icons (same size as the water drop) in the same spot.
-        # Purely cosmetic — same health values and thresholds either way.
+        # -- Garden beds --
+        garden_menu = tk.Menu(game_menu, tearoff=0, font=_MF)
+        self.daynight_var = tk.BooleanVar(value=self.enable_daynight)
+        garden_menu.add_checkbutton(label="Day / Night cycle", variable=self.daynight_var,
+                                    command=self._toggle_daynight)
+
+        # Off = tiles fall back to their plain solid-colour rendering
+        # (same path already used when PIL is unavailable).
+        self._bg_texture_enabled_var = tk.BooleanVar(value=getattr(self, "_bg_texture_enabled", True))
+        garden_menu.add_checkbutton(
+            label="Show background texture",
+            variable=self._bg_texture_enabled_var,
+            command=lambda: self._set_bg_texture_enabled(self._bg_texture_enabled_var.get())
+        )
+        # Softens the grass/soil textures; applied once when textures are
+        # pre-baked (see _load_bg_textures), never per frame.
+        self._texture_blur_var = tk.IntVar(value=getattr(self, "_texture_blur_pct", 0))
+        blur_menu = tk.Menu(garden_menu, tearoff=0, font=_MF)
+        for pct in TEXTURE_BLUR_PRESETS:
+            blur_menu.add_radiobutton(
+                label="Off" if pct == 0 else f"{pct}%",
+                variable=self._texture_blur_var, value=pct,
+                command=lambda p=pct: self._set_texture_blur(p)
+            )
+        garden_menu.add_cascade(label="Background texture blur", menu=blur_menu)
+
+        # A real bound method so the consolidated Game Settings popup
+        # (_open_game_settings_dialog) can call it too, not just this menu.
+        self._stone_size_var = tk.IntVar(value=_load_stone_size_px())
+        stone_menu = tk.Menu(garden_menu, tearoff=0, font=_MF)
+        for _lbl, _px in (("Full  (16 px)", 16), ("Half  (8 px)", 8),
+                          ("Quarter  (4 px)", 4), ("Hide stones", 0)):
+            stone_menu.add_radiobutton(label=_lbl, variable=self._stone_size_var, value=_px,
+                                       command=lambda p=_px: self._set_stone_size_px(p))
+        garden_menu.add_cascade(label="Stone border", menu=stone_menu)
+        garden_menu.add_separator()
+
+        # Water / health: bar (default) or a drop / hearts icon in the same
+        # spot. Same values and thresholds either way.
+        self._water_drop_var = tk.BooleanVar(value=getattr(self, "_water_drop_enabled", False))
+        garden_menu.add_checkbutton(
+            label="Water: show as drop icon",
+            variable=self._water_drop_var,
+            command=lambda: self._set_water_drop_enabled(self._water_drop_var.get())
+        )
         self._health_hearts_var = tk.BooleanVar(value=getattr(self, "_health_hearts_enabled", False))
-        game_menu.add_checkbutton(
+        garden_menu.add_checkbutton(
             label="Health: show as hearts",
             variable=self._health_hearts_var,
             command=lambda: self._set_health_hearts_enabled(self._health_hearts_var.get())
         )
+        self._plant_info_var = tk.BooleanVar(value=getattr(self, "_plant_info_visible", DEFAULT_PLANT_INFO_VISIBLE))
+        garden_menu.add_checkbutton(
+            label="Show selected plant info",
+            variable=self._plant_info_var,
+            command=lambda: self._set_plant_info_visible(self._plant_info_var.get())
+        )
+        game_menu.add_cascade(label="Garden beds", menu=garden_menu)
+
+        # -- Mendel's picture --
+        picture_menu = tk.Menu(game_menu, tearoff=0, font=_MF)
+        self._garden_only_var = tk.BooleanVar(value=getattr(self, "_garden_only_portrait", False))
+        picture_menu.add_checkbutton(
+            label="Garden view only (no Mendel)",
+            variable=self._garden_only_var,
+            command=lambda: self._set_garden_only_portrait(self._garden_only_var.get())
+        )
         self._portrait_weather_var = tk.BooleanVar(value=getattr(self, "_portrait_weather_anim", True))
-        game_menu.add_checkbutton(
-            label="Animate rain and snow in Mendel's picture",
+        picture_menu.add_checkbutton(
+            label="Animate rain and snow",
             variable=self._portrait_weather_var,
             command=lambda: self._set_portrait_weather_anim(self._portrait_weather_var.get())
         )
+        game_menu.add_cascade(label="Mendel's picture", menu=picture_menu)
 
         # ═══ Garden Setup — structural, rarely changed ═══
         game_menu.add_separator()
-        game_menu.add_command(
-            label="Garden size wizard…",
-            command=self._on_grid_wizard
-        )
+        game_menu.add_command(label="Garden size wizard…", command=self._on_grid_wizard)
+        self._screen_fit_var = tk.BooleanVar(value=_load_screen_fit())
+        game_menu.add_checkbutton(label="Fit the window to the screen",
+                                  variable=self._screen_fit_var,
+                                  command=self._on_screen_fit_change)
+        self._fullscreen_var = tk.BooleanVar(value=_load_fullscreen())
+        game_menu.add_checkbutton(label="Full screen", accelerator="F11",
+                                  variable=self._fullscreen_var,
+                                  command=lambda: self._set_fullscreen(self._fullscreen_var.get()))
+        self.root.bind_all("<F11>", lambda e: self._set_fullscreen(
+            not bool(self._fullscreen_var.get())))
+
+        # Difficulty and garden size stay as they are in the tutorial
+        # (it runs in Casual on its own small garden).
+        def _game_menu_states():
+            st = "disabled" if getattr(self, "_tutorial_active", False) else "normal"
+            for lbl in ("Difficulty", "Garden size wizard…"):
+                try:
+                    game_menu.entryconfigure(lbl, state=st)
+                except Exception:
+                    pass
+        game_menu.configure(postcommand=_game_menu_states)
 
         self.menubar.add_cascade(label="Game Settings", menu=game_menu)
+
+        # ---- Help menu ----
+        help_menu = tk.Menu(self.menubar, tearoff=0, font=_MF)
+        help_menu.add_command(label="Help / Legend…", accelerator="H", command=self._show_help)
+        help_menu.add_command(label="Tutorial (Friar's quarters)…",
+                              command=self._start_tutorial_from_menu)
+        self.menubar.add_cascade(label="Help", menu=help_menu)
+        self._menubar_items = [("File", file_menu), ("View", view_menu),
+                               ("Game Settings", game_menu), ("Help", help_menu)]
 
         # Apply menubar
         self.root.config(menu=self.menubar)
 
         # ---------- Top status + global controls ----------
-        self.topbar = tk.Frame(self.root, padx=8, pady=6)
-        self.topbar.pack(fill="x")
+        # (kept, but not shown: it is empty, and its strip of the system's
+        # grey showed as a band right below the menu bar)
+        self.topbar = tk.Frame(self.root, padx=8, pady=_uf(6))
 
         # Font setup
-        self.font_seed   = ("Segoe UI", 14, "bold")   # same as buttons
-        self.font_law    = ("Segoe UI", 14)           # law status text
+        self.font_seed   = ("Segoe UI", _ufont(14), "bold")   # same as buttons
+        self.font_law    = ("Segoe UI", _ufont(14))           # law status text
 
         # Modern UI font + shared button style
-        self.font_button = ("Segoe UI", 12, "bold")
+        self.font_button = ("Segoe UI", _ufont(12), "bold")
         self.button_style = {
             "font": self.font_button,
             "bg": "#F4F4F4",
@@ -8780,8 +9470,8 @@ class GardenApp(InspectorMixin):
             "borderwidth": 0,  # Explicitly set borderwidth to 0 for macOS
             "highlightthickness": 0,
             "overrelief": "flat",  # Keep flat appearance even when pressed on macOS
-            "padx": 16,
-            "pady": 10,
+            "padx": _uf(16),
+            "pady": _uf(10),
         }
 
         # -----------------
@@ -8860,19 +9550,27 @@ class GardenApp(InspectorMixin):
         self.status_var = tk.StringVar(value="")
 
         # ---------- Main content area: left and right panels ----------
-        self.content = tk.Frame(self.root, padx=8, pady=8)
+        self.content = tk.Frame(self.root, padx=8, pady=_uf(8))
         self.content.pack(fill="both", expand=True)
 
         if not hasattr(self, 'grid_bg'):
             self.grid_bg = '#eeeeee'
+        # one colour from the menu bar down (no lighter strip at the top)
+        try:
+            self.content.configure(bg=self.grid_bg)
+            self.root.configure(bg=self.grid_bg)
+        except Exception:
+            pass
 
         # ========== LEFT PANEL (clean, no borders) ==========
-        self.left_panel = tk.Frame(self.content, padx=6, pady=8, bg=self.grid_bg)
+        self.left_panel = tk.Frame(self.content, padx=6, pady=_uf(8), bg=self.grid_bg)
         self.left_panel.pack(side="left", anchor="n")
 
         # Mendel portrait at the TOP of left panel
         mendel_img = safe_image(os.path.join(ICONS_DIR, "mendel.png"))
-        self.mendel_label = tk.Label(self.left_panel, image=mendel_img, bg=self.grid_bg)
+        self.mendel_label = _PortraitLabel(self.left_panel, bg=self.grid_bg)
+        self.mendel_label.configure(image=mendel_img)
+        self._portrait_src = mendel_img
         self.mendel_label.image = mendel_img
         self.mendel_label.pack(anchor="center", pady=(0, 0))  # No bottom padding
         self._mendel_hover_idx = 0
@@ -8965,11 +9663,11 @@ class GardenApp(InspectorMixin):
         self.left_actions = tk.Frame(self.left_panel)
         self.left_actions.pack(anchor="nw", pady=(0,6), fill="x")   # ← add fill="x"
         # "Show selected plant info" off: hide the icon row + stage label.
-        if not getattr(self, "_plant_info_visible", True):
+        if not getattr(self, "_plant_info_visible", DEFAULT_PLANT_INFO_VISIBLE):
             self.icon_row.pack_forget()
             self.stage_label.pack_forget()
 
-        self.btn_font = ("Segoe UI", 12)
+        self.btn_font = ("Segoe UI", _ufont(12))
 
         def make_icon_button(parent, text, icon_name, command):
             # _FlatIconButton (module-level, defined near
@@ -8985,7 +9683,7 @@ class GardenApp(InspectorMixin):
             # different size from the toolbar ones even after that
             # style's padx/pady were deliberately increased (16/10).
             padx = self.button_style.get("padx", 16)
-            pady = self.button_style.get("pady", 10)
+            pady = self._left_btn_pady()
             icon_path = os.path.join(ICONS_DIR, icon_name)
             # A simply-missing icon (an optional asset that hasn't been
             # added yet, e.g. monastery.png) isn't worth a console warning
@@ -9038,7 +9736,7 @@ class GardenApp(InspectorMixin):
                     pady=pady,
                 )
 
-            btn.pack(anchor="nw", pady=2, fill="x")
+            btn.pack(anchor="nw", pady=_uf(2), fill="x")
             return btn
 
         # The Monastery (Map) button is just the map picture (icons/map.png)
@@ -9049,7 +9747,7 @@ class GardenApp(InspectorMixin):
             if os.path.isfile(_map_path):
                 from PIL import Image as _PILImage, ImageTk as _PILImageTk
                 _im = _PILImage.open(_map_path).convert("RGBA")
-                _im.thumbnail((150, 100))
+                _im.thumbnail((_uf(150), _uf(100)))
                 # Hover = a soft golden glow around the picture instead of
                 # the usual grey button highlight. Both versions are drawn
                 # on the same padded transparent canvas (so the button
@@ -9114,7 +9812,7 @@ class GardenApp(InspectorMixin):
         _water_row.pack(anchor="nw", pady=2, fill="x")
         _w_font = self.button_style.get("font", ("Segoe UI", 12))
         _w_padx = self.button_style.get("padx", 16)
-        _w_pady = self.button_style.get("pady", 10)
+        _w_pady = self._left_btn_pady()
         _can_img = None
         try:
             # The new watering can at half size; the old can.png otherwise.
@@ -9200,11 +9898,11 @@ class GardenApp(InspectorMixin):
         # look the original single label had.
         phase_row = tk.Frame(right_panel, bg=self.grid_bg)
         phase_row.pack(fill="x", pady=(4, 8))
-        self.phase_label_pre = tk.Label(phase_row, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
+        self.phase_label_pre = tk.Label(phase_row, text="", font=("Segoe UI", _ufont(20), "bold"), bg=self.grid_bg)
         self.phase_label_pre.pack(side="left", anchor="center")
         self.weather_icon_label = tk.Label(phase_row, image=None, bg=self.grid_bg)
         self.weather_icon_label.pack(side="left", anchor="center", padx=(8, 8))
-        self.phase_label_post = tk.Label(phase_row, text="", font=("Segoe UI", 20, "bold"), bg=self.grid_bg)
+        self.phase_label_post = tk.Label(phase_row, text="", font=("Segoe UI", _ufont(20), "bold"), bg=self.grid_bg)
         self.phase_label_post.pack(side="left", anchor="center")
         # Simulation-speed indicator — right-aligned on this same
         # line, small and dark grey so it reads as separate from the
@@ -9212,7 +9910,7 @@ class GardenApp(InspectorMixin):
         # instant the speed changes, then fades out 5s later (see
         # _speed_indicator_tick).
         self.speed_indicator_label = tk.Label(
-            phase_row, text="", font=("Segoe UI", 20, "bold"), fg="#555555",
+            phase_row, text="", font=("Segoe UI", _ufont(20), "bold"), fg="#555555",
             bg=self.grid_bg)
         # place()d at exactly the grid's pixel width (phase_row's left
         # edge is the same as the status box's and the grid's), so its
@@ -9240,7 +9938,7 @@ class GardenApp(InspectorMixin):
         # the real final layout anyway — font metrics are correct
         # immediately, with no dependency on what's built yet or not.
         try:
-            f = tkfont.Font(font=("Segoe UI", 20, "bold"))
+            f = tkfont.Font(font=("Segoe UI", _ufont(20), "bold"))
             top_offset = f.metrics("linespace") + 4 + 8  # matches phase_label's own pady above
             self.mendel_label.pack_configure(pady=(top_offset, 0))
         except Exception:
@@ -9275,7 +9973,7 @@ class GardenApp(InspectorMixin):
         # gives a modest amount of headroom without visually doubling
         # the bar's height for what's normally one line of text. Font
         # size bumped slightly too (14→16), per request.
-        _status_font_size = 16
+        _status_font_size = _ufont(16)
         _status_font = tkfont.Font(font=("Segoe UI", _status_font_size, "bold"))
         _status_row_height = int(1.3 * _status_font.metrics("linespace")) + 2 * 4 + 8
         self.status_msg_row = tk.Frame(right_panel, bg=self.grid_bg,
@@ -9388,6 +10086,23 @@ class GardenApp(InspectorMixin):
         )
         self.fast_btn.pack(side="left", padx=2)
 
+        # Fast Forward straight to the next sunny morning (the same as
+        # ticking »Skip to next sunny day« in the Fast Forward window)
+        _sun_img = self._sunny_ff_icon()
+        self.sunny_ff_btn = _FlatIconButton(
+            inventory_left,
+            text=("▶▶" if _sun_img is not None else "▶▶☀"),
+            image=_sun_img, compound=("right" if _sun_img is not None else None),
+            command=self._on_sunny_skip,
+            **dict(btn_kwargs, padx=8),
+        )
+        self.sunny_ff_btn.image = _sun_img
+        self.sunny_ff_btn.pack(side="left", padx=2)
+        try:
+            _Tooltip(self.sunny_ff_btn, "Fast Forward to the next sunny morning")
+        except Exception:
+            pass
+
         # Speed button moved to Game Settings menu
 
         # Temperature measurement button
@@ -9482,6 +10197,8 @@ class GardenApp(InspectorMixin):
             pass
 
 
+
+        self._fit_tiles_to_screen(right_panel)
 
         # Grid frame (in right_panel)
         self.grid_frame = tk.Frame(right_panel, padx=0, pady=0, bg=self.grid_bg)
@@ -9593,7 +10310,12 @@ class GardenApp(InspectorMixin):
 
         # ---------- Mendelian laws row (below the grid in right_panel) ----------
         self.law_row = tk.Frame(right_panel, bg=self.grid_bg, padx=0, pady=8)
-        self.law_row.pack(anchor="w", fill="x", pady=(4, 0))
+        self.law_row.pack(anchor="w", pady=(4, 0))
+        # as wide as the button row above (the garden), so »Leave Garden«
+        # lines up on the right with the garden switcher's »2«
+        tk.Frame(self.law_row, bg=self.grid_bg, height=0,
+                 width=int(getattr(self, "_row_w", TILE_SIZE * TILES_PER_ROW))
+                 ).pack(side="bottom")
 
         # Left-aligned container (prevents right-push by expanding widgets)
         law_left = tk.Frame(self.law_row, bg=self.grid_bg)
@@ -9603,7 +10325,7 @@ class GardenApp(InspectorMixin):
         tk.Label(
             law_left,
             text="Mendelian laws:",
-            font=("Segoe UI", 14),
+            font=("Segoe UI", _ufont(14)),
             bg=self.grid_bg
         ).pack(side="left", anchor="w", padx=(0, 10))
 
@@ -9612,7 +10334,7 @@ class GardenApp(InspectorMixin):
         self.law_status_label = tk.Label(
             law_left,
             textvariable=self.law_status_var,
-            font=("Segoe UI", 14),
+            font=("Segoe UI", _ufont(14)),
             bg=self.grid_bg,
             anchor="w",
             justify="left"
@@ -9626,7 +10348,7 @@ class GardenApp(InspectorMixin):
         _bstyle = self.button_style
         self.btn_test_laws = _FlatIconButton(
             law_left,
-            text="Unlock Laws",
+            text="Unlock",
             command=self._test_mendelian_laws_now,
             bg=_bstyle.get("bg", "#F4F4F4"),
             hover_bg=_bstyle.get("activebackground", "#E4E4E4"),
@@ -9635,8 +10357,197 @@ class GardenApp(InspectorMixin):
             pady=_bstyle.get("pady", 10),
         )
         self.btn_test_laws.pack(side="left", padx=(8, 10))
+        try:
+            _attach_tooltip(self.btn_test_laws, "Unlock Laws: claim a law your counts prove",
+                            above=True)
+        except Exception:
+            pass
+
+        # Leave the game (saved first), right-aligned under the garden
+        self.btn_leave_garden = _FlatIconButton(
+            self.law_row,
+            text="Leave Garden",
+            command=self._leave_garden,
+            bg=_bstyle.get("bg", "#F4F4F4"),
+            hover_bg=_bstyle.get("activebackground", "#E4E4E4"),
+            font=_bstyle.get("font", ("Segoe UI", 12)),
+            padx=_bstyle.get("padx", 16),
+            pady=_bstyle.get("pady", 10),
+        )
+        self.btn_leave_garden.pack(side="right", padx=(8, 1))
 
     # ---------- Rendering ----------
+
+    def _custom_menubar_wanted(self, fs=None):
+        """In full screen Windows draws the menu bar in its old grey style
+        with a dark line below; there the game draws its own, looking like
+        the normal window's (white, no line)."""
+        if not sys.platform.startswith("win"):
+            return False
+        if fs is not None:
+            return bool(fs)
+        try:
+            return bool(int(self.root.attributes("-fullscreen")))
+        except Exception:
+            return False
+
+    def _apply_menubar_style(self, fs=None):
+        """The Windows menu bar, or (full screen on Windows) the game's own
+        bar with the same menus. Same height, so the garden's fit holds."""
+        want = self._custom_menubar_wanted(fs)
+        bar = getattr(self, "_custom_menubar", None)
+        if want:
+            if bar is None:
+                bar = self._custom_menubar = tk.Frame(self.root, bg="white")
+                font = ("Segoe UI", -12)      # pixels: like the Windows menu bar
+                for text, menu in getattr(self, "_menubar_items", []):
+                    lbl = tk.Label(bar, text=text, bg="white", fg="black",
+                                   font=font, padx=7, pady=3)
+                    lbl.pack(side="left")
+
+                    def _open(e, m=menu, w=lbl):
+                        try:
+                            w.configure(bg="#cce8ff")
+                            m.tk_popup(w.winfo_rootx(), w.winfo_rooty() + w.winfo_height())
+                        finally:
+                            try:
+                                m.grab_release()
+                            except Exception:
+                                pass
+                            w.configure(bg="white")
+                    lbl.bind("<Button-1>", _open)
+                    lbl.bind("<Enter>", lambda e, w=lbl: w.configure(bg="#e5f3ff"))
+                    lbl.bind("<Leave>", lambda e, w=lbl: w.configure(bg="white"))
+                # ✕ at the right: leave the garden (as »Leave Garden«), since
+                # full screen has no title bar with its own close button
+                close = tk.Label(bar, text="\u2715", bg="white", fg="black",
+                                 font=("Segoe UI", -14), padx=14, pady=2, cursor="hand2")
+                close.pack(side="right")
+                close.bind("<Button-1>", lambda e: self._leave_garden())
+                close.bind("<Enter>", lambda e, w=close: w.configure(bg="#e81123", fg="white"))
+                close.bind("<Leave>", lambda e, w=close: w.configure(bg="white", fg="black"))
+            try:
+                self.root.config(menu="")
+            except Exception:
+                pass
+            if not bar.winfo_ismapped():
+                try:
+                    bar.pack(side="top", fill="x", before=self.content)
+                except Exception:
+                    bar.pack(side="top", fill="x")
+        else:
+            if bar is not None and bar.winfo_ismapped():
+                bar.pack_forget()
+            try:
+                self.root.config(menu=self.menubar)
+            except Exception:
+                pass
+
+    def _set_fullscreen(self, on):
+        """Full screen on / off (menu, settings window, F11). The garden was
+        fitted for the window size at start-up: leaving full screen gives
+        a little less room until the next start."""
+        on = bool(on)
+        try:
+            self._fullscreen_var.set(on)
+        except Exception:
+            pass
+        _save_fullscreen(on)
+        try:
+            self.root.attributes('-fullscreen', on)
+            if not on:
+                _maximize_root(self.root)
+        except Exception:
+            logging.debug("Full screen switch failed", exc_info=True)
+        self._apply_menubar_style(on)
+        if not on and AVAIL_W is not None:
+            self._toast("Window mode: the garden fits it best after the next start.",
+                        level="info")
+
+    def _on_screen_fit_change(self):
+        _save_screen_fit(self._screen_fit_var.get())
+        self._toast("Window fit: applies the next time the game starts.", level="info")
+
+    def _left_btn_pady(self):
+        """Inner padding of the left-column buttons: 10 at full size, down
+        to 4 on the smallest screens (shrinks faster than the text, since
+        nine buttons stack up)."""
+        return max(4, int(round(10 - (1.0 - UI_SCALE) * 24)))
+
+    def _fit_tiles_to_screen(self, right_panel):
+        """Picks the garden square size (TILE_SIZE) so the garden, the rows
+        above and below it and the left column fit the room measured at
+        start-up (AVAIL_W x AVAIL_H, see _fit_ui_to_screen). Runs while the
+        UI is built, right before the garden itself: the left column and
+        the rows above the garden already exist and are measured with the
+        real fonts. Shrinks Mendel's picture if the left column is still
+        too tall, and widens the button row past the garden if its
+        buttons need it and the screen has the room."""
+        global PORTRAIT_SCALE
+        self._row_w = TILE_SIZE * TILES_PER_ROW
+        if AVAIL_W is None or AVAIL_H is None:
+            return
+        try:
+            self.root.update_idletasks()
+            lp = self.left_panel
+            fixed_w = lp.winfo_reqwidth() + 2 * 8 + 8 + 8
+            top_h = ((self.topbar.winfo_reqheight() if self.topbar.winfo_manager() else 0)
+                     + 2 * _uf(8))
+            above_h = right_panel.winfo_reqheight()       # date, message, buttons
+            law_h = self.inventory_row.winfo_reqheight() + 12
+            room_h = AVAIL_H - top_h - above_h - law_h - 5 - 6
+            room_w = AVAIL_W - fixed_w
+            t = min(room_h // max(1, ROWS), room_w // max(1, COLS), TILE_SIZE_MAX)
+            # multiples of 4 tile the border stones evenly (85 is the classic size)
+            t = 85 if 85 <= t < 88 else (t // 4) * 4
+            t = max(TILE_SIZE_MIN, t)
+
+            # left column too tall: first the selected-plant picture cell
+            # (never larger than a garden square), then the gap above
+            # Mendel's picture, then a smaller picture of Mendel
+            left_room = AVAIL_H - top_h - 6
+            try:
+                cell = int(self.icon_cell.cget("height"))
+                if cell > t + 2:
+                    self.icon_cell.configure(width=t + 2, height=t + 2)
+            except Exception:
+                pass
+            self.root.update_idletasks()
+            left_h = lp.winfo_reqheight()
+            if left_h > left_room:
+                try:
+                    top_pad = self.mendel_label.pack_info().get("pady", 0)
+                    top_pad = int(top_pad[0] if isinstance(top_pad, (tuple, list)) else str(top_pad).split()[0])
+                    cut = min(max(0, top_pad - 4), left_h - left_room)
+                    if cut > 0:
+                        self.mendel_label.pack_configure(pady=(top_pad - cut, 0))
+                        self.root.update_idletasks()
+                        left_h = lp.winfo_reqheight()
+                except Exception:
+                    pass
+            pic_h = self.mendel_label.winfo_reqheight()
+            if left_h > left_room and pic_h > 40:
+                new_pic = max(pic_h * 0.4, pic_h - (left_h - left_room))
+                PORTRAIT_SCALE = max(0.4, PORTRAIT_SCALE * new_pic / pic_h)
+                img = getattr(self, "_portrait_src", None)
+                if img is not None:
+                    self.mendel_label.configure(image=img)
+
+            _apply_tile_size(t)
+            grid_w = TILE_SIZE * TILES_PER_ROW
+            inv_need = sum(c.winfo_reqwidth() for c in self.inventory_row.winfo_children()) + 10
+            # + the garden switcher (»Mendel's Garden: 1 2«), built later
+            _bf = tkfont.Font(font=self.font_button)
+            inv_need += (_bf.measure("Mendel's Garden:") + 8
+                         + int(getattr(self, "NUM_PLOTS", 2)) * (_bf.measure("2") + 2 * 12 + 2))
+            row_w = max(grid_w, min(inv_need, room_w))
+            self._row_w = row_w
+            self.status_msg_row.configure(width=row_w)
+            self.status_msg.configure(wraplength=row_w - 16)
+            self.inventory_row.configure(width=row_w)
+            self.speed_indicator_label.place_configure(x=row_w - 4)
+        except Exception:
+            logging.error("Fitting the garden to the screen failed", exc_info=True)
 
     def _update_law_status_label(self):
         """Refresh the top-bar 'Mendelian laws' string based on ever_discovered flags."""
@@ -9675,11 +10586,19 @@ class GardenApp(InspectorMixin):
                 self._check_law_achievements()
             except Exception:
                 pass
-            self.law_status_var.set(
-                f"{box(law1_done)} Law of Dominance     "
-                f"{box(law2_done)} Law of Segregation{seg_suffix}     "
-                f"{box(law3_done)} Law of Independent Assortment{ind_suffix}"
-            )
+            if UI_SCALE < 0.95:
+                # small screens: the short names, so the row fits the garden
+                self.law_status_var.set(
+                    f"{box(law1_done)} Dominance   "
+                    f"{box(law2_done)} Segregation{seg_suffix}   "
+                    f"{box(law3_done)} Independent Assortment{ind_suffix}"
+                )
+            else:
+                self.law_status_var.set(
+                    f"{box(law1_done)} Law of Dominance     "
+                    f"{box(law2_done)} Law of Segregation{seg_suffix}     "
+                    f"{box(law3_done)} Law of Independent Assortment{ind_suffix}"
+                )
 
             # OPTIONAL: make the whole label grey while nothing is discovered yet
             # (Tkinter can't color only part of a single Label's text)
@@ -10088,6 +11007,21 @@ class GardenApp(InspectorMixin):
                 self._fps_render_ms.append((time.perf_counter() - t0) * 1000.0)
             except Exception:
                 pass
+
+    def _rain_watchdog(self):
+        try:
+            if self._ui_gone():
+                return
+        except Exception:
+            pass
+        try:
+            _update_rain_sound(self.garden.weather in ("🌧", "⛈"))
+        except Exception:
+            pass
+        try:
+            self.root.after(2000, self._rain_watchdog)
+        except Exception:
+            pass
 
     def _render_all_impl(self):
         if self._ui_gone():
@@ -10514,7 +11448,7 @@ class GardenApp(InspectorMixin):
 # ============================================================================
 # Event Handlers
 # ============================================================================
-    def _on_pollinate(self, flower_no=None, also=None):
+    def _on_pollinate(self, flower_no=None, also=None, gate=True):
         """
         Pollinates one open flower (chosen in the Inspect window's flower
         list). If exactly one viable pollen source exists today, it is
@@ -10523,7 +11457,7 @@ class GardenApp(InspectorMixin):
         if flower_no is None:
             self._ask_pick_flower("pollinate")
             return
-        if not self._night_gate("pollinating") or not self._rain_gate():
+        if gate and (not self._night_gate("pollinating") or not self._rain_gate()):
             return
         # Must have a valid recipient selected
         idx = getattr(self, "selected_index", None)
@@ -10668,7 +11602,8 @@ class GardenApp(InspectorMixin):
             if not self.show_breed_dialogs.get():
                 on_done(True, 5)
             else:
-                BrushDialog(self.root, plant.traits.get("flower_color", "purple"), on_done)
+                BrushDialog(self.root, plant.traits.get("flower_color", "purple"), on_done,
+                            show_parts=bool(getattr(self, "_tutorial_active", False)))
         except Exception as e:
             print(f"Error opening the brush dialog: {e}")
             on_done(True, 5)
@@ -13191,7 +14126,8 @@ class GardenApp(InspectorMixin):
         return out
 
     def _open_paged_info_popup(self, title, pages, extra_buttons=None, page_art=None,
-                               last_page_scene=False, text_scale=1.0, on_last_page=None):
+                               last_page_scene=False, text_scale=1.0, on_last_page=None,
+                               page_scene=None):
         """
         Generic paged info window — styled like the Genotype Explorer
         (_apply_inspector_theme). pages: list of (heading, body) tuples;
@@ -13250,7 +14186,7 @@ class GardenApp(InspectorMixin):
         # Optional picture row (page_art(i) -> list of PhotoImages) that
         # fills the otherwise empty space under the text.
         art_row = tk.Frame(content, bg=self.INSPECTOR_BG)  # packed below, after page_lbl
-        if last_page_scene:
+        if last_page_scene or page_scene is not None:
             # Reserve the height of the bee-plot scene (see _render_page)
             # on every page so the window never resizes between pages.
             art_row.configure(height=int(TILE_SIZE * 1.3))
@@ -13271,7 +14207,7 @@ class GardenApp(InspectorMixin):
         page_lbl.pack(side="bottom", anchor="w", pady=(6 if _compact else 14, 0))
         # Packed after page_lbl (bottom-side packing stacks upward), so the
         # pictures sit directly above the page indicator.
-        if page_art is not None:
+        if page_art is not None or page_scene is not None:
             art_row.pack(side="bottom", fill="x", pady=(10, 0))
 
         prev_slot = tk.Frame(nav_row)
@@ -13314,12 +14250,24 @@ class GardenApp(InspectorMixin):
             body_lbl.configure(text=body,
                                 font=_f_cite if is_last else _f_body)
             page_lbl.configure(text=f"{i + 1} / {len(pages)}")
-            if page_art is not None:
+            if page_art is not None or page_scene is not None:
                 for w_ in art_row.winfo_children():
                     w_.destroy()
                 imgs = []
                 scene_shown = False
-                if last_page_scene and i % 2 == 1:
+                if page_scene is not None:
+                    # its own animated scene for every page (beehive)
+                    try:
+                        sc = page_scene(i, art_row, _wrap, int(TILE_SIZE * 1.3))
+                        if sc is not None:
+                            sc.place(relx=0.5, rely=0.5, anchor="center")
+                            scene_shown = True
+                    except Exception:
+                        logging.debug("page_scene failed", exc_info=True)
+                        scene_shown = False
+                if not scene_shown and page_art is None:
+                    pass
+                elif last_page_scene and i % 2 == 1 and not scene_shown:
                     # Every second page (2nd, 4th, ...): instead of the
                     # row of bees, a rounded plot with a random flowering
                     # plant and three live bees.
@@ -13331,7 +14279,7 @@ class GardenApp(InspectorMixin):
                         scene_shown = True
                     except Exception:
                         scene_shown = False
-                if not scene_shown:
+                if not scene_shown and page_art is not None:
                     try:
                         imgs = page_art(i) or []
                     except Exception:
@@ -13460,8 +14408,25 @@ class GardenApp(InspectorMixin):
             "40\u201345. https://doi.org/10.1093/ae/tmad025"
         )
         pages = BEEHIVE_FACTS + [CITATION]
+        # A different little scene on every page, matching what it tells
+        # (bee_scenes.py): the garden's beehive with pea plants, the comb
+        # with its queen, light and dark drones (a still picture), the
+        # abbey wall, the bee house of 1871, a row of pea plants. The bees
+        # fly as in the garden.
+        _kinds = ["hive", "comb", "ratio", "abbey", "house", "meadow"]
+
+        def _scene(i, parent, w, h):
+            try:
+                import bee_scenes
+            except Exception:
+                return None
+            st = bee_scenes.BeeStage(parent, _kinds[i % len(_kinds)], width=w, height=h,
+                                     bg=self.INSPECTOR_BG)
+            return st.canvas
+
         self._open_paged_info_popup("Beehive", pages,
                                     page_art=self._bee_popup_images,
+                                    page_scene=_scene,
                                     last_page_scene=True, text_scale=1.5,
                                     on_last_page=lambda w: self._award_read_to_end(
                                         w, "read_beehive", "Bees and Peas",
@@ -13594,17 +14559,27 @@ class GardenApp(InspectorMixin):
         # TileCanvas's locked flag in tile.py) ignore every interaction,
         # even when the flag is set after the tile was already built and
         # its bindings already live, which is the normal case here.
+        # A drag that starts here may still select the plants it crosses
+        # (a click here selects nothing): see _on_tile_left_release.
+        def _drag_only():
+            self._drag_start_x = event.x_root
+            self._drag_start_y = event.y_root
+            self._dragging_select = False
+
         try:
             if getattr(self.tiles[index], 'locked', False):
+                if not getattr(self, "_plant_cursor_active", False):
+                    _drag_only()
                 return
         except Exception:
             pass
 
         # Tutorial: only the plants Abbot Cyril is pointing at can be picked
         # (sowing with the seed cursor is not picking: it always works).
+        # A drag may start anywhere, though: it picks up only those plants.
         only = getattr(self, "_tutorial_select_only", None)
         if only and self.tiles[index] not in only and not self._plant_cursor_active:
-            self._swallow_tile_release = True
+            _drag_only()
             return
 
         # A pea weevil (Bruchus pisi) on this tile can be caught.
@@ -13862,6 +14837,22 @@ class GardenApp(InspectorMixin):
         self._tile_press_seen = False
         if getattr(self, "_swallow_tile_release", False):
             self._swallow_tile_release = False     # that click caught a beetle
+            return
+        # a drag-selection, even one that began on a plot that can't be
+        # picked itself (the tutorial's, or a locked one): the plants it
+        # crosses are selected (_apply_drag_selection keeps only the ones
+        # the tutorial allows)
+        if (getattr(self, "_dragging_select", False) and self._drag_start_x is not None
+                and not getattr(self, "_shift_click_handled", False)):
+            sx, sy = self._drag_start_x, self._drag_start_y
+            self._clear_drag_state()
+            try:
+                sel = self._drag_select_indices(
+                    min(sx, event.x_root), min(sy, event.y_root),
+                    max(sx, event.x_root), max(sy, event.y_root))
+                self._apply_drag_selection(sel)
+            except Exception:
+                self.render_all()
             return
         try:
             if self._tut_blocks_tile(self.tiles[index]):
@@ -14189,6 +15180,14 @@ class GardenApp(InspectorMixin):
 # Event Handlers
 # ============================================================================
     def _on_next_phase(self):
+        # A mission question waiting (A Season in the Garden): time can't be
+        # hurried, Cyril asks again first
+        try:
+            import missions as _ms
+            if _ms.time_blocked(self):
+                return
+        except Exception:
+            pass
         old_hour = int(getattr(self.garden, 'clock_hour', 8))
         self._apply_soil_patches()
         self.garden.next_phase()
@@ -14769,15 +15768,34 @@ class GardenApp(InspectorMixin):
 # ============================================================================
 # Event Handlers
 # ============================================================================
+    def _tut_keeps_plant(self, plant):
+        """The tutorial still needs this plant (see tutorial.removal_protected)."""
+        try:
+            import tutorial as _tut
+            return _tut.removal_protected(self, plant)
+        except Exception:
+            return False
+
+    def _say_plant_kept(self, n):
+        try:
+            self._toast("Not that one, Gregor, we still need it for the lesson!" if n == 1 else
+                        f"Not those {n}, Gregor, we still need them for the lesson!", level="info")
+        except Exception:
+            pass
+
     def _on_remove_selected(self):
         indices = self._selected_indices()
         if not indices:
             return
 
         removed = 0
+        kept = 0
         for idx in indices:
             plant = self.tiles[idx].plant
             if plant is None:
+                continue
+            if self._tut_keeps_plant(plant):
+                kept += 1
                 continue
 
             self.tiles[idx].plant = None
@@ -14789,7 +15807,9 @@ class GardenApp(InspectorMixin):
             # how many each press removed (the tutorial's lesson on
             # removing several plants at once watches this)
             self.__dict__.setdefault("_remove_log", []).append(removed)
-        if removed == 1:
+        if kept:
+            self._say_plant_kept(kept)
+        elif removed == 1:
             self._toast("Plant removed.")
         elif removed > 1:
             self._toast(f"{removed} plants removed.")
@@ -16631,10 +17651,16 @@ class GardenApp(InspectorMixin):
             pass
 
     def _set_ff_button_active(self, on):
-        """Fast Forward button glows green while a fast-forward runs."""
-        b = getattr(self, "fast_btn", None)
-        if b is None:
-            return
+        """Fast Forward button glows green while a fast-forward runs (and
+        the »▶▶ ☀« button with it while it skips to a sunny day)."""
+        btns = [getattr(self, "fast_btn", None)]
+        if getattr(self, "_sunny_skip_running", False) or not on:
+            btns.append(getattr(self, "sunny_ff_btn", None))
+        for b in btns:
+            if b is not None:
+                self._glow_ff_button(b, on)
+
+    def _glow_ff_button(self, b, on):
         try:
             if on:
                 if not hasattr(b, "_ff_saved"):
@@ -16701,10 +17727,40 @@ class GardenApp(InspectorMixin):
 # ============================================================================
 # Event Handlers
 # ============================================================================
+    def _tutorial_blocks_ff(self, kind="ff"):
+        """In the tutorial, no Fast Forward (normal or »▶▶ ☀«) while Cyril
+        is there and talking — it would skip past what he is showing (a
+        bud to emasculate opening into a flower, ...) and the lesson could
+        not go on. Only the line that asks for it allows it. Says so."""
+        if not getattr(self, "_tutorial_active", False):
+            return False
+        d = getattr(self, "_tutorial_dialogue", None)
+        if d is None:
+            return False
+        want = getattr(d, "_wait_condition_name", None)
+        if (kind == "ff" and want == "ff_used") or (kind == "sunny" and want == "sunny_skip_used"):
+            return False
+        try:
+            self._toast("Not now, Gregor: listen to Abbot Cyril first.", level="info")
+        except Exception:
+            pass
+        return True
+
     def _on_fast_forward(self):
         # Off during the first tutorial parts (see tutorial._set_ff_locked).
         if getattr(self, "_tutorial_ff_locked", False):
             return
+        if self._tutorial_blocks_ff("ff"):
+            return
+        # A mission question waiting (A Season in the Garden): time can't be
+        # hurried, Cyril asks again first
+        try:
+            import missions as _ms
+            if _ms.time_blocked(self):
+                return
+        except Exception:
+            pass
+
         # Dialog now asks only for the number of days — daily-render and
         # hourly-render-interval moved to Game Settings ▸ Fast Forward
         # (persistent settings, not something to re-choose every run).
@@ -16730,10 +17786,68 @@ class GardenApp(InspectorMixin):
         except Exception:
             self._toast("Please enter a positive integer.", level="error")
             return
+        # the tutorial may cap it (the very first Fast Forward: a few days)
+        _cap = getattr(self, "_ff_max_days", None)
+        try:
+            if _cap and days > int(_cap):
+                days = int(_cap)
+                self._toast(f"Not so fast, Gregor: {days} days for now.", level="info")
+        except Exception:
+            pass
 
         self._run_fast_forward(days * 24)
 
     SUNNY_SEARCH_DAYS = 120
+
+    def _sunny_ff_icon(self, size=22):
+        """The sun of the »▶▶ ☀« button: icons/weather/sunny.png if there is
+        one, otherwise a small sun drawn here (None: text only)."""
+        try:
+            from PIL import Image, ImageDraw, ImageTk
+            path = os.path.join(ICONS_DIR, "weather", "sunny.png")
+            if os.path.exists(path):
+                im = Image.open(path).convert("RGBA")
+                bb = im.getbbox()
+                if bb:
+                    im = im.crop(bb)
+                im.thumbnail((size, size), Image.LANCZOS)
+            else:
+                k = 4                                   # drawn large, then shrunk
+                S = size * k
+                im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+                d = ImageDraw.Draw(im)
+                import math
+                c = S / 2
+                for i in range(8):
+                    a = i * math.pi / 4
+                    d.line([(c + math.cos(a) * S * 0.30, c + math.sin(a) * S * 0.30),
+                            (c + math.cos(a) * S * 0.47, c + math.sin(a) * S * 0.47)],
+                           fill=(232, 160, 20, 255), width=int(S * 0.09))
+                r = S * 0.22
+                d.ellipse([c - r, c - r, c + r, c + r], fill=(250, 196, 40, 255),
+                          outline=(222, 146, 20, 255), width=int(S * 0.04))
+                im = im.resize((size, size), Image.LANCZOS)
+            return ImageTk.PhotoImage(im)
+        except Exception:
+            return None
+
+    def _on_sunny_skip(self):
+        """The »▶▶ ☀« button: Fast Forward to the next sunny morning."""
+        if getattr(self, "_tutorial_ff_locked", False):
+            return
+        if getattr(self, "fast_forward", False):
+            return
+        if self._tutorial_blocks_ff("sunny"):
+            return
+        # A mission question waiting (A Season in the Garden): time can't be
+        # hurried, Cyril asks again first
+        try:
+            import missions as _ms
+            if _ms.time_blocked(self):
+                return
+        except Exception:
+            pass
+        self._skip_to_sunny_day()
 
     def _good_garden_hour(self):
         """A sunny morning in Gregor's working hours, outside winter — a
@@ -16761,9 +17875,11 @@ class GardenApp(InspectorMixin):
 
         self._ff_stop_check = _check
         self._ff_quiet_stop = True
+        self._sunny_skip_running = True
         try:
             self._run_fast_forward(self.SUNNY_SEARCH_DAYS * 24)
         finally:
+            self._sunny_skip_running = False
             self._ff_stop_check = old_check
             self._ff_quiet_stop = False
             # the tutorial watches this (see "sunny_skip_used")
@@ -16935,6 +18051,15 @@ class GardenApp(InspectorMixin):
             if _stop is not None:
                 try:
                     if _stop():
+                        _ff_stopped_early = True
+                        break
+                except Exception:
+                    pass
+            # ... or a mission with a question (A Season in the Garden)
+            if getattr(self, "_active_mission", None):
+                try:
+                    import missions as _ms
+                    if _ms.ff_should_stop(self):
                         _ff_stopped_early = True
                         break
                 except Exception:
@@ -17145,7 +18270,22 @@ class GardenApp(InspectorMixin):
             duration = kwargs['ms']
         try:
             self.status_var.set(str(msg))
-            self.root.after(duration, lambda: self.status_var.set(""))
+            # only the newest message clears the bar: an older message's
+            # timer must not wipe a newer one early
+            old = getattr(self, "_toast_clear_job", None)
+            if old is not None:
+                try:
+                    self.root.after_cancel(old)
+                except Exception:
+                    pass
+            self._toast_clear_job = self.root.after(duration, self._toast_clear)
+        except Exception:
+            pass
+
+    def _toast_clear(self):
+        self._toast_clear_job = None
+        try:
+            self.status_var.set("")
         except Exception:
             pass
 
@@ -17311,6 +18451,35 @@ class GardenApp(InspectorMixin):
             name = f"Your garden in {sim}" if sim else "Your last garden"
         return fp, name, when, stats
 
+    def _welcome_mendel_photo(self, season=None, pil=False):
+        """Mendel for the start-up question: icons/mendel/mendel_looking_
+        <season>.png (else another of his pictures for the season, else
+        icons/mendel.png), about 220 px tall. pil=True: (PIL image, the
+        file's path) instead of a PhotoImage."""
+        try:
+            season = season or getattr(self, "_bg_current_season", None) or "spring"
+            mdir = os.path.join(ICONS_DIR, "mendel")
+            cands = [os.path.join(mdir, f"mendel_{m}_{season}.png")
+                     for m in ("looking", "smiling", "noting", "thinking")]
+            try:
+                cands += sorted(os.path.join(mdir, f) for f in os.listdir(mdir)
+                                if f.startswith("mendel_") and f.endswith(f"_{season}.png"))
+            except Exception:
+                pass
+            cands.append(os.path.join(ICONS_DIR, "mendel.png"))
+            path = next((c for c in cands if os.path.isfile(c)), None)
+            if path is None:
+                return None
+            im = Image.open(path).convert("RGBA")
+            h = max(120, int(round(220 * UI_SCALE)))
+            w = max(1, int(round(im.width * h / float(im.height))))
+            im = im.resize((w, h), Image.LANCZOS)
+            if pil:
+                return im, path
+            return ImageTk.PhotoImage(im)
+        except Exception:
+            return None
+
     def _ask_continue_or_new(self, name=None, when="", stats=""):
         """Start-up question. With an earlier garden (name given): continue
         it, begin anew, load another one, or play the tutorial. Without one:
@@ -17323,24 +18492,84 @@ class GardenApp(InspectorMixin):
         win.configure(bg="#f5eee0")
         win.resizable(False, False)
         self._force_window_not_maximized(win)
+        # Mendel himself at the left, the question at the right
+        outer = tk.Frame(win, bg="#f5eee0")
+        outer.pack()
+        # (his picture for each season; it changes with the loading
+        # screen's garden behind this window, see _LoadingCover)
+        _cover = getattr(self, "_loading_cover", None)
+        _seasons = ("spring", "summer", "autumn", "winter")
+        _mpics = {}
+        for _s in _seasons:
+            r = self._welcome_mendel_photo(_s, pil=True)
+            if r is not None:
+                _mpics[_s] = r
+        _start = ((_cover.season() if _cover is not None else None)
+                  or getattr(self, "_bg_current_season", None) or "spring")
+        _pl = None
+        if _mpics:
+            _cur = {"s": _start if _start in _mpics else next(iter(_mpics))}
+            _first = ImageTk.PhotoImage(_mpics[_cur["s"]][0], master=win)
+            _pl = tk.Label(outer, image=_first, bg="#f5eee0", bd=0)
+            _pl.image = _first
+            _pl.pack(side="left", padx=(22, 0), pady=16)
+            # pictures differ per season only if the files do
+            _changes = len({p for _im, p in _mpics.values()}) > 1
+
+            def _fade_to(season, step=1, a=None):
+                if not _pl.winfo_exists() or season not in _mpics:
+                    return
+                if step == 1:
+                    if season == _cur["s"]:
+                        return
+                    a = _mpics[_cur["s"]][0]
+                    _cur["s"] = season
+                b = _mpics[season][0]
+                if a.size != b.size:
+                    b = b.resize(a.size, Image.LANCZOS)
+                n = _LoadingCover.FADE_STEPS
+                frame = b if step >= n else Image.blend(a, b, step / float(n))
+                ph = ImageTk.PhotoImage(frame, master=win)
+                _pl.configure(image=ph)
+                _pl.image = ph
+                if step < n:
+                    win.after(_LoadingCover.FADE_MS, lambda: _fade_to(season, step + 1, a))
+
+            if _changes and _cover is not None and _cover.win is not None:
+                _cover.add_listener(_fade_to)
+                win.bind("<Destroy>", lambda e: (e.widget is win and
+                                                 _cover.remove_listener(_fade_to)), add="+")
+            elif _changes:
+                # no loading screen behind: his own round of the seasons
+                def _own_round():
+                    if not win.winfo_exists():
+                        return
+                    i = _seasons.index(_cur["s"]) if _cur["s"] in _seasons else 0
+                    nxt = next((x for x in _seasons[i + 1:] + _seasons[:i + 1] if x in _mpics),
+                               _cur["s"])
+                    _fade_to(nxt)
+                    win.after(_LoadingCover.SHOW_MS, _own_round)
+                win.after(_LoadingCover.SHOW_MS, _own_round)
+        body = tk.Frame(outer, bg="#f5eee0")
+        body.pack(side="left")
         has_save = name is not None
         in_tutorial = bool(name) and str(name).startswith("Abbot Cyril's tutorial")
-        tk.Label(win, text=("Welcome back, Gregor!" if has_save else "Welcome, Gregor!"),
+        tk.Label(body, text=("Welcome back, Gregor!" if has_save else "Welcome, Gregor!"),
                  font=("Segoe UI", 16, "bold"),
                  bg="#f5eee0", fg="#3b2a1a").pack(padx=28, pady=(20, 6))
         if has_save:
             _q_default = ("Continue the tutorial?" if in_tutorial
                           else "Continue your latest garden?")
-            q_lbl = tk.Label(win, text=_q_default,
+            q_lbl = tk.Label(body, text=_q_default,
                              font=("Segoe UI", 11), bg="#f5eee0", fg="#3b2a1a",
                              justify="center")
             q_lbl.pack(padx=28, pady=(0, 4))
-            name_lbl = tk.Label(win, text=f"\u201c{name}\u201d \u2014 saved {when}",
+            name_lbl = tk.Label(body, text=f"\u201c{name}\u201d \u2014 saved {when}",
                                 font=("Segoe UI", 11, "bold"), bg="#f5eee0", fg="#3b2a1a",
                                 justify="center", cursor="hand2")
             name_lbl.pack(padx=28, pady=(0, 2))
             # Hover the name to see a few numbers about that garden.
-            stats_lbl = tk.Label(win, text="", font=("Segoe UI", 10, "italic"),
+            stats_lbl = tk.Label(body, text="", font=("Segoe UI", 10, "italic"),
                                  bg="#f5eee0", fg="#6b5a44", height=1)
             stats_lbl.pack(padx=28, pady=(0, 12))
             if stats:
@@ -17348,11 +18577,11 @@ class GardenApp(InspectorMixin):
                 name_lbl.bind("<Leave>", lambda e: stats_lbl.configure(text=""))
         else:
             _q_default = "Ready to tend your garden?"
-            q_lbl = tk.Label(win, text=_q_default,
+            q_lbl = tk.Label(body, text=_q_default,
                              font=("Segoe UI", 11), bg="#f5eee0", fg="#3b2a1a",
                              justify="center")
             q_lbl.pack(padx=28, pady=(0, 12))
-        row = tk.Frame(win, bg="#f5eee0")
+        row = tk.Frame(body, bg="#f5eee0")
         row.pack(padx=28, pady=(0, 20))
 
         def _explain(btn, text):
@@ -17394,7 +18623,7 @@ class GardenApp(InspectorMixin):
             # a box of fixed size: the window doesn't jump while the
             # explanations (of different lengths) come and go
             _ef = tkfont.Font(font=("Segoe UI", 12))
-            expl_box = tk.Frame(win, bg="#f5eee0", width=620,
+            expl_box = tk.Frame(body, bg="#f5eee0", width=620,
                                 height=4 * _ef.metrics("linespace") + 8)
             expl_box.pack_propagate(False)
             expl_box.pack(before=row, padx=40, pady=(2, 12))
@@ -17734,6 +18963,10 @@ class GardenApp(InspectorMixin):
                 self._remember_realm("garden")
             return
         try:
+            _cov = getattr(self, "_loading_cover", None)
+            if _cov is not None:
+                _cov.set_status("Loading your garden\u2026")
+                _cov.lift()
             with open(fp, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self._deserialize_garden_state(data)
@@ -17985,7 +19218,7 @@ class GardenApp(InspectorMixin):
         # Create dialog
         dialog = Toplevel(self.root)
         dialog.title("Delete Saves")
-        dialog.geometry("500x600")
+        dialog.geometry(f"{min(500, dialog.winfo_screenwidth() - 40)}x{min(600, dialog.winfo_screenheight() - 110)}")
         dialog.transient(self.root)
         dialog.grab_set()
         
@@ -18664,6 +19897,11 @@ class GardenApp(InspectorMixin):
         self._health_hearts_var.set(DEFAULT_HEALTH_HEARTS_ENABLED)
         self._set_health_hearts_enabled(DEFAULT_HEALTH_HEARTS_ENABLED)
         self._set_portrait_weather_anim(DEFAULT_PORTRAIT_WEATHER_ANIM)
+        if not self._screen_fit_var.get():
+            self._screen_fit_var.set(True)
+            _save_screen_fit(True)
+        if bool(self._fullscreen_var.get()) != DEFAULT_FULLSCREEN:
+            self._set_fullscreen(DEFAULT_FULLSCREEN)
         self._texture_blur_var.set(DEFAULT_TEXTURE_BLUR_PCT)
         self._set_texture_blur(DEFAULT_TEXTURE_BLUR_PCT)
         self._set_stone_size_px(DEFAULT_STONE_SIZE_PX)
@@ -18683,7 +19921,7 @@ class GardenApp(InspectorMixin):
         # dialog itself calls — see _open_audio_settings_dialog)
         _set_sfx_enabled(True)
         _set_music_enabled(True)
-        _set_sfx_volume(0.75)
+        _set_sfx_volume(DEFAULT_SFX_VOLUME)
         _set_music_volume(0.75)
 
         try:
@@ -18830,11 +20068,68 @@ class GardenApp(InspectorMixin):
                                    highlightbackground="#d9cdb4", highlightthickness=1)
         content_holder.pack(side="left", fill="both", expand=True, padx=(0, 0))
 
-        inner = tk.Frame(content_holder, bg=PANEL_BG)
+        # The category's settings sit in a scrollable area: on a small
+        # screen (or with large text) a long category like Garden Visuals
+        # gets a scroll bar instead of running off the bottom.
+        sc_canvas = tk.Canvas(content_holder, bg=PANEL_BG, highlightthickness=0, bd=0)
+        sc_bar = ttk.Scrollbar(content_holder, orient="vertical", command=sc_canvas.yview)
+        sc_canvas.configure(yscrollcommand=sc_bar.set)
+        sc_canvas.pack(side="left", fill="both", expand=True)
+        sc_frame = tk.Frame(sc_canvas, bg=PANEL_BG)
+        sc_canvas.create_window(0, 0, anchor="nw", window=sc_frame)
+        inner = tk.Frame(sc_frame, bg=PANEL_BG)
         inner.pack(fill="both", expand=True, padx=22, pady=20)
+        sc_state = {"scroll": False}
 
         panels = {}
         sidebar_buttons = {}
+
+        def _fit_scroll_area():
+            try:
+                win.update_idletasks()
+                need_w = sc_frame.winfo_reqwidth()
+                need_h = sc_frame.winfo_reqheight()
+                # room left on the screen for this area: the screen minus
+                # the title bar / taskbar and the rest of this window
+                chrome_h = max(0, win.winfo_reqheight() - int(sc_canvas.cget("height") or 0))
+                room = win.winfo_screenheight() - 110 - chrome_h
+                room = max(220, room)
+                h = min(need_h, room)
+                sc_canvas.configure(width=need_w, height=h,
+                                    scrollregion=(0, 0, need_w, need_h))
+                sc_canvas.yview_moveto(0)
+                scroll = need_h > h + 1
+                sc_state["scroll"] = scroll
+                if scroll and not sc_bar.winfo_ismapped():
+                    sc_bar.pack(side="right", fill="y")
+                elif not scroll and sc_bar.winfo_ismapped():
+                    sc_bar.pack_forget()
+                # stay on the screen
+                win.update_idletasks()
+                sh = win.winfo_screenheight()
+                y = win.winfo_rooty()
+                if y + win.winfo_reqheight() > sh - 60:
+                    win.geometry(f"+{max(0, win.winfo_rootx())}+{max(0, sh - 60 - win.winfo_reqheight())}")
+            except Exception:
+                logging.debug("Settings scroll area", exc_info=True)
+
+        def _on_wheel(event):
+            if not sc_state["scroll"]:
+                return
+            try:
+                if getattr(event, "num", None) == 4:
+                    step = -1
+                elif getattr(event, "num", None) == 5:
+                    step = 1
+                else:
+                    d = int(event.delta)
+                    step = -int(d / 120) if abs(d) >= 120 else (-1 if d > 0 else 1)
+                sc_canvas.yview_scroll(step, "units")
+            except Exception:
+                pass
+
+        for _seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            win.bind(_seq, _on_wheel, add="+")
 
         def _show_category(name):
             for n, panel in panels.items():
@@ -18844,6 +20139,7 @@ class GardenApp(InspectorMixin):
                     panel.pack_forget()
             for n, btn in sidebar_buttons.items():
                 btn.configure(bg=SIDEBAR_SEL_BG if n == name else SIDEBAR_BG)
+            _fit_scroll_area()
 
         def _add_category(name, build_fn):
             panel = tk.Frame(inner, bg=PANEL_BG, width=420)
@@ -19073,6 +20369,11 @@ class GardenApp(InspectorMixin):
         def _build_setup(panel):
             _heading(panel, "Garden Setup")
             _dialog_button(panel, "Garden size wizard…", _open_grid_wizard_from_settings)
+            _check(panel, "Fit the window to the screen (text, Mendel's picture "
+                          "and garden squares; from the next start)",
+                   self._screen_fit_var, self._on_screen_fit_change)
+            _check(panel, "Full screen (F11 switches)", self._fullscreen_var,
+                   lambda: self._set_fullscreen(self._fullscreen_var.get()))
 
         _add_category("Garden Setup", _build_setup)
 
@@ -19126,6 +20427,24 @@ class GardenApp(InspectorMixin):
         except Exception as e:
             logging.error(f"Failed to start tutorial: {e}", exc_info=True)
             self._toast("Could not start the tutorial.", level="warn")
+
+    def _leave_garden(self):
+        """»Leave Garden« below the garden: the same as the Monastery map's
+        exit gate — asks, saves and closes the game."""
+        try:
+            ok = self._ask_styled("Leave the Garden of Inheritance?",
+                                  "Your garden is saved before the game closes.",
+                                  "Leave", "Stay")
+        except Exception:
+            ok = self._silent_askyesno("Exit Garden of Inheritance",
+                                       "Leave the Garden of Inheritance?\n\n"
+                                       "Your garden is saved before the game closes.")
+        if ok:
+            self._on_app_close()
+
+    def _start_tutorial_from_menu(self):
+        """Help ▸ Tutorial: the same as clicking the Friar's quarters."""
+        self._start_tutorial()
 
     def _exit_tutorial_to_normal_garden(self):
         """
@@ -19471,6 +20790,7 @@ class GardenApp(InspectorMixin):
             'available_seeds': self.available_seeds,
             'grid_rows': ROWS,
             'grid_cols': COLS,
+            'season_mode': getattr(self, '_season_mode', 'off'),
         }
         
         # Serialize archive (for Trait Inheritance Explorer)
@@ -19524,6 +20844,10 @@ class GardenApp(InspectorMixin):
                             (getattr(self, "cross_dates", {}) or {}).items()},
             'wildlife_visits': {k: dict(v) for k, v in
                                 (getattr(self, "wildlife_visits", {}) or {}).items()},
+            # the pea weevils caught in this garden (they live in the jar)
+            'bruchus_caught': int(getattr(self, "_bruchus_caught", 0) or 0),
+            'bruchus_free': int(getattr(self, "_bruchus_free", 0) or 0),
+            'bruchus_log': list(getattr(self, "_bruchus_log", None) or []),
             # Realistic: the spots of the garden that dry out faster
             'soil_dry': sorted([list(k) for k in (getattr(self, "_soil_dry_plots", None) or ())]),
         }
@@ -19558,6 +20882,11 @@ class GardenApp(InspectorMixin):
 
     def _deserialize_garden_state(self, save_data):
         """Restore garden state from serialized data."""
+        # mission progress in the message bar starts afresh with this garden,
+        # and so does what was looked at in the TIE (plant ids start anew)
+        self._mission_prog_seen = {}
+        self._mission_msg_queue = []
+        self._tie_views = set()
         try:
             sd = save_data.get("soil_dry")
             self._soil_dry_plots = ({(int(a), int(b)) for a, b in sd} if sd else None)
@@ -19579,6 +20908,21 @@ class GardenApp(InspectorMixin):
                                     for k, v in (save_data.get("wildlife_visits") or {}).items()}
         except Exception:
             self.wildlife_visits = {}
+        try:
+            self._bruchus_caught = int(save_data.get("bruchus_caught", 0) or 0)
+            if "bruchus_free" in save_data:
+                self._bruchus_free = int(save_data.get("bruchus_free", 0) or 0)
+            else:
+                # a garden saved before the Weevil Hunter count: its catches
+                # count, unless it is a mission's garden
+                lf = save_data.get("law_flags") or {}
+                mission = (lf.get("active_mission") if isinstance(lf, dict) else None) \
+                    or save_data.get("active_mission")
+                self._bruchus_free = 0 if mission else self._bruchus_caught
+            self._bruchus_log = [dict(e) for e in (save_data.get("bruchus_log") or [])
+                                 if isinstance(e, dict)]
+        except Exception:
+            self._bruchus_caught, self._bruchus_free, self._bruchus_log = 0, 0, []
         # Repaint every plot's ground once the load has finished.
         try:
             self.root.after(60, self._refresh_all_tile_textures)
@@ -19703,6 +21047,20 @@ class GardenApp(InspectorMixin):
         ui_settings = save_data.get('ui_settings', {})
         self.running = ui_settings.get('running', False)
         self.enable_daynight = ui_settings.get('enable_daynight', True)
+        try:
+            self.daynight_var.set(bool(self.enable_daynight))
+        except Exception:
+            pass
+        # The garden's own difficulty (older saves don't have it: those
+        # keep the current one). Set before the plants are rebuilt below,
+        # since each plant takes its difficulty from the app.
+        _sm = ui_settings.get('season_mode')
+        if _sm in self.SEASON_MODES and not getattr(self, "_tutorial_active", False):
+            self._season_mode = _sm
+            try:
+                self._difficulty_var.set(_sm)
+            except Exception:
+                pass
         self.auto_water_ff.set(ui_settings.get('auto_water_ff', False))
         self.auto_water_normal.set(ui_settings.get('auto_water_normal', False))
         # self.cross_random removed (non-functional legacy setting)
@@ -19927,7 +21285,8 @@ class GardenApp(InspectorMixin):
         # --- Window ---
         top = Toplevel(self.root)
         top.title("Help / Legend")
-        top.geometry("520x600")
+        top.geometry(f"{min(520, top.winfo_screenwidth() - 40)}x{min(600, top.winfo_screenheight() - 110)}")
+        self._help_win = top          # (the tutorial waits for it: "help_opened")
 
         # --- Outer frame for canvas + scrollbar ---
         outer = tk.Frame(top)
@@ -20169,7 +21528,9 @@ class GardenApp(InspectorMixin):
             "flower_color": random.choice(["purple","white"]),
             "seed_color":   random.choice(["yellow","green"]),
             "seed_shape":   random.choice(["round","wrinkled"]),
-            "plant_height": random.choice(["tall","short"]),
+            # dwarfs rarer among the starting seeds (about 15 %): most of the
+            # peas a seedsman sold climbed; the dwarf sorts were the fewer
+            "plant_height": ("short" if random.random() < STARTER_DWARF_SHARE else "tall"),
             "pod_color":    random.choice(["green","yellow"]),
             "pod_shape":    random.choice(["inflated","constricted"]),
             "flower_position": random.choice(["axial","terminal"]),
@@ -20525,6 +21886,13 @@ class GardenApp(InspectorMixin):
         Updates existing plants to match new difficulty.
         """
         new_mode = self._difficulty_var.get()
+        if (getattr(self, "_tutorial_active", False)
+                and new_mode != getattr(self, "_season_mode", "off")):
+            # the tutorial runs in Casual; the player's own difficulty
+            # comes back when they leave it
+            self._difficulty_var.set(getattr(self, "_season_mode", "off"))
+            self._toast("The tutorial always runs in Casual.", level="info")
+            return
         self._season_mode = new_mode
         
         # Update existing plants to match new difficulty
@@ -20656,14 +22024,115 @@ class GardenApp(InspectorMixin):
         except Exception:
             pass
 
+    def _ask_styled(self, heading, body, yes_text, no_text="Cancel", parent=None):
+        """A short question in the game's own style (like »Winter has come«):
+        a heading, one or two lines, the two buttons side by side. Enter =
+        yes, Escape = no. True for yes."""
+        BG, INK, MUT = self.INSPECTOR_BG, "#3b2a1a", "#6b5a44"
+        res = {"yes": False}
+        win = tk.Toplevel(parent or self.root)
+        win.withdraw()
+        win.title(heading.split("  ")[-1])
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        try:
+            win.transient(parent or self.root)
+        except Exception:
+            pass
+        outer = tk.Frame(win, bg=BG, padx=26, pady=20)
+        outer.pack(fill="both", expand=True)
+        tk.Label(outer, text=heading, font=("Segoe UI", 18, "bold"),
+                 bg=BG, fg=INK).pack(anchor="w")
+        if body:
+            tk.Label(outer, text=body, font=("Segoe UI", 14), bg=BG, fg=MUT, wraplength=440,
+                     justify="left").pack(anchor="w", pady=(8, 18))
+        bar = tk.Frame(outer, bg=BG)
+        bar.pack(fill="x", pady=(0 if body else 14, 0))
+
+        def _done(v):
+            res["yes"] = v
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+        _make_flat_button_raw(bar, no_text, lambda: _done(False), bg="#e8e0cf", fg=INK,
+                              font=("Segoe UI", 14, "bold")).pack(side="right")
+        _make_flat_button_raw(bar, yes_text, lambda: _done(True),
+                              bg="#7A9A3C", fg="white",
+                              font=("Segoe UI", 14, "bold")).pack(side="right", padx=(0, 10))
+        win.protocol("WM_DELETE_WINDOW", lambda: _done(False))
+        win.bind("<Return>", lambda e: _done(True))
+        win.bind("<Escape>", lambda e: _done(False))
+        self._center_on_screen(win)
+        win.deiconify()
+        try:
+            win.attributes("-topmost", True)
+            win.lift()
+            win.focus_force()
+            win.grab_set()
+        except Exception:
+            pass
+        win.wait_window()
+        return res["yes"]
+
+    def _ask_skip_winter(self):
+        """»Winter has come«: a short question in the game's own style,
+        the two buttons side by side. True: skip ahead to spring."""
+        BG, INK, MUT = self.INSPECTOR_BG, "#3b2a1a", "#6b5a44"
+        res = {"yes": False}
+        win = tk.Toplevel(self.root)
+        win.withdraw()
+        win.title("Winter")
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        try:
+            win.transient(self.root)
+        except Exception:
+            pass
+        outer = tk.Frame(win, bg=BG, padx=26, pady=20)
+        outer.pack(fill="both", expand=True)
+        tk.Label(outer, text="\u2744  Winter has come", font=("Segoe UI", 18, "bold"),
+                 bg=BG, fg=INK).pack(anchor="w")
+        tk.Label(outer, text=("Nothing can be sown until spring. Skip ahead to the "
+                              "first days of spring?"),
+                 font=("Segoe UI", 14), bg=BG, fg=MUT, wraplength=420,
+                 justify="left").pack(anchor="w", pady=(8, 18))
+        bar = tk.Frame(outer, bg=BG)
+        bar.pack(fill="x")
+
+        def _done(v):
+            res["yes"] = v
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+        _make_flat_button_raw(bar, "Not now", lambda: _done(False), bg="#e8e0cf", fg=INK,
+                              font=("Segoe UI", 14, "bold")).pack(side="right")
+        _make_flat_button_raw(bar, "\u2600  Skip to spring", lambda: _done(True),
+                              bg="#7A9A3C", fg="white",
+                              font=("Segoe UI", 14, "bold")).pack(side="right", padx=(0, 10))
+        win.protocol("WM_DELETE_WINDOW", lambda: _done(False))
+        win.bind("<Return>", lambda e: _done(True))
+        win.bind("<Escape>", lambda e: _done(False))
+        self._center_on_screen(win)
+        win.deiconify()
+        try:
+            win.attributes("-topmost", True)
+            win.lift()
+            win.focus_force()
+            win.grab_set()
+        except Exception:
+            pass
+        win.wait_window()
+        return res["yes"]
+
     def _offer_skip_winter(self):
         was_running = self.running
         self.running = False
         try:
-            yes = self._silent_askyesno(
-                "Winter",
-                "Winter has come. Nothing can be sown until spring, and Gregor "
-                "only goes out to read the thermometer.\n\nSkip ahead to spring?")
+            yes = self._ask_skip_winter()
         except Exception:
             yes = False
         self._winter_offer_pending = False
@@ -21042,6 +22511,13 @@ class GardenApp(InspectorMixin):
     def _set_day_length_patched(self, secs, reschedule=True):
         try:
             secs = float(secs)
+            # faster than real time while a mission question waits: no
+            try:
+                import missions as _ms
+                if secs < SPEED_REAL_TIME_SECS and _ms.time_blocked(self):
+                    return
+            except Exception:
+                pass
 
             # Allow very fast speeds but avoid UI lockups
             if secs < 0.1:
@@ -21374,12 +22850,12 @@ PLANT_STYLES = ("classic", "grown", "grown_staked", "grown_painted", "grown_stak
 
 # How plants are shown: drawn and growing ("grown_painted" / "grown") or the
 # classic stage pictures ("classic"). Cosmetic, persisted like the others.
-DEFAULT_PLANT_STYLE = "grown"
+DEFAULT_PLANT_STYLE = "grown_painted"
 
 
 def _load_plant_style():
     settings = _load_display_settings()
-    # Once: switch everybody to the new default (plain). A choice made
+    # Once: switch everybody to the default style. A choice made
     # after this (menu / settings) is kept as usual.
     if not settings.get("plant_style_v2"):
         settings["plant_style"] = DEFAULT_PLANT_STYLE
@@ -21582,6 +23058,113 @@ def _save_portrait_weather_anim(enabled):
     _save_display_settings(settings)
 
 
+def _load_screen_fit():
+    """Fit the main window to the screen (text, Mendel's picture and the
+    garden squares sized at start-up). Off = the classic fixed sizes."""
+    try:
+        return bool(_load_display_settings().get("screen_fit", True))
+    except Exception:
+        return True
+
+
+def _save_screen_fit(enabled):
+    settings = _load_display_settings()
+    settings["screen_fit"] = bool(enabled)
+    _save_display_settings(settings)
+
+
+# Full screen by default on Windows and Linux; on a Mac the normal
+# (maximized) window, since Tk's full screen behaves differently there.
+DEFAULT_FULLSCREEN = sys.platform != "darwin"
+
+
+def _load_fullscreen():
+    """Main window in full screen (F11 switches)."""
+    try:
+        return bool(_load_display_settings().get("fullscreen", DEFAULT_FULLSCREEN))
+    except Exception:
+        return DEFAULT_FULLSCREEN
+
+
+def _save_fullscreen(enabled):
+    settings = _load_display_settings()
+    settings["fullscreen"] = bool(enabled)
+    _save_display_settings(settings)
+
+
+def _maximize_root(root):
+    """The main window maximized (not full screen)."""
+    try:
+        root.state('zoomed')
+    except Exception:
+        try:
+            root.attributes('-zoomed', True)  # some Linux window managers
+        except Exception:
+            root.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight() - 80}+0+0")
+
+
+AVAIL_W = None     # usable inside of the maximized main window (set at start-up)
+AVAIL_H = None
+AVAIL_FS = None    # whether that was measured in full screen
+
+
+def _fit_ui_to_screen(root):
+    """Measures the usable room of the maximized main window and picks
+    UI_SCALE (text, paddings, Mendel's picture) for it; the garden squares
+    are fitted later, once the rows above the garden exist (see
+    GardenApp._fit_tiles_to_screen). Called once, before the UI is built."""
+    global UI_SCALE, PORTRAIT_SCALE, AVAIL_W, AVAIL_H
+    if not _load_screen_fit():
+        return
+    try:
+        root.update()
+        w, h = root.winfo_width(), root.winfo_height()
+    except Exception:
+        w = h = 0
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    if w < 600 or h < 400:                      # not maximized (yet): guess
+        w, h = sw - 16, sh - (110 if sys.platform != "darwin" else 120)
+    # the menu bar sits inside the window on Windows and Linux
+    if sys.platform != "darwin":
+        h -= 22 if sys.platform.startswith("win") else 26
+    AVAIL_W, AVAIL_H = int(w), int(h)
+    global AVAIL_FS
+    try:
+        AVAIL_FS = bool(int(root.attributes("-fullscreen")))
+    except Exception:
+        AVAIL_FS = False
+    u = min(1.0, AVAIL_H / 960.0, AVAIL_W / 1560.0)
+    UI_SCALE = max(0.75, round(u, 2))
+    PORTRAIT_SCALE = UI_SCALE
+    try:
+        _inspector_mod.set_ui_scale(UI_SCALE)
+    except Exception:
+        pass
+    try:
+        import traitinheritanceexplorer as _tie_mod
+        _tie_mod.set_ui_scale(UI_SCALE)
+    except Exception:
+        pass
+    # All text in all windows (Inspect, TIE, missions, dialogs, ...) shrinks
+    # with it: Tk turns point sizes into pixels with "tk scaling".
+    global FONTS_TK_SCALED
+    if UI_SCALE < 0.999:
+        try:
+            import tkinter.font as _tkf
+            probe = ("Segoe UI", 40)
+            before = _tkf.Font(root=root, font=probe).metrics("linespace")
+            base = float(root.tk.call("tk", "scaling"))
+            root.tk.call("tk", "scaling", base * UI_SCALE)
+            after = _tkf.Font(root=root, font=probe).metrics("linespace")
+            if after < before * (UI_SCALE + 1.0) / 2.0:
+                FONTS_TK_SCALED = True
+            else:                          # this Tk ignores it: back as it was
+                root.tk.call("tk", "scaling", base)
+                FONTS_TK_SCALED = False
+        except Exception:
+            FONTS_TK_SCALED = False
+
+
 def _load_health_hearts_enabled():
     settings = _load_display_settings()
     try:
@@ -21657,7 +23240,104 @@ _SETTINGS_BUTTON_BG = "#efe3cc"
 _SETTINGS_BUTTON_BG_ACTIVE = "#e4d4b2"
 
 
-def _ask_grid_size(root, existing_config=None):
+def _estimate_avail(root, fs=None):
+    """Usable room of the main window below its menu bar, in full screen
+    (fs True) or as a maximized window: the measured value once the game
+    runs in that mode, else estimated from the screen."""
+    if fs is None:
+        fs = _load_fullscreen()
+    if AVAIL_W and AVAIL_H and (AVAIL_FS is None or bool(AVAIL_FS) == bool(fs)):
+        return int(AVAIL_W), int(AVAIL_H)
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    if fs:
+        # the whole screen; only the menu bar (in the window on Windows/Linux)
+        if sys.platform == "darwin":
+            return sw, sh
+        return sw, sh - (22 if sys.platform.startswith("win") else 26)
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            r = wintypes.RECT()
+            # the work area: the screen without the taskbar
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):
+                return int(r.right - r.left), int(r.bottom - r.top) - 31 - 22
+        except Exception:
+            pass
+        return sw, sh - 48 - 31 - 22
+    if sys.platform == "darwin":
+        return sw, sh - 123              # menu bar, title bar, Dock
+    return sw, sh - 136
+
+
+def _estimate_plot_px(rows, cols, avail_w, avail_h, fit=None):
+    """About how big a garden plot (TILE_SIZE) will be for a rows x cols
+    garden in that room — the same rule as _fit_ui_to_screen /
+    GardenApp._fit_tiles_to_screen, with the other parts of the window
+    estimated. With the window fit off: 85 if it fits, else 0."""
+    rows, cols = max(1, int(rows)), max(1, int(cols))
+    if fit is None:
+        fit = _load_screen_fit()
+    if not fit:
+        ok = 85 * rows + 270 <= avail_h and 85 * cols + 230 <= avail_w
+        return 85 if ok else 0
+    u = max(0.75, min(1.0, avail_h / 960.0, avail_w / 1560.0))
+    fixed_w = 233 - 168 * (1.0 - u)
+    fixed_h = 234 + 136 * (u - 0.75) + 11
+    t = int(min((avail_h - fixed_h) / rows, (avail_w - fixed_w) / cols, TILE_SIZE_MAX))
+    return 85 if 85 <= t < 88 else (t // 4) * 4
+
+
+# Garden shapes (columns, rows) offered by the garden-size window
+_GARDEN_SHAPES = [(8, 3), (10, 5), (12, 6), (14, 7), (16, 7), (16, 8), (16, 9),
+                  (17, 8), (18, 8), (18, 9), (20, 9), (24, 10), (28, 12), (32, 14)]
+
+
+def _recommend_shape(avail_w, avail_h):
+    """The garden shape (columns, rows) to recommend for that room: the
+    one with the most plots whose plots are still as big as the standard
+    16 x 7 garden's would be (at most the classic 85 px are asked for, at
+    least 56 px). So spare room — e.g. full screen's extra height — goes
+    into extra rows or columns, not only bigger plots."""
+    std = _estimate_plot_px(7, 16, avail_w, avail_h)
+    # (a few px of leeway: the estimate is only about right)
+    need = max(56, min(std, 85) - 2)
+    best = None
+    # every garden from 8 x 3 to 32 x 14 (wider than tall), not only the
+    # presets: e.g. 17 x 9 on a 16:10 laptop in full screen
+    for c, r in [(c, r) for c in range(8, 33) for r in range(3, 15) if c >= r * 1.5]:
+        px = _estimate_plot_px(r, c, avail_w, avail_h)
+        if px >= need:
+            key = (c * r, px)
+            if best is None or key > best[0]:
+                best = (key, (c, r))
+    if best is not None:
+        return best[1]
+    ok = [cr for cr in _GARDEN_SHAPES if _estimate_plot_px(cr[1], cr[0], avail_w, avail_h)
+          >= TILE_SIZE_MIN]
+    return max(ok, key=lambda cr: cr[0] * cr[1]) if ok else _GARDEN_SHAPES[0]
+
+
+def _plot_px_verdict(px, fit=None):
+    """(text, colour) for the garden-size window."""
+    if fit is None:
+        fit = _load_screen_fit()
+    if not fit:
+        if px:
+            return "Fits this screen (85 px plots).", "#3f6b2a"
+        return ("Too big for this screen: part of the garden will be cut off "
+                "(or switch on »Fit the window to the screen«).", "#a02020")
+    if px >= 64:
+        return f"Plots of about {px} px on this screen — comfortable.", "#3f6b2a"
+    if px >= 56:
+        return f"Plots of about {px} px on this screen — fine.", "#3f6b2a"
+    if px >= TILE_SIZE_MIN:
+        return f"Plots of about {px} px on this screen — small plants.", "#9a6a10"
+    return ("Too big for this screen: the plots would be tiny and part of "
+            "the garden cut off. Choose a smaller garden.", "#a02020")
+
+
+def _ask_grid_size(root, existing_config=None, in_game=False):
     """Small popup to choose grid size (rows x cols) with recommended resolutions."""
 
     # Start with existing config if available, otherwise current defaults
@@ -21669,6 +23349,12 @@ def _ask_grid_size(root, existing_config=None):
         rows = ROWS
         cols = COLS
         show_dialog_next_time = True
+        try:
+            # first start: the garden recommended for this screen
+            _aw, _ah = _estimate_avail(root)
+            cols, rows = _recommend_shape(_aw, _ah)
+        except Exception:
+            pass
 
     win = tk.Toplevel(root)
     win.title("Garden size")
@@ -21721,32 +23407,46 @@ def _ask_grid_size(root, existing_config=None):
     tk.Label(main, text="Preset:", font=("Segoe UI", 11, "bold"),
              bg=_SETTINGS_PANEL_BG, fg=_SETTINGS_HEADING_FG).grid(row=0, column=0, sticky="w", pady=(0,4))
 
-    presets = {
-        # 4K Ultra HD (3840×2160)
-        "32 × 14   (4K Ultra HD ≥ 3840×2160)":     (32, 14),
-        "28 × 12   (4K compact)":                  (28, 12),
+    # Garden shapes (columns, rows), each shown with the plot size it gets
+    # on THIS screen (Windows display zoom included), so the player sees
+    # at once what fits; the biggest one with comfortable plots is marked.
+    # (in full screen or as a normal window: the »Full screen« box below)
+    fs_start = _load_fullscreen()
+    fs_var = tk.BooleanVar(value=fs_start)
+    room = {}
+    _shapes = list(_GARDEN_SHAPES)
+    presets = {}
+    rec = {}
 
-        # 1440p (2560×1440)
-        "24 × 10   (QHD ≥ 2560×1440)":             (24, 10),
-        "20 × 9    (QHD compact)":                 (20, 9),
+    def _build_presets():
+        room["w"], room["h"] = _estimate_avail(root, bool(fs_var.get()))
+        _px = {cr: _estimate_plot_px(cr[1], cr[0], room["w"], room["h"]) for cr in _shapes}
+        _recommended = _recommend_shape(room["w"], room["h"])
+        rec["shape"] = _recommended
+        if _recommended not in _shapes:
+            # the recommended size gets its own entry in the list
+            _shapes[:] = sorted(set(_GARDEN_SHAPES) | {_recommended},
+                                key=lambda cr: (cr[0] * cr[1], cr[0]))
+            _px[_recommended] = _estimate_plot_px(_recommended[1], _recommended[0],
+                                                  room["w"], room["h"])
+        presets.clear()
+        for cr in _shapes:
+            px = _px[cr]
+            if px <= 0 or px < TILE_SIZE_MIN:
+                note = "too big for this screen"
+            else:
+                note = f"plots ≈ {px} px"
+            if cr == _recommended:
+                note += ", recommended"
+            presets[f"{cr[0]} × {cr[1]}   ({note})"] = cr
 
-        # 1080p / Full HD (1920×1080)
-        "18 × 8    (Full HD max)":                 (18, 8),
-        "17 × 8    (Full HD Lenovo X1)":           (17, 8),
-        "16 × 7    (Full HD standard)":            (16, 7),   # ← **comma was missing here**
-
-        # 900p (1600×900)
-        "14 × 7    (1600×900)":                    (14, 7),
-
-        # HD+ / HD
-        "10 × 5    (HD+ ≥ 1366×768)":              (10, 5),
-        "8 × 3     (HD ≥ 1280×720)":               (8, 3),
-    }
-
+    _build_presets()
+    avail_w, avail_h = room["w"], room["h"]
     preset_names = list(presets.keys())
 
-    # Default to the Full HD standard preset (string must match key exactly)
-    preset_var = tk.StringVar(value="16 × 7    (Full HD standard)")
+    # The shown preset matches the current size when it is one of them
+    preset_var = tk.StringVar(value=next(
+        (k for k, v in presets.items() if v == (int(cols), int(rows))), "Custom"))
 
     cols_var = tk.StringVar(value=str(cols))
     rows_var = tk.StringVar(value=str(rows))
@@ -21772,15 +23472,63 @@ def _ask_grid_size(root, existing_config=None):
     rows_entry = ttk.Entry(main, textvariable=rows_var, width=6, style="GridWizard.TEntry")
     rows_entry.grid(row=2, column=1, sticky="w", pady=4)
 
-    # Info text
-    info = (
-        "Tip:\n"
-        "• More columns/rows → more plants, but needs a larger screen.\n"
-        "• If the grid does not fit, try a smaller preset."
-    )
-    tk.Label(main, text=info, justify="left", wraplength=320,
+    # What this size means on this screen (updates as the numbers change)
+    verdict = tk.Label(main, text="", justify="left", wraplength=340,
+                       bg=_SETTINGS_PANEL_BG, font=("Segoe UI", 10, "bold"))
+    verdict.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 2))
+    tk.Label(main, text="More columns and rows give more plants, but smaller plots."
+                        + (" Takes effect at the next start." if in_game else ""),
+             justify="left", wraplength=340,
              bg=_SETTINGS_PANEL_BG, fg="#7a6a55", font=("Segoe UI", 9, "italic"),
-             ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6,8))
+             ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+    def _plot_px_now():
+        try:
+            c, r = int(cols_var.get()), int(rows_var.get())
+            if c <= 0 or r <= 0:
+                return None
+        except Exception:
+            return None
+        return _estimate_plot_px(r, c, room["w"], room["h"])
+
+    def _update_verdict(*_):
+        px = _plot_px_now()
+        if px is None:
+            verdict.configure(text="", fg="#3b2a1a")
+            return
+        text, colour = _plot_px_verdict(px)
+        verdict.configure(text=text, fg=colour)
+        try:
+            c, r = int(cols_var.get()), int(rows_var.get())
+            name = next((k for k, v in presets.items() if v == (c, r)), "Custom")
+            if preset_var.get() != name:
+                preset_var.set(name)
+        except Exception:
+            pass
+
+    cols_var.trace_add("write", _update_verdict)
+    rows_var.trace_add("write", _update_verdict)
+    _update_verdict()
+
+    # Full screen or a normal window: the sizes above follow it
+    def _on_fs_toggle():
+        # still on the recommended size? Then follow the new recommendation
+        try:
+            on_rec = (int(cols_var.get()), int(rows_var.get())) == rec.get("shape")
+        except Exception:
+            on_rec = False
+        _build_presets()
+        combo.configure(values=list(presets.keys()))
+        if on_rec and rec.get("shape"):
+            c, r = rec["shape"]
+            cols_var.set(str(c))
+            rows_var.set(str(r))
+        _update_verdict()
+
+    fs_chk = ttk.Checkbutton(main, text="Full screen",
+                             variable=fs_var, command=_on_fs_toggle,
+                             style="GridWizard.TCheckbutton")
+    fs_chk.grid(row=5, column=0, columnspan=3, sticky="w", pady=(0, 4))
 
     # Checkbox: don't show at next start
     dont_show_var = tk.IntVar()
@@ -21788,11 +23536,11 @@ def _ask_grid_size(root, existing_config=None):
         dont_show_var.set(1)
     chk = ttk.Checkbutton(main, text="Don't show at next start", variable=dont_show_var,
                            style="GridWizard.TCheckbutton")
-    chk.grid(row=4, column=0, columnspan=3, sticky="w", pady=(0,8))
+    chk.grid(row=6, column=0, columnspan=3, sticky="w", pady=(0,8))
 
     # Buttons
     btns = tk.Frame(main, bg=_SETTINGS_PANEL_BG)
-    btns.grid(row=5, column=0, columnspan=3, sticky="e")
+    btns.grid(row=7, column=0, columnspan=3, sticky="e")
 
     cancelled = {"value": False}
 
@@ -21802,6 +23550,14 @@ def _ask_grid_size(root, existing_config=None):
             r = int(rows_var.get())
             if c <= 0 or r <= 0:
                 raise ValueError
+            _px_ok = _estimate_plot_px(r, c, room["w"], room["h"])
+            if _px_ok < TILE_SIZE_MIN:
+                if not _silent_dialog_raw(
+                        root, "Garden too big for this screen",
+                        f"A {c} × {r} garden does not fit this screen: the plots "
+                        "would be tiny and part of the garden cut off.\n\nUse it anyway?",
+                        kind="question"):
+                    return
             if c * r > 400:
                 if not _silent_dialog_raw(
                         root, "Large grid",
@@ -21812,6 +23568,8 @@ def _ask_grid_size(root, existing_config=None):
             nonlocal rows, cols, show_dialog_next_time
             cols, rows = c, r
             show_dialog_next_time = not bool(dont_show_var.get())
+            if bool(fs_var.get()) != bool(fs_start):
+                _save_fullscreen(bool(fs_var.get()))
             win.destroy()
         except Exception:
             _silent_dialog_raw(root, "Invalid input",
@@ -21906,17 +23664,30 @@ def main():
         # the same bug in traitinheritanceexplorer.py's maximize call).
         # (macOS Aqua knows the "zoomed" state but has no "-zoomed"
         # attribute — that call failed silently there)
-        try:
-            root.state('zoomed')
-        except Exception:
+        _maximize_root(root)
+        # full screen (the default): the whole screen, no title bar or taskbar
+        if _load_fullscreen():
             try:
-                root.attributes('-zoomed', True)  # some Linux window managers
+                root.attributes('-fullscreen', True)
             except Exception:
-                root.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight() - 80}+0+0")
+                pass
     except Exception:
         pass
 
+    cover = _LoadingCover(root)
+
+    try:
+        _fit_ui_to_screen(root)
+    except Exception:
+        logging.error("Screen fit failed", exc_info=True)
+
     app = GardenApp(root)
+    app._loading_cover = cover
+    try:
+        app._apply_menubar_style()
+    except Exception:
+        pass
+    cover.lift()
 
     # Remember what a brand-new garden looks like, for File > New Garden.
     try:
@@ -21925,11 +23696,15 @@ def main():
         app._fresh_state = None
 
     # An earlier garden exists? Ask whether to continue it or start anew.
+    # (asked over the loading screen; the garden appears once it is ready)
     try:
         root.update_idletasks()
+        cover.set_status("")
         app._startup_continue_prompt()
     except Exception:
         logging.error("Start-up garden prompt failed", exc_info=True)
+    # a moment for Mendel's picture and the plants to be drawn
+    root.after(450, cover.close)
 
     # The Monastery window no longer opens by itself; the map button
     # (tooltip "Tutorial / Settings") opens it.

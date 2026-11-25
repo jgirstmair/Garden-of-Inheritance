@@ -81,8 +81,9 @@ GROWTH_PACE_SD = 0.06
 GROWTH_PACE_RANGE = (0.88, 1.12)
 WEAK_GROWTH_SLOWDOWN = 1.2
 # Seeds (ovules) per pod. Mendel: well-developed pods held "6-9 seeds on
-# average"; the game uses 5-8. Each pod gets its own number (see pod_ovules).
-SEEDS_PER_POD = (5, 8)
+# average"; the game keeps pods smaller (5-6), so a pod stays easy to read
+# at a glance. Each pod gets its own number (see pod_ovules).
+SEEDS_PER_POD = (5, 6)
 # Realistic difficulty only — Mendel's own sowing results: of sown seeds,
 # 89-94 % gave plants that bore fruit ("einige Samen nicht keimten";
 # e.g. 102 of 108, 96 of 108, 639 of 687). Split into seeds that never

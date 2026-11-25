@@ -100,6 +100,16 @@ CREATURE_DEFS = [
     ("bruchus",   "bruchus_pisi", 1, True,  (5,6,7,8)),
 ]
 
+# The mission »Weevil Patrol« (missions.weevil_patrol): mostly weevils, on
+# any flowering plant (not only where pods grow), several at once.
+PATROL_DEFS = [
+    ("bruchus",   "bruchus_pisi", 8, False, (5,6,7,8)),
+    ("butterfly", "butterfly",    2, False, (3,4,5,6,7,8,9,10)),
+    ("bee",       "bee",          2, False, (3,4,5,6,7,8,9)),
+]
+PATROL_SPAWN_CHANCE = 0.55
+PATROL_MAX_ACTIVE = 5
+
 # ---------------------------------------------------------------------------
 # Timing (milliseconds)
 # ---------------------------------------------------------------------------
@@ -768,6 +778,11 @@ class _Creature:
             return
         self._inside = True
         try:
+            import missions as _ms
+            _ms.note_weevil_in_flower(self.mgr.app)
+        except Exception:
+            pass
+        try:
             img_item = getattr(self.tile, "img_item", None)
             if img_item is not None:
                 self.tile.tag_lower(self._item, img_item)    # the petals cover it
@@ -946,11 +961,15 @@ class WildlifeManager:
                 return
 
             eligible = self._count_eligible_tiles()
-            dynamic_cap = max(1, min(6 if DEBUG_ALL_BRUCHUS else MAX_ACTIVE, eligible))
+            patrol = self._patrol()
+            dynamic_cap = max(1, min(6 if DEBUG_ALL_BRUCHUS else
+                                     (PATROL_MAX_ACTIVE if patrol else MAX_ACTIVE), eligible))
 
             defs = CREATURE_DEFS
             if DEBUG_ALL_BRUCHUS:
                 defs = [("bruchus", "bruchus_pisi", 8, False, tuple(range(1, 13)))]
+            elif patrol:
+                defs = PATROL_DEFS
             for cdef in defs:
                 type_name, _, weight, pods_only, months = cdef
                 if len(self._active) >= dynamic_cap:
@@ -962,7 +981,9 @@ class WildlifeManager:
                     continue
                 if pods_only and not self._any_pods():
                     continue
-                chance = 0.9 if DEBUG_ALL_BRUCHUS else SPAWN_CHANCE * (weight / 8.0)
+                chance = (0.9 if DEBUG_ALL_BRUCHUS else
+                          PATROL_SPAWN_CHANCE * (weight / 8.0) if patrol else
+                          SPAWN_CHANCE * (weight / 8.0))
                 if random.random() < chance:
                     self._spawn(type_name, pods_only, random.choice(pool))
         except Exception as exc:
@@ -1082,14 +1103,15 @@ class WildlifeManager:
         if not self._is_daytime() or not self._is_season() or self._is_wet():
             return
         eligible = self._count_eligible_tiles()
-        if len(self._active) >= max(1, min(MAX_ACTIVE, eligible)):
+        if len(self._active) >= max(1, min(PATROL_MAX_ACTIVE if self._patrol() else MAX_ACTIVE,
+                                           eligible)):
             return
         # The next visitor is drawn afresh by the usual weights — otherwise a
         # weevil, once it came, would keep returning as a weevil all day.
         if not DEBUG_ALL_BRUCHUS:
             choices, weights = [], []
             month = self._current_month()
-            for t, _pre, w, po, months in CREATURE_DEFS:
+            for t, _pre, w, po, months in (PATROL_DEFS if self._patrol() else CREATURE_DEFS):
                 if month not in months or not self._pools.get(t):
                     continue
                 if po and not self._any_pods():
@@ -1368,6 +1390,13 @@ class WildlifeManager:
             return int(self.app.garden.month)
         except Exception:
             return 6
+
+    def _patrol(self) -> bool:
+        try:
+            import missions as _ms
+            return bool(_ms.weevil_patrol(self.app))
+        except Exception:
+            return False
 
     def _count_eligible_tiles(self) -> int:
         try:
