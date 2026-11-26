@@ -512,6 +512,10 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
     law2_trait_name = ""
     law2_dominant_value = ""  # the phenotype value that appears ~75% of the time
     law2_all_valid = []       # all (trait_key, dominant_value) pairs that qualify
+    # trait_key -> the counts of the right kind of F2 family that did NOT
+    # (yet) unlock: {"dom_value", "rec_value", "dom", "rec", "total"} — the
+    # law wizard explains with them what is still missing
+    law2_near = {}
     law2_all_valid_ratios = {}  # trait_key -> ratio_str for the qualifying traits
 
     law3_discovered = False
@@ -775,6 +779,11 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
                     counts["dom"] += 1
                 else:
                     counts["rec"] += 1
+                    counts["rec_value"] = ph
+
+            if total and (tk not in law2_near or total > law2_near[tk]["total"]):
+                law2_near[tk] = {"dom_value": dom_pheno, "rec_value": counts.get("rec_value", ""),
+                                 "dom": counts["dom"], "rec": counts["rec"], "total": total}
 
             if total < LAW2_MIN_N:
                 continue
@@ -1246,6 +1255,7 @@ def test_mendelian_laws(app, archive=None, pid=None, allow_credit=True, toast=Tr
         # trait_key -> explanation when raw sibling ratio looked right but
         # the true-breeding-lineage requirement is what actually blocked it
         "law2_lineage_notes": law2_lineage_notes,
+        "law2_near": law2_near,
         # frozenset({tk1,tk2}) -> same idea, for Law 3 trait pairs
         "law3_lineage_notes": law3_lineage_notes,
     }

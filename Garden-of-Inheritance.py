@@ -21750,213 +21750,522 @@ class GardenApp(InspectorMixin):
         # Update pause button text
         self._update_pause_button()
 
-    def _show_help(self):
-        # --- Window ---
+    # ------------------------------------------------------------------
+    # Help / Legend: a small book with chapters (H, Help menu)
+    # ------------------------------------------------------------------
+    _HELP_BG = "#F2E6C8"        # parchment (as the law wizard)
+    _HELP_CARD = "#FAF4E0"
+    _HELP_SIDE = "#E8D9B8"
+    _HELP_SEL = "#7D3C1A"       # terracotta
+    _HELP_INK = "#2D1A0A"
+    _HELP_MUTED = "#7A6040"
+
+    def _show_help(self, chapter=None):
+        """The Help window: chapters listed on the left, one chapter shown
+        at a time (◀ ▶, the arrow keys or Page Up/Down page through them),
+        with pictures from icons/help (left out if a file is missing)."""
+        old = getattr(self, "_help_win", None)
+        try:
+            if old is not None and old.winfo_exists():
+                old.deiconify()
+                old.lift()
+                old.focus_force()
+                if chapter is not None:
+                    old._goto(chapter)
+                return
+        except Exception:
+            pass
+
+        BG, CARD, SIDE, SEL = self._HELP_BG, self._HELP_CARD, self._HELP_SIDE, self._HELP_SEL
+        INK, MUTED = self._HELP_INK, self._HELP_MUTED
+        F = lambda n, *st: ("Segoe UI", _ufont(n)) + tuple(st)
+
         top = Toplevel(self.root)
-        top.title("Help / Legend")
-        top.geometry(f"{min(520, top.winfo_screenwidth() - 40)}x{min(600, top.winfo_screenheight() - 110)}")
+        top.title("Help — Garden of Inheritance")
+        top.configure(bg=BG)
+        sw, sh = top.winfo_screenwidth(), top.winfo_screenheight()
+        W = min(_uf(1000), sw - 40)
+        H = min(_uf(720), sh - 110)
+        top.geometry(f"{W}x{H}+{max(0, (sw - W) // 2)}+{max(0, (sh - H) // 2 - 20)}")
+        top.minsize(min(640, W), min(420, H))
         self._help_win = top          # (the tutorial waits for it: "help_opened")
+        top._imgs = []
 
-        # --- Outer frame for canvas + scrollbar ---
-        outer = tk.Frame(top)
-        outer.pack(fill="both", expand=True)
+        # ---- layout: chapter list | page --------------------------------
+        side = tk.Frame(top, bg=SIDE, width=_uf(230))
+        side.pack(side="left", fill="y")
+        side.pack_propagate(False)
+        tk.Label(side, text="Help", font=F(18, "bold"), bg=SIDE, fg=INK
+                 ).pack(anchor="w", padx=_uf(16), pady=(_uf(14), _uf(8)))
+        main = tk.Frame(top, bg=BG)
+        main.pack(side="left", fill="both", expand=True)
 
-        canvas = tk.Canvas(outer, borderwidth=0, highlightthickness=0)
-        vscroll = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vscroll.set)
+        head = tk.Frame(main, bg=SEL)
+        head.pack(fill="x")
+        title_lbl = tk.Label(head, text="", font=F(16, "bold"), bg=SEL, fg="white",
+                             anchor="w", padx=_uf(18), pady=_uf(10))
+        title_lbl.pack(fill="x")
 
-        vscroll.pack(side="right", fill="y")
+        nav = tk.Frame(main, bg=BG)
+        nav.pack(side="bottom", fill="x", padx=_uf(14), pady=_uf(10))
+        tk.Frame(main, height=1, bg="#B89B72").pack(side="bottom", fill="x")
+
+        body = tk.Frame(main, bg=BG)
+        body.pack(fill="both", expand=True)
+        canvas = tk.Canvas(body, bg=BG, highlightthickness=0, bd=0)
+        vbar = tk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        vbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
+        page = tk.Frame(canvas, bg=BG)
+        page_id = canvas.create_window((0, 0), window=page, anchor="nw")
+        page.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(page_id, width=e.width))
 
-        # --- Inner scrollable frame ---
-        inner = tk.Frame(canvas)
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-
-        # --- Update scrollregion whenever size changes ---
-
-# ============================================================================
-# Event Handlers
-# ============================================================================
-        def _on_configure(event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        inner.bind("<Configure>", _on_configure)
-
-        # --- Mouse wheel scrolling ---
-        def _on_mousewheel(event):
+        def _wheel(e):
             try:
-                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                if getattr(e, "num", None) == 4:
+                    canvas.yview_scroll(-3, "units")
+                elif getattr(e, "num", None) == 5:
+                    canvas.yview_scroll(3, "units")
+                else:
+                    d = e.delta if sys.platform == "darwin" else e.delta / 120
+                    canvas.yview_scroll(int(-d) * (1 if sys.platform == "darwin" else 3), "units")
+            except Exception:
+                pass
+        # the wheel scrolls the page only while the mouse is over this window
+        top.bind("<MouseWheel>", _wheel)
+        top.bind("<Button-4>", _wheel)
+        top.bind("<Button-5>", _wheel)
+
+        # ---- building blocks of a page ------------------------------------
+        def wrap():
+            return max(300, canvas.winfo_width() - _uf(60))
+
+        def h(text):
+            tk.Label(page, text=text, font=F(14, "bold"), bg=BG, fg=SEL, anchor="w",
+                     justify="left", wraplength=wrap()
+                     ).pack(fill="x", padx=_uf(22), pady=(_uf(14), _uf(4)))
+
+        def p(text, muted=False):
+            tk.Label(page, text=text, font=F(12), bg=BG, fg=(MUTED if muted else INK),
+                     anchor="w", justify="left", wraplength=wrap()
+                     ).pack(fill="x", padx=_uf(22), pady=(0, _uf(6)))
+
+        def bullets(lines):
+            for ln in lines:
+                row = tk.Frame(page, bg=BG)
+                row.pack(fill="x", padx=(_uf(30), _uf(22)), pady=(0, _uf(3)))
+                tk.Label(row, text="•", font=F(12, "bold"), bg=BG, fg=SEL
+                         ).pack(side="left", anchor="n")
+                tk.Label(row, text=ln, font=F(12), bg=BG, fg=INK, anchor="w",
+                         justify="left", wraplength=wrap() - _uf(30)
+                         ).pack(side="left", fill="x", padx=(_uf(6), 0))
+
+        def steps(items):
+            for i, (head_, text_) in enumerate(items, 1):
+                row = tk.Frame(page, bg=CARD, highlightthickness=1,
+                               highlightbackground="#D8C8A0")
+                row.pack(fill="x", padx=_uf(22), pady=(0, _uf(6)))
+                tk.Label(row, text=str(i), font=F(15, "bold"), bg=SEL, fg="white",
+                         width=2).pack(side="left", fill="y")
+                col = tk.Frame(row, bg=CARD)
+                col.pack(side="left", fill="x", expand=True, padx=_uf(10), pady=_uf(6))
+                tk.Label(col, text=head_, font=F(12, "bold"), bg=CARD, fg=INK, anchor="w"
+                         ).pack(fill="x")
+                tk.Label(col, text=text_, font=F(12), bg=CARD, fg=INK, anchor="w",
+                         justify="left", wraplength=wrap() - _uf(70)).pack(fill="x")
+
+        def legend(items):
+            box = tk.Frame(page, bg=BG)
+            box.pack(fill="x", padx=_uf(30), pady=(0, _uf(6)))
+            for colour, label in items:
+                row = tk.Frame(box, bg=BG)
+                row.pack(anchor="w", pady=1)
+                sq = tk.Frame(row, bg=colour, width=_uf(22), height=_uf(16),
+                              highlightthickness=1, highlightbackground="#6f6a60")
+                sq.pack(side="left")
+                tk.Label(row, text=label, font=F(12), bg=BG, fg=INK).pack(side="left", padx=_uf(8))
+
+        def keys(rows):
+            box = tk.Frame(page, bg=BG)
+            box.pack(fill="x", padx=_uf(30), pady=(0, _uf(6)))
+            for r_, (k, text_) in enumerate(rows):
+                tk.Label(box, text=k, font=F(12, "bold"), bg=CARD, fg=INK, padx=_uf(8),
+                         pady=1, highlightthickness=1, highlightbackground="#D8C8A0"
+                         ).grid(row=r_, column=0, sticky="w", pady=1)
+                tk.Label(box, text=text_, font=F(12), bg=BG, fg=INK, anchor="w",
+                         justify="left", wraplength=wrap() - _uf(200)
+                         ).grid(row=r_, column=1, sticky="w", padx=_uf(12))
+
+        def pic(name, caption="", max_w=None):
+            path = os.path.join(ICONS_DIR, "help", name)
+            if not os.path.isfile(path):
+                return
+            try:
+                im = Image.open(path).convert("RGB")
+                lim = min(wrap(), _uf(max_w or im.width))
+                if im.width > lim:
+                    im = im.resize((lim, max(1, int(im.height * lim / im.width))), Image.LANCZOS)
+                ph = ImageTk.PhotoImage(im, master=top)
+                top._imgs.append(ph)
+                tk.Label(page, image=ph, bg=BG, bd=0).pack(padx=_uf(22), pady=(_uf(4), 0))
+                if caption:
+                    tk.Label(page, text=caption, font=F(11, "italic"), bg=BG, fg=MUTED,
+                             wraplength=wrap(), justify="center"
+                             ).pack(padx=_uf(22), pady=(_uf(2), _uf(8)))
             except Exception:
                 pass
 
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        def pics_row(items):
+            """Pictures side by side, each with a caption under it."""
+            files = [(n, c) for n, c in items if os.path.isfile(os.path.join(ICONS_DIR, "help", n))]
+            if not files:
+                return
+            row = tk.Frame(page, bg=BG)
+            row.pack(padx=_uf(22), pady=(_uf(4), _uf(8)))
+            each = int((wrap() - _uf(20) * len(files)) / len(files))
+            for n, c in files:
+                try:
+                    im = Image.open(os.path.join(ICONS_DIR, "help", n)).convert("RGB")
+                    lim = min(each, _uf(300))
+                    im = im.resize((lim, max(1, int(im.height * lim / im.width))), Image.LANCZOS)
+                    ph = ImageTk.PhotoImage(im, master=top)
+                    top._imgs.append(ph)
+                    col = tk.Frame(row, bg=BG)
+                    col.pack(side="left", padx=_uf(10), anchor="n")
+                    tk.Label(col, image=ph, bg=BG, bd=0).pack()
+                    tk.Label(col, text=c, font=F(11, "italic"), bg=BG, fg=MUTED,
+                             wraplength=lim, justify="center").pack(pady=(_uf(2), 0))
+                except Exception:
+                    pass
 
-        BODY_FONT = ("Segoe UI", 11)
-        SUBHEAD_FONT = ("Segoe UI", 12, "bold")
-        HEAD_FONT = ("Segoe UI", 13, "bold")
+        mod = "⌘" if sys.platform == "darwin" else "Ctrl"
+        alt = "Option" if sys.platform == "darwin" else "Alt"
 
-        def add_paragraph(text, padx=20, pady=(0, 6)):
-            tk.Label(inner, text=text, font=BODY_FONT, wraplength=480, justify="left")\
-              .pack(anchor="w", padx=padx, pady=pady)
+        # ---- the chapters -------------------------------------------------
+        def ch_start():
+            p("You are Gregor Mendel, friar in the monastery garden at Brno. Grow peas, "
+              "cross them by hand, count what their children look like — and find the "
+              "rules of inheritance that Mendel found: the three Mendelian laws.")
+            h("New here? Play the tutorial")
+            p("Help ▸ Tutorial, or the monastery map at the top left ▸ Tutorial. Abbot "
+              "Cyril takes you through everything step by step, in a garden of its own.")
+            h("The screen")
+            bullets([
+                "Left: what you can do with the selected plant — Plant, Water, Inspect, "
+                "Harvest seeds, Emasculate, Collect pollen, Pollinate, Remove plant. Rest the "
+                "mouse on a button to see its key.",
+                "Top: date, time, weather and temperature, and the clock buttons.",
+                "Middle: the garden. Click a plot to select it; the arrow keys move the "
+                "selection, Shift + arrows select a row or column, " + mod + " + A everything.",
+                "Right of the garden: »1« / »2« switch between your two gardens (keys 1, 2).",
+                "Bottom: messages, and the row of Mendel's laws with »Unlock«.",
+                "Right-click a plot for a menu of everything you can do there.",
+            ])
+            h("A first season")
+            steps([
+                ("Plant", "Press Plant, pick seeds, then click the plots (Esc stops). Hold "
+                 + mod + " to see where the seeds will go."),
+                ("Care", "Keep the soil evenly moist — see »Plants & care«."),
+                ("Cross", "When the plants flower: emasculate, collect pollen, pollinate — "
+                 "see »Crossing peas«."),
+                ("Harvest and count", "Harvest the ripe pods, sow the seeds, and count "
+                 "what the children look like — see »Mendel's laws«."),
+            ])
 
-        def add_bullets(lines, padx=20):
-            for line in lines:
-                tk.Label(inner, text="• " + line, font=BODY_FONT, wraplength=480, justify="left")\
-                  .pack(anchor="w", padx=padx)
+        def ch_care():
+            h("How a pea grows")
+            pic("help_stages.png", "Seedling → young plant → budding → flowering → pods → ripe seeds")
+            h("Health")
+            p("Shown under the plant as a bar (green → yellow → red) or as four hearts "
+              "(Game Settings ▸ Garden beds ▸ Health: show as hearts): one heart for each "
+              "quarter of health. At 0 the plant dies. Yellowish plants are weak: they "
+              "don't recover, and their pollen is unreliable.")
+            h("Water")
+            p("Shown as a bar at the side of the plot, or as a drop (Game Settings ▸ Garden "
+              "beds ▸ Water: show as drop icon). Its colour tells how wet the soil is:")
+            legend([
+                ("#FFD54F", "Dry (0–25) — the plant loses health"),
+                ("#81D4FA", "Slightly moist (26–50) — fine"),
+                ("#42A5F5", "Evenly moist (51–75) — the only range where health recovers"),
+                ("#1565C0", "Soggy (76–90) — fine"),
+                ("#003F8C", "Waterlogged (91–100) — the plant loses health"),
+            ])
+            h("Watering")
+            bullets([
+                "Water (w) waters the selected plants; »All« (Shift+W) every plant. The "
+                "Water button also gives you a watering can: click plant after plant, Esc "
+                "or right-click puts it away.",
+                "Gregor works in the garden from 6:00 to 19:00 — not at night.",
+                "Rain waters the plants by itself (up to 70), and you can't water while it rains.",
+                "On a hot, sunny midday (25 °C and more, 11–16 h) much of the water "
+                "evaporates: water in the morning or evening.",
+                "Game Settings ▸ Automation ▸ Auto-water does it for you.",
+            ])
 
-        # ============================================================
-        # ======================  HELP CONTENT  ======================
-        # ============================================================
+        def ch_time():
+            h("The clock")
+            keys([
+                ("Space", "Pause / run"),
+                ("⏵1h", "One hour on (button at the top)"),
+                (mod + " + ← / →", "Slower / faster (also " + mod + " + < / >)"),
+                ("F", "Fast Forward: jump days ahead. Press F (or the button) again to stop."),
+                ("☀", "Skip to the next sunny morning"),
+            ])
+            h("Weather and seasons")
+            p("Each day brings its own weather, from Mendel's own records of Brno. Rain "
+              "waters the garden; thunder, heat and frost can stress plants (depending on "
+              "the difficulty). The Meteorological Observatory (View menu) keeps the "
+              "temperatures you measured at the station.")
+            h("Difficulty (Game Settings ▸ Difficulty)")
+            bullets([
+                "Casual — ripe pods about 30 days after sowing; weather and cold never harm "
+                "the plants; sow any time of year.",
+                "Moderate — about 55 days; sowing follows the seasons; temperature effects "
+                "are shown, but no plant dies of them.",
+                "Realistic — about 85 days, as in Mendel's Brno: sowing only in season, some "
+                "spots dry out faster, autumn frost ends the year.",
+            ])
 
-        # --- Title ---
-        tk.Label(inner, text="Help / Legend", font=("Segoe UI", 16, "bold")).pack(pady=(10, 10))
+        def ch_cross():
+            p("A cross puts the pollen of one plant (the father) on the flower of another "
+              "(the mother). Peas pollinate themselves inside the closed flower — so the "
+              "mother's own anthers must come out first. Everything happens on single "
+              "flowers: select the plant, press the button, then choose the flower in the "
+              "Inspect window's flower row.")
+            h("1. Emasculate the mother (E) — forceps")
+            pic("help_emasculate.png", "Pluck all ten anthers with the forceps: the flower "
+                "can no longer pollinate itself.")
+            bullets([
+                "Do it on a bud, or on a flower open for less than a day: a bud has "
+                "(almost) not pollinated itself yet; a flower open for a few days mostly has.",
+                "Emasculation can't undo a self-pollination that already happened.",
+            ])
+            h("2. Collect pollen from the father (C) — brush")
+            pic("help_collect.png", "Touch the ripe anthers of an open flower with the camel-hair brush.")
+            bullets([
+                "Inspect the father first each day: it shows which flowers have ripe "
+                "anthers today (A gives a quick check). Not every flower is ripe every day.",
+                "The father must be healthy (70 or more) and not weak.",
+                "Pollen keeps for that day only. Up to 9 brushes can carry pollen at once.",
+            ])
+            h("3. Pollinate the mother (P)")
+            pic("help_pollinate.png", "Bring the brush to the stigma of the emasculated, open flower.")
+            bullets([
+                "Only an open flower can be pollinated — in the morning or at noon.",
+                "Pollen of the same plant is a self-pollination by hand.",
+                "The pollinated flower grows a pod; its seeds are the children of the cross.",
+            ])
+            h("4. Harvest")
+            p("When the pods are ripe: Harvest seeds (S) takes one pod, Shift+S all of them. "
+              "The seeds go to your store (»Seeds« at the top) and can be sown with Plant.")
+            p("Game Settings ▸ Automation ▸ Show Emasculation / Pollination windows: off "
+              "does the handwork without the windows (always on in the tutorial).", muted=True)
 
-        # ------------------------------------------------------------
-        # HEALTH COLORS
-        # ------------------------------------------------------------
-        tk.Label(inner, text="🌿 Health Levels", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=10)
+        def ch_inspect():
+            h("Inspect (I or Enter)")
+            p("Everything about the selected plant: its traits, health, the day it was "
+              "sown, its parents — and the flower row, where flowers are chosen for "
+              "emasculating, collecting pollen and pollinating.")
+            h("Trait Inheritance Explorer — TIE")
+            p("Right-click Inspect, or View ▸ Trait Inheritance Explorer: the family tree of "
+              "the plant, its pods, and the counts of its brothers and sisters — the numbers "
+              "you need for Mendel's laws.")
+            h("Genotype Viewer (Shift+G)")
+            p("Shows the genes themselves. But once a genotype has been revealed, no "
+              "Mendelian law can be unlocked any more in this garden — Mendel never saw "
+              "genes; he found them in his counts.")
+            h("More")
+            bullets([
+                "Hold " + alt + ": the selected plant's brothers and sisters are outlined.",
+                "View ▸ Missions: Mendel's own experiments to repeat, each in a garden of its own.",
+                "View ▸ Achievements: what you have earned so far.",
+            ])
 
-        health_items = [
-            ("#0c0", "Healthy (81–100)"),
-            ("#6f6", "Okay (61–80)"),
-            ("#ff0", "Stressed (41–60)"),
-            ("#f90", "Critical (21–40)"),
-            ("#f33", "Dying (1–20)"),
-            ("#666", "Dead (0)")
+        def ch_traits():
+            p("Mendel followed seven traits, each with two forms. The first form is "
+              "dominant: it shows whenever the plant carries it at all.")
+            pic("help_traits_plants.png")
+            pic("help_traits_pods.png")
+            keys([
+                ("Flower colour", "purple > white"),
+                ("Flower position", "axial (along the stem) > terminal (at the top)"),
+                ("Plant height", "tall > dwarf"),
+                ("Pod colour", "green > yellow"),
+                ("Pod shape", "inflated > constricted"),
+                ("Seed colour", "yellow > green"),
+                ("Seed shape", "round > wrinkled"),
+            ])
+            p("Seed colour and shape can be seen as soon as the seeds are harvested; the "
+              "others once the plant grows.", muted=True)
+
+        def ch_laws():
+            p("When your counts show a law, claim it: select a plant of that generation, "
+              "then press »Unlock« below the garden and name the trait(s). P = the true-"
+              "breeding parents, F1 = their children, F2 = the children of F1 × F1.")
+            h("1. Law of Dominance")
+            bullets(["Cross two true-breeding plants with opposite forms of one trait.",
+                     "At least 16 F1 children, all showing the same (dominant) form."])
+            h("2. Law of Segregation — about 3 : 1")
+            bullets(["Self-pollinate (or cross) the F1 plants: their children are the F2.",
+                     "At least 65 F2 plants of that one cross.",
+                     "67.7 % to 79.6 % of them show the dominant form (about 2.1 : 1 to "
+                     "3.9 : 1). With 65 plants: 45 to 51 dominant ones.",
+                     "Chance scatters the count around 3 : 1; the more plants, the closer it "
+                     "gets. The law wizard tells you how far off you are."])
+            h("3. Law of Independent Assortment — about 9 : 3 : 3 : 1")
+            bullets(["Start from parents that differ in two traits; grow their F2.",
+                     "At least 80 F2 plants, whose four combinations fit 9 : 3 : 3 : 1 "
+                     "(χ² of 4 or less)."])
+            p("Revealing a genotype (Genotype Viewer) ends all law discoveries in that garden.",
+              muted=True)
+
+        def ch_keys():
+            keys([
+                ("H", "This help"),
+                ("Space", "Pause / run the clock"),
+                (mod + " + ← / →", "Slower / faster (also " + mod + " + < / >)"),
+                ("F", "Fast Forward (again: stop)"),
+                ("Arrow keys", "Move the selection"),
+                ("Shift + arrows", "Select a row / column"),
+                (mod + " + A", "Select all plots"),
+                ("1 / 2", "Switch garden"),
+                ("I / Enter", "Inspect"),
+                ("w / Shift+W", "Water selected / all"),
+                ("E", "Emasculate a flower"),
+                ("C", "Collect pollen"),
+                ("P", "Pollinate"),
+                ("A", "Quick check: ripe anthers today?"),
+                ("S / Shift+S", "Harvest one pod / all pods"),
+                ("X / Delete", "Remove the selected plant"),
+                ("Shift+X", "Remove all plants"),
+                ("Shift+G", "Genotype Viewer"),
+                (alt, "Hold: outline the selected plant's siblings"),
+                ("Esc", "Stop planting / put the watering can away"),
+                ("F11", "Full screen on / off"),
+                ("F10", "Climate: Mendel's records / random weather"),
+                ("F3", "Frame-rate meter"),
+                ("Shift+F3", "Performance report (20 s)"),
+            ])
+
+        def ch_settings():
+            h("Game Settings")
+            bullets([
+                "All Settings… — everything in one window.",
+                "Difficulty, Time Speed, Audio.",
+                "Automation — auto-water, auto-record temperatures, breeding windows on/off.",
+                "Wildlife — bees, butterflies, weevils.",
+                "Plants — how plants are drawn.",
+                "Garden beds — day/night, health as hearts, water as a drop, the stone border.",
+                "Mendel's picture — rain and snow in his portrait.",
+            ])
+            h("Screen")
+            bullets([
+                "The game fits itself to your screen when it first starts (Game Settings ▸ "
+                "Fit the window to the screen).",
+                "Game Settings ▸ Garden size wizard… suggests a garden that fits your screen.",
+                "F11 switches full screen (on by default, except on a Mac).",
+            ])
+            h("Saving")
+            p("The garden saves itself every few minutes and when you leave. File ▸ Save "
+              "Garden… keeps a named copy; File ▸ Load Garden brings one back.")
+
+        chapters = [
+            ("Getting started", ch_start),
+            ("Plants & care", ch_care),
+            ("Time & weather", ch_time),
+            ("Crossing peas", ch_cross),
+            ("Inspect & TIE", ch_inspect),
+            ("The seven traits", ch_traits),
+            ("Mendel's laws", ch_laws),
+            ("Keyboard", ch_keys),
+            ("Settings & screen", ch_settings),
         ]
 
-        for color, label in health_items:
-            f = tk.Frame(inner)
-            f.pack(anchor='w', padx=20)
-            c = tk.Canvas(f, width=20, height=20, highlightthickness=1)
-            c.create_rectangle(0, 0, 20, 20, fill=color, width=0)
-            c.pack(side=tk.LEFT)
-            tk.Label(f, text=label, font=("Segoe UI", 11)).pack(side=tk.LEFT, padx=6)
+        side_btns = []
+        counter = tk.Label(nav, text="", font=F(11), bg=BG, fg=MUTED)
+        state = {"i": 0, "w": 0}
 
-        # ------------------------------------------------------------
-        # WATER BAR
-        # ------------------------------------------------------------
-        tk.Label(inner, text="💧 Water Bar", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=10, pady=(10, 0))
+        def show(i):
+            i = max(0, min(len(chapters) - 1, i))
+            state["i"] = i
+            for w_ in page.winfo_children():
+                w_.destroy()
+            top._imgs.clear()
+            title, build = chapters[i]
+            title_lbl.configure(text=title)
+            try:
+                build()
+            except Exception:
+                logging.error("Help chapter failed", exc_info=True)
+            tk.Frame(page, bg=BG, height=_uf(16)).pack()
+            canvas.yview_moveto(0)
+            for j, b in enumerate(side_btns):
+                on = (j == i)
+                b.configure(bg=(SEL if on else SIDE), fg=("white" if on else INK))
+            counter.configure(text=f"{i + 1} / {len(chapters)}")
+            prev_btn.configure(fg=(INK if i > 0 else "#B8A888"))
+            next_btn.configure(fg=(INK if i < len(chapters) - 1 else "#B8A888"))
 
-        tk.Label(
-            inner,
-            text="Left vertical blue bar shows water level (0–100). "
-                 "100 does NOT fill the tile completely (75% max) to avoid overflow effects.",
-            wraplength=480,
-            justify="left"
-        ).pack(anchor="w", padx=20, pady=(0, 6))
+        def _side_btn(i, title):
+            b = tk.Label(side, text=title, font=F(12, "bold"), bg=SIDE, fg=INK, anchor="w",
+                         padx=_uf(16), pady=_uf(7), cursor="hand2")
+            b.pack(fill="x")
+            b.bind("<Button-1>", lambda e: show(i))
+            b.bind("<Enter>", lambda e: b.configure(bg=(SEL if state["i"] == i else "#DCCBA6")))
+            b.bind("<Leave>", lambda e: b.configure(bg=(SEL if state["i"] == i else SIDE)))
+            return b
 
-        # ------------------------------------------------------------
-        # SOIL MOISTURE COLORS
-        # ------------------------------------------------------------
-        tk.Label(inner, text="🌱 Soil Moisture Colors", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=10, pady=(10, 0))
+        for i_, (t_, _b) in enumerate(chapters):
+            side_btns.append(_side_btn(i_, t_))
 
-        soil_items = [
-            ("#FFD54F", "Dry (0–25)"),
-            ("#81D4FA", "Slightly moist (26–50)"),
-            ("#42A5F5", "Evenly moist (51–75)"),
-            ("#1565C0", "Soggy (76–90)"),
-            ("#003F8C", "Waterlogged (91–100)")
-        ]
+        def _nav_btn(text, cmd):
+            b = tk.Label(nav, text=text, font=F(12, "bold"), bg=CARD, fg=INK, padx=_uf(14),
+                         pady=_uf(5), cursor="hand2", highlightthickness=1,
+                         highlightbackground="#B89B72")
+            b.bind("<Button-1>", lambda e: cmd())
+            return b
+        prev_btn = _nav_btn("◀  Back", lambda: show(state["i"] - 1))
+        next_btn = _nav_btn("Next  ▶", lambda: show(state["i"] + 1))
+        close_btn = _nav_btn("Close", top.destroy)
+        prev_btn.pack(side="left")
+        counter.pack(side="left", padx=_uf(12))
+        next_btn.pack(side="left")
+        close_btn.pack(side="right")
 
-        for color, label in soil_items:
-            f = tk.Frame(inner)
-            f.pack(anchor="w", padx=20)
-            c = tk.Canvas(f, width=20, height=20, highlightthickness=1)
-            c.create_rectangle(0, 0, 20, 20, fill=color, width=0)
-            c.pack(side=tk.LEFT)
-            tk.Label(f, text=label, font=("Segoe UI", 11)).pack(side=tk.LEFT, padx=6)
+        for seq, d_ in (("<Left>", -1), ("<Right>", 1), ("<Prior>", -1), ("<Next>", 1)):
+            top.bind(seq, lambda e, d_=d_: show(state["i"] + d_))
+        top.bind("<Escape>", lambda e: top.destroy())
 
-        # ------------------------------------------------------------
-        # TIPS
-        # ------------------------------------------------------------
-        tk.Label(inner, text="⚠️ Tips", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=10, pady=(12, 0))
+        def _goto(ch):
+            if isinstance(ch, int):
+                show(ch)
+            else:
+                for j, (t_, _b) in enumerate(chapters):
+                    if str(ch).lower() in t_.lower():
+                        show(j)
+                        break
+        top._goto = _goto
 
-        tips = [
-            "Water only morning or evening to avoid heat stress.",
-            "Rain gently increases water level and blocks manual watering.",
-            "Overwatering (>85) slowly damages plants.",
-            "Very wet soil (>95) damages plants strongly.",
-            "Plants with poor health (≤20) might die at phase transitions.",
-            "Temperature changes gradually over the day.",
-        ]
+        # a page re-wraps when the window gets noticeably wider or narrower
+        def _resized(e=None):
+            w_ = canvas.winfo_width()
+            if abs(w_ - state["w"]) > 40:
+                state["w"] = w_
+                top.after_idle(lambda: show(state["i"]))
+        canvas.bind("<Configure>", lambda e: (canvas.itemconfigure(page_id, width=e.width),
+                                              _resized()), add="+")
+        top.update_idletasks()
+        state["w"] = canvas.winfo_width()
+        show(0 if chapter is None else 0)
+        if chapter is not None:
+            _goto(chapter)
+        try:
+            top.focus_force()
+        except Exception:
+            pass
 
-        for t in tips:
-            tk.Label(inner, text="• " + t, wraplength=480, justify="left").pack(anchor="w", padx=20)
-
-        # ------------------------------------------------------------
-        # KEYBOARD SHORTCUTS
-        # ------------------------------------------------------------
-        tk.Label(inner, text="⌨️ Keyboard Shortcuts", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=10, pady=(12, 0))
-
-        shortcuts = [
-            ("H", "Help / Legend"),
-            ("W", "Water all plants"),
-            ("w", "Water selected plant"),
-            ("F", "Fast Forward mode"),
-            ("F9", "Cycle season/difficulty mode"),
-            ("F10", "Toggle climate mode (stochastic/historical)"),
-            ("F3", "Show / hide the FPS meter"),
-            ("Space", "Pause / Resume day cycle"),
-            ("Arrow keys", "Move selection"),
-            ("Shift+Arrow keys", "Extend selection"),
-            ("Enter / I", "Inspect selected plant"),
-            ("X / Del", "Remove selected plant"),
-            ("Shift+X", "Remove ALL plants"),
-            ("E", "Emasculate a flower (choose it in the Inspect window)"),
-            ("P", "Pollinate a flower (choose it in the Inspect window)"),
-            ("A", "Quick pollen/anther check (no window)"),
-            ("C", "Collect pollen from a flower (choose it in the Inspect window)"),
-            ("S", "Harvest seeds (one pod)"),
-            ("Shift+S", "Harvest ALL pods (plant stays on plot)"),
-            ("Shift+G", "Show genotype viewer"),
-            ("Ctrl+A", "Select all garden tiles"),
-        ]
-
-        for key, text in shortcuts:
-            row = tk.Frame(inner)
-            row.pack(anchor="w", padx=20)
-            tk.Label(row, text=f"{key}:", font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT, padx=(0, 6))
-            tk.Label(row, text=text, font=("Segoe UI", 11)).pack(side=tk.LEFT)
-
-        # ------------------------------------------------------------
-        # REPRODUCTION: EMASCULATION / POLLINATION / POLLEN
-        # ------------------------------------------------------------
-        tk.Label(inner, text="Reproduction: Emasculation & Pollination", font=HEAD_FONT)\
-          .pack(anchor="w", padx=10, pady=(12, 0))
-
-        add_paragraph("Reproductive actions are possible once a plant reaches the Budding/Flowering stage.")
-
-        tk.Label(inner, text="Emasculation", font=SUBHEAD_FONT)\
-          .pack(anchor="w", padx=20, pady=(6, 0))
-
-        add_bullets([
-            "Emasculation means removing the male organs (anthers) from a flower to prevent further self-fertilization.",
-            "It can be done during the Budding/Flowering stage (early or late), but only once per plant.",
-            "Timing matters: peas often self-fertilize before the flower opens.",
-            "Early emasculation leaves most ovules unfertilized; late emasculation has a high risk that selfing already occurred.",
-            "Emasculation cannot undo self-fertilization that already happened — it only reduces additional selfing afterwards.",
-        ], padx=30)
-
-        tk.Label(inner, text="Pollination", font=SUBHEAD_FONT)\
-          .pack(anchor="w", padx=20, pady=(10, 0))
-
-        add_bullets([
-            "Pollination means applying pollen to the female part of a flower.",
-            "It can be done during Flowering.",
-            "Emasculation is optional, but recommended for controlled crosses (to reduce selfing).",
-            "After successful pollination, pods develop and mature seeds can later be harvested.",
-        ], padx=30)
-
-        tk.Label(inner, text="Pollen availability", font=SUBHEAD_FONT)\
-          .pack(anchor="w", padx=20, pady=(10, 0))
-
-        add_bullets([
-            "Flowering plants do not produce collectable pollen every day.",
-            "Pollen availability is determined once per flowering day.",
-            "Inspecting a flowering plant shows today’s pollen status.",
-            "Status messages: “Pollen available” (can collect today) or “No pollen available” (try another day).",
-        ], padx=30)
 
     def _next_generation(self, gen: str) -> str:
         m = re.match(r"F(\d+)", str(gen or "F0"))

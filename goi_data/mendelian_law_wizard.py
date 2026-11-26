@@ -1332,6 +1332,15 @@ class MendelianLawWizard(tk.Toplevel):
                     self._show_result(False, note)
                     return
 
+            # Law 2, one trait chosen, and the right kind of F2 family is
+            # there: say exactly what is still missing — too few plants, or
+            # a count that chance pushed just outside the accepted range.
+            if law_num == 2 and len(sel_traits_now) == 1:
+                near = (res.get("law2_near") or {}).get(next(iter(sel_traits_now)))
+                if near:
+                    self._show_result(False, self._law2_near_text(next(iter(sel_traits_now)), near))
+                    return
+
             # Build a helpful explanation
             msgs = {
                 1: (
@@ -1341,7 +1350,10 @@ class MendelianLawWizard(tk.Toplevel):
                 2: (
                     "The Law of Segregation hasn't been demonstrated yet.\n\n"
                     "You need 65 offspring showing a ~3:1 ratio of "
-                    "dominant to recessive phenotype."
+                    "dominant to recessive phenotype: F2 plants from a cross of two "
+                    "true-breeding parents with opposite forms, of which 67.7 % to "
+                    "79.6 % show the dominant form (about 2.1:1 to 3.9:1; with 65 "
+                    "plants that is 45 to 51 dominant ones)."
                 ),
                 3: (
                     "No evidence for the Law of Independent Assortment found.\n\n"
@@ -1569,6 +1581,42 @@ class MendelianLawWizard(tk.Toplevel):
         return {"dwarf": "short", "swollen": "inflated"}.get(v, v)
 
     # ── result popup ──────────────────────────────────────────────────────────
+
+    def _law2_near_text(self, trait_key, near):
+        """What still keeps an F2 family from showing the Law of Segregation:
+        too few plants, or a dominant share just outside 67.7–79.6 %."""
+        try:
+            from traitinheritanceexplorer import (LAW2_MIN_N, LAW2_DOM_FRAC_MIN,
+                                                  LAW2_DOM_FRAC_MAX)
+        except Exception:
+            LAW2_MIN_N, LAW2_DOM_FRAC_MIN, LAW2_DOM_FRAC_MAX = 65, 0.677, 0.796
+        label = dict((k, lbl) for k, lbl, *_ in self.TRAITS).get(trait_key, trait_key)
+        label = str(label).replace("\n", " ")
+        vl = getattr(self, "VALUE_LABELS", {}) or {}
+        dom_v = vl.get(near.get("dom_value", ""), str(near.get("dom_value", "")).capitalize())
+        rec_v = vl.get(near.get("rec_value", ""), str(near.get("rec_value", "")).capitalize())
+        d, r, n = int(near.get("dom", 0)), int(near.get("rec", 0)), int(near.get("total", 0))
+        share = 100.0 * d / n if n else 0.0
+        lo, hi = 100 * LAW2_DOM_FRAC_MIN, 100 * LAW2_DOM_FRAC_MAX
+        n_ok = max(n, LAW2_MIN_N)
+        d_lo = int(-(-LAW2_DOM_FRAC_MIN * n_ok // 1))          # smallest count inside
+        d_hi = int(LAW2_DOM_FRAC_MAX * n_ok // 1)
+        counts = (f"Your F2 plants for {label} (from the right kind of cross): "
+                  f"{d} {dom_v} : {r} {rec_v} — {n} plants, {share:.1f} % {dom_v}.")
+        window = (f"The dominant form has to make up {lo:.1f} % to {hi:.1f} % of them "
+                  f"(about 2.1:1 to 3.9:1)")
+        if n < LAW2_MIN_N:
+            more = LAW2_MIN_N - n
+            return (f"Nearly there — the cross is the right one!\n\n{counts}\n\n"
+                    f"At least {LAW2_MIN_N} are needed: grow {more} more F2 plant"
+                    f"{'s' if more != 1 else ''} from the same cross. {window}; "
+                    f"with {LAW2_MIN_N} plants that is {d_lo} to {d_hi} {dom_v}.")
+        side = "too many" if share > hi else "too few"
+        return (f"The cross is the right one, but chance played against you.\n\n"
+                f"{counts}\n\n{window}; with {n} plants that is {d_lo} to {d_hi} "
+                f"{dom_v} — you have {side}.\n\n"
+                f"Grow more F2 plants from the same cross: the more plants, the closer "
+                f"the count comes to 3:1.")
 
     def _show_result(self, success, message, close_after=False):
         """Show a result banner between the title bar and the scrollable body."""
