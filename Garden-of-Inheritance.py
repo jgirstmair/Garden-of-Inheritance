@@ -182,10 +182,17 @@ class _LoadingCover:
                 x, y = 0, 0
                 w, h = root.winfo_screenwidth(), root.winfo_screenheight()
             bg, fg = "#f6efe0", "#3b2a1a"
-            win = tk.Toplevel(root, bg=bg)
-            win.overrideredirect(True)
-            # (the plain Tk call: popup sizes are otherwise capped to the screen)
-            _orig_wm_geometry(win, f"{w}x{h}+{x}+{y}")
+            if sys.platform == "darwin":
+                # On a Mac a borderless window of its own misbehaves in
+                # full screen (its own Space, or left lying over the game):
+                # there the cover is a frame laid over the main window.
+                win = tk.Frame(root, bg=bg)
+                win.place(x=0, y=0, relwidth=1, relheight=1)
+            else:
+                win = tk.Toplevel(root, bg=bg)
+                win.overrideredirect(True)
+                # (the plain Tk call: popup sizes are otherwise capped to the screen)
+                _orig_wm_geometry(win, f"{w}x{h}+{x}+{y}")
             box = tk.Frame(win, bg=bg)
             box.place(relx=0.5, rely=0.5, anchor="center")
             tk.Label(box, text="Garden of Inheritance", font=("Segoe UI", 28, "bold"),
@@ -3227,6 +3234,9 @@ class GardenApp(InspectorMixin):
         # nothing more is earned there — only the tutorial's own parts.
         if (getattr(self, "_genotype_revealed", False)
                 and not str(key).startswith("tutorial")):
+            return False
+        # nothing is earned behind the start-up screen
+        if getattr(self, "_startup_hold", False):
             return False
         # The tutorial earns only its own parts: weevils, visitors named,
         # a self-pollination by hand… count in a garden of one's own
@@ -6947,6 +6957,11 @@ class GardenApp(InspectorMixin):
         # __init__ and the window itself time to fully settle before the
         # simulation's first tick fires, now that it starts already
         # running rather than paused.
+        # ... but not before the player has answered the start-up question
+        # (continue / new / tutorial / missions): main() lifts this hold
+        # once the loading screen is gone. Until then no hour passes —
+        # no weather, no achievements behind the start-up screen.
+        self._startup_hold = True
         try:
             self._ensure_auto_loop(delay_ms=3000)
         except Exception:
@@ -8287,7 +8302,20 @@ class GardenApp(InspectorMixin):
             self._ensure_auto_loop(delay_ms=50)
 
     def _ensure_auto_loop(self, delay_ms=500):
-        """Ensure exactly one auto-advance loop is scheduled."""
+        """Ensure exactly one auto-advance loop is scheduled. While the
+        start-up question is open (_startup_hold), it only waits."""
+        if getattr(self, "_startup_hold", False):
+            try:
+                if getattr(self, "_auto_loop_id", None) is not None:
+                    self.root.after_cancel(self._auto_loop_id)
+            except Exception:
+                pass
+            try:
+                self._auto_loop_id = self.root.after(
+                    300, lambda: self._ensure_auto_loop(delay_ms=50))
+            except Exception:
+                self._auto_loop_id = None
+            return
         try:
             if getattr(self, "_auto_loop_id", None) is not None:
                 try:
@@ -24021,8 +24049,15 @@ def main():
         app._startup_continue_prompt()
     except Exception:
         logging.error("Start-up garden prompt failed", exc_info=True)
-    # a moment for Mendel's picture and the plants to be drawn
-    root.after(450, cover.close)
+    # a moment for Mendel's picture and the plants to be drawn; then the
+    # loading screen goes and the clock may start
+    def _ready():
+        try:
+            cover.close()
+        finally:
+            app._startup_hold = False
+            app._loop_deadline = None
+    root.after(450, _ready)
     # how slow a repaint is here (a Mac: much slower) — see _measure_repaint_cost
     root.after(5000, app._measure_repaint_cost)
 
