@@ -1814,8 +1814,10 @@ class _DelayedTip:
     def _show(self):
         self.job = None
         try:
-            x = self.widget.winfo_rootx() + self.widget.winfo_width() + 6
-            y = self.widget.winfo_rooty() + 4
+            # below the button (above it when there's no room below) —
+            # not to its right, where it sat over the garden
+            x = self.widget.winfo_rootx() + 12
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 2
             self.tip = tk.Toplevel(self.widget)
             self.tip.wm_overrideredirect(True)
             self.tip.wm_geometry(f"+{x}+{y}")
@@ -2150,6 +2152,8 @@ class _FlatIconButton(tk.Label):
             tk.Label.configure(self, bg=self._base_bg)
 
     def _on_click(self, event=None):
+        if not self._enabled:
+            _ctrace(f"  {_wname(self)} is disabled: click ignored")
         if self._enabled and self._command:
             _play_sound("click.ogg")
             self._command()
@@ -2195,6 +2199,33 @@ class _FlatIconButton(tk.Label):
     config = configure
 
 
+# ---- temporary: a trace of clicks and window focus on the Mac --------------
+# (to find out why a highlighted button there sometimes needs a second
+# click). Written to click_trace.txt next to pea_garden.log.
+_CTRACE_ON = sys.platform == "darwin"
+_CTRACE_T0 = time.perf_counter()
+
+
+def _ctrace(msg):
+    if not _CTRACE_ON:
+        return
+    try:
+        with open(os.path.join(_PG_BASE_DIR, "click_trace.txt"), "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {time.perf_counter() - _CTRACE_T0:9.3f}  {msg}\n")
+    except Exception:
+        pass
+
+
+def _wname(w):
+    try:
+        t = w.cget("text")
+        if t:
+            return repr(t)
+    except Exception:
+        pass
+    return str(w)
+
+
 def _bind_click(widget, fn):
     """A click on a Label used as a button: like a real button it acts when
     the mouse button is RELEASED over it (pressed there first), and only
@@ -2206,22 +2237,44 @@ def _bind_click(widget, fn):
 
     def _press(e=None):
         st["armed"] = True
+        _ctrace(f"press   {_wname(widget)}")
 
     def _release(e=None):
+        _ctrace(f"release {_wname(widget)} armed={st['armed']}")
         if not st["armed"]:
             return
         st["armed"] = False
+        # Inside? Judged by the screen position: on a Mac the release can
+        # come with coordinates of another widget the mouse crossed before
+        # (e.g. the tutorial arrow next to the button), and then a real
+        # click on the button looked like one released elsewhere.
         try:
-            inside = (0 <= int(e.x) < widget.winfo_width()
-                      and 0 <= int(e.y) < widget.winfo_height())
+            rx, ry = int(e.x_root), int(e.y_root)
+            x0, y0 = widget.winfo_rootx(), widget.winfo_rooty()
+            inside = (x0 <= rx < x0 + widget.winfo_width()
+                      and y0 <= ry < y0 + widget.winfo_height())
         except Exception:
-            inside = True
+            try:
+                inside = (0 <= int(e.x) < widget.winfo_width()
+                          and 0 <= int(e.y) < widget.winfo_height())
+            except Exception:
+                inside = True
+        _ctrace(f"  inside={inside} (x={getattr(e, 'x', '?')}, y={getattr(e, 'y', '?')}, "
+                f"x_root={getattr(e, 'x_root', '?')}, y_root={getattr(e, 'y_root', '?')})")
         if not inside:
+            _ctrace(f"  released outside {_wname(widget)}")
             return                  # released elsewhere: no click (as with a real button)
+
+        def _run():
+            _ctrace(f"  command {_wname(widget)} starts")
+            try:
+                fn()
+            finally:
+                _ctrace(f"  command {_wname(widget)} done")
         try:
-            widget._root().after_idle(fn)
+            widget._root().after_idle(_run)
         except Exception:
-            fn()
+            _run()
 
     widget.bind("<Button-1>", _press)
     widget.bind("<ButtonRelease-1>", _release)
@@ -9774,7 +9827,9 @@ class GardenApp(InspectorMixin):
             self.dead_icon = None
 
         # 2) make the actions frame stretch horizontally
-        self.left_actions = tk.Frame(self.left_panel)
+        # (its own background: Tk 9 on a new macOS paints a frame without
+        # one white — white lines between the buttons)
+        self.left_actions = tk.Frame(self.left_panel, bg=self.grid_bg)
         self.left_actions.pack(anchor="nw", pady=(0,6), fill="x")   # ← add fill="x"
         # "Show selected plant info" off: hide the icon row + stage label.
         if not getattr(self, "_plant_info_visible", DEFAULT_PLANT_INFO_VISIBLE):
@@ -13773,6 +13828,14 @@ class GardenApp(InspectorMixin):
             pils = [Image.open(p_can).convert("RGBA")]
             pils.append(Image.open(p_flow).convert("RGBA") if os.path.isfile(p_flow) else pils[0])
 
+            if sys.platform == "darwin":
+                # Tk 9 on a Mac can't make a window see-through (the can sat
+                # in a black box): there the can becomes the real mouse
+                # pointer instead — no window at all.
+                cur = self._mac_can_cursor(pils)
+                if cur is not None:
+                    return cur
+
             overlay = tk.Toplevel(self.root)
             overlay.overrideredirect(True)
             try:
@@ -13819,6 +13882,80 @@ class GardenApp(InspectorMixin):
             return overlay
         except Exception:
             return None
+
+    def _mac_can_cursor(self, pils):
+        """The watering can as the Mac's own mouse pointer (Tk on macOS
+        takes "@file" for any picture; its hotspot is the picture's
+        centre). Each picture is padded so that its centre is the can's
+        corner the overlay used as the click point. Returns a stand-in
+        with the few calls the can overlay gets (shown/hidden by the
+        pointer itself; _show_can_flow switches to the tipped can)."""
+        try:
+            import tempfile
+            specs = []
+            for i, im in enumerate(pils):
+                w, h = im.size
+                hx, hy = 3, 3                       # click point on the can
+                cw, ch = 2 * (w - hx), 2 * (h - hy)
+                canvas = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+                canvas.paste(im, (cw // 2 - hx, ch // 2 - hy), im)
+                path = os.path.join(tempfile.gettempdir(),
+                                    f"goi_watering_can_{i}.png")
+                canvas.save(path)
+                specs.append(("@" + path,))         # one Tcl list element
+            # Tk must accept it (a widget that is not shown)
+            probe = tk.Frame(self.root)
+            try:
+                probe.configure(cursor=specs[0])
+            finally:
+                probe.destroy()
+        except Exception:
+            logging.error("Mac watering-can pointer failed", exc_info=True)
+            return None
+        app = self
+
+        class _Lbl:
+            def configure(self, image=None, **kw):
+                if image is not None:
+                    app._set_garden_cursor(image)
+
+        class _CanPointer:
+            def __init__(self):
+                self._cursor_spec = specs[0]
+                self._can_imgs = specs
+                self._can_label = _Lbl()
+                self._can_flow_job = None
+
+            def __str__(self):
+                return "<watering-can pointer>"
+
+            def after(self, ms, fn):
+                return app.root.after(ms, fn)
+
+            def after_cancel(self, job):
+                try:
+                    app.root.after_cancel(job)
+                except Exception:
+                    pass
+
+            def geometry(self, *a):
+                return ""
+
+            def deiconify(self):
+                pass
+
+            def withdraw(self):
+                pass
+
+            def lift(self, *a):
+                pass
+
+            def destroy(self):
+                if self._can_flow_job is not None:
+                    self.after_cancel(self._can_flow_job)
+                    self._can_flow_job = None
+
+        return _CanPointer()
 
     def _tile_index_at(self, x_root, y_root):
         """Index of the garden tile under the given screen point, or None."""
@@ -16259,7 +16396,9 @@ class GardenApp(InspectorMixin):
         self._water_hover_idx = None
         self._build_plant_cursor_overlay()
         # The can is the pointer over the garden (crosshair if it failed).
-        self._set_garden_cursor("none" if self._plant_cursor_overlay is not None else "crosshair")
+        _ov = self._plant_cursor_overlay
+        self._set_garden_cursor(getattr(_ov, "_cursor_spec", "none") if _ov is not None
+                                else "crosshair")
         try:
             self._plant_cursor_motion_bind_id = self.root.bind_all(
                 "<Motion>", self._on_plant_cursor_motion, add="+")
@@ -24058,6 +24197,31 @@ def main():
             app._startup_hold = False
             app._loop_deadline = None
     root.after(450, _ready)
+    # (temporary, Mac: which window has the focus, which windows appear)
+    if _CTRACE_ON:
+        try:
+            def _fev(kind):
+                def h(e):
+                    if isinstance(e.widget, (tk.Tk, tk.Toplevel)):
+                        _ctrace(f"{kind:10s} {e.widget}  title={e.widget.title()!r}")
+                return h
+            for _k in ("FocusIn", "FocusOut", "Activate", "Deactivate", "Map", "Unmap"):
+                root.bind_class("Toplevel", f"<{_k}>", _fev(_k), add="+")
+                root.bind(f"<{_k}>", _fev(_k), add="+")
+
+            def _any_click(kind):
+                def h(e):
+                    try:
+                        under = root.winfo_containing(e.x_root, e.y_root)
+                    except Exception:
+                        under = "?"
+                    _ctrace(f"{kind} goes to {_wname(e.widget)}, mouse is over {_wname(under) if under else None}")
+                return h
+            root.bind_all("<ButtonPress-1>", _any_click("PRESS  "), add="+")
+            root.bind_all("<ButtonRelease-1>", _any_click("RELEASE"), add="+")
+            _ctrace("---- game started ----")
+        except Exception:
+            pass
     # how slow a repaint is here (a Mac: much slower) — see _measure_repaint_cost
     root.after(5000, app._measure_repaint_cost)
 

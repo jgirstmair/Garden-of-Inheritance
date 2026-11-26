@@ -12,6 +12,7 @@ start_tutorial().
 """
 
 import json
+import logging
 import math
 import os
 import random
@@ -2887,6 +2888,592 @@ class _ArrowGroup:
                 pass
 
 
+def _arrow_pil(pts, w, h, outline, fill):
+    """The tutorial arrow as a picture: the polygon filled, with a black
+    outline of the given width and round corners — drawn 4x larger and
+    scaled down, so its edges are smooth; transparent around."""
+    from PIL import Image, ImageDraw
+    ss = 4
+    im = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    xy = [(pts[i] * ss, pts[i + 1] * ss) for i in range(0, len(pts), 2)]
+    d.polygon(xy, fill=fill)
+    lw = int(outline * ss)
+    for a, b in zip(xy, xy[1:] + xy[:1]):
+        d.line([a, b], fill="black", width=lw)
+    r = lw / 2.0
+    for (x, y) in xy:
+        d.ellipse([x - r, y - r, x + r, y + r], fill="black")
+    return im.resize((w, h), Image.LANCZOS)
+
+
+def _arrow_strips(pts, w, h, outline):
+    """The arrow cut into solid rectangles (x, y, width, height, kind):
+    kind "o" for the black outline, "f" for the coloured inside. Each
+    pixel row is split into runs; equal runs in the rows below are
+    merged into one taller rectangle (the shaft is just three)."""
+    im = _arrow_pil(pts, w, h, outline, "#ff0000").convert("RGBA")
+    px = im.load()
+    rows = []
+    for y in range(h):
+        runs, x = [], 0
+        while x < w:
+            r, g, b, a = px[x, y]
+            kind = None if a < 110 else ("f" if r > 110 else "o")
+            x0 = x
+            while x + 1 < w:
+                r2, g2, b2, a2 = px[x + 1, y]
+                k2 = None if a2 < 110 else ("f" if r2 > 110 else "o")
+                if k2 != kind:
+                    break
+                x += 1
+            if kind:
+                runs.append((x0, x - x0 + 1, kind))
+            x += 1
+        rows.append(runs)
+    out, open_ = [], {}
+    for y, runs in enumerate(rows):
+        nxt = {}
+        for x0, wd, kind in runs:
+            key = (x0, wd, kind)
+            if key in open_:
+                nxt[key] = open_[key]
+                nxt[key][3] += 1
+            else:
+                nxt[key] = [x0, y, wd, 1, kind]
+        for key, rect in open_.items():
+            if key not in nxt:
+                out.append(tuple(rect))
+        open_ = nxt
+    out.extend(tuple(r) for r in open_.values())
+    return out
+
+
+class _SnapshotArrow:
+    """The tutorial arrow on a Mac (Tk 9 can't make any window see-through
+    there — tested: every variant comes out black or white). One Canvas
+    laid with place() into the window the arrow points into; behind the
+    arrow it draws a copy of what lies underneath — the colours of the
+    panels and buttons, and the very pictures of the garden plots — so
+    it looks see-through, as one single widget (quick to show and to
+    take away, unlike a hundred little strips). The copy is renewed about
+    once a second, so a plant growing underneath stays right.
+    Answers the few window calls the arrow makes, like _PlacedArrow."""
+
+    def __init__(self, host, pts, w, h, outline, color):
+        self.host = host
+        self._w, self._h = w, h
+        self._x = self._y = None
+        self._shown = False
+        self._job = None
+        self.cv = tk.Canvas(host, width=w, height=h, highlightthickness=0, bd=0,
+                            cursor="arrow", bg=_widget_bg(host) or "#f0f0f0")
+        self.cv._goi_arrow = True
+        try:
+            import __main__ as _m
+            self.cv.bind("<Enter>", lambda e: _m._ctrace("mouse ENTERS the arrow"), add="+")
+            self.cv.bind("<Leave>", lambda e: _m._ctrace("mouse LEAVES the arrow"), add="+")
+        except Exception:
+            pass
+        self._poly = self.cv.create_polygon(*pts, fill=color, outline="black",
+                                            width=outline, joinstyle="round",
+                                            tags="arrow")
+
+    # -- the copy of what lies underneath --------------------------------
+    def _snapshot(self):
+        cv = self.cv
+        try:
+            cv.delete("under")
+            ax0, ay0 = self._x, self._y
+            w, h = self._w, self._h
+            ax1, ay1 = ax0 + w, ay0 + h
+
+            def visible_part(c):
+                x0, y0 = c.winfo_rootx(), c.winfo_rooty()
+                x1, y1 = x0 + c.winfo_width(), y0 + c.winfo_height()
+                if x1 <= ax0 or y1 <= ay0 or x0 >= ax1 or y0 >= ay1:
+                    return None
+                return x0, y0, x1, y1
+
+            def walk(widget):
+                for c in widget.winfo_children():
+                    try:
+                        if (c is cv or getattr(c, "_goi_arrow", False)
+                                or isinstance(c, (tk.Toplevel, tk.Menu))
+                                or not c.winfo_ismapped()):
+                            continue
+                        box = visible_part(c)
+                        if box is None:
+                            continue
+                        x0, y0, x1, y1 = box
+                        ox, oy = x0 - ax0, y0 - ay0
+                        bg = _widget_bg(c)
+                        if bg:
+                            cv.create_rectangle(ox, oy, x1 - ax0, y1 - ay0, fill=bg,
+                                                outline="", tags="under")
+                        if isinstance(c, tk.Canvas):
+                            _copy_canvas_items(c, cv, ox - c.canvasx(0), oy - c.canvasy(0))
+                        else:
+                            _copy_label_face(c, cv, ox, oy)
+                        walk(c)
+                    except Exception:
+                        continue
+            walk(self.host)
+            cv.tag_raise("arrow")
+        except Exception:
+            pass
+
+    def _refresh(self):
+        self._job = None
+        if not self._shown:
+            return
+        self._snapshot()
+        try:
+            self._job = self.cv.after(1000, self._refresh)
+        except Exception:
+            self._job = None
+
+    # -- the window calls the arrow makes --------------------------------
+    def geometry(self, spec=None):
+        try:
+            parts = str(spec).replace("-", "+-").split("+")
+            nums = [int(v) for v in parts if v != ""]
+            self._x, self._y = nums[-2], nums[-1]
+        except Exception:
+            return
+        if self._shown:
+            self._place()
+
+    def _place(self):
+        try:
+            hx, hy = self.host.winfo_rootx(), self.host.winfo_rooty()
+            self.cv.place(x=self._x - hx, y=self._y - hy, width=self._w, height=self._h)
+            # (Canvas.lift raises canvas items: the widget itself is raised so)
+            self.cv.tk.call("raise", self.cv._w)
+        except Exception:
+            return
+        self._snapshot()
+        if self._job is None:
+            try:
+                self._job = self.cv.after(1000, self._refresh)
+            except Exception:
+                pass
+
+    def deiconify(self):
+        self._shown = True
+        if self._x is not None:
+            self._place()
+
+    def withdraw(self):
+        self._shown = False
+        try:
+            self.cv.place_forget()
+        except Exception:
+            pass
+
+    def state(self):
+        return "normal" if self._shown else "withdrawn"
+
+    def set_fill(self, color):
+        try:
+            self.cv.itemconfigure(self._poly, fill=color)
+        except Exception:
+            pass
+
+    def lift(self, *a):
+        try:
+            self.cv.tk.call("raise", self.cv._w)
+        except Exception:
+            pass
+
+    def attributes(self, *a, **k):
+        return 0
+
+    def winfo_reqwidth(self):
+        return self._w
+
+    def winfo_reqheight(self):
+        return self._h
+
+    def winfo_exists(self):
+        return 1
+
+    def update_idletasks(self):
+        try:
+            self.host.update_idletasks()
+        except Exception:
+            pass
+
+    def destroy(self):
+        self._shown = False
+        try:
+            if self._job is not None:
+                self.cv.after_cancel(self._job)
+        except Exception:
+            pass
+        self._job = None
+        try:
+            self.cv.destroy()
+        except Exception:
+            pass
+
+
+def _widget_bg(w):
+    try:
+        bg = w.cget("bg")
+        return bg if bg and bg != "systemTransparent" else None
+    except Exception:
+        return None
+
+
+def _copy_canvas_items(src, dst, dx, dy):
+    """Copies what a canvas shows (pictures, shapes, text) onto `dst`,
+    shifted by dx, dy — the same picture objects, so nothing is redrawn."""
+    for it in src.find_all():
+        try:
+            kind = src.type(it)
+            if kind == "window" or src.itemcget(it, "state") == "hidden":
+                continue
+            c = src.coords(it)
+            if not c:
+                continue
+            c = [v + (dx if i % 2 == 0 else dy) for i, v in enumerate(c)]
+            opts = {}
+            for k, v in src.itemconfigure(it).items():
+                val = v[-1]
+                if k in ("tags", "state") or val is None:
+                    continue
+                opts[k] = val           # "" counts: no fill / no outline
+            opts["tags"] = "under"
+            make = getattr(dst, "create_" + kind)
+            try:
+                make(*c, **opts)
+            except Exception:
+                # an option Tk won't take back empty — keep the empty
+                # colours (an empty fill/outline means "none", while a
+                # missing one would be drawn black)
+                keep = {k: v for k, v in opts.items()
+                        if v != "" or k in ("fill", "outline", "activefill",
+                                            "activeoutline", "disabledfill",
+                                            "disabledoutline")}
+                make(*c, **keep)
+        except Exception:
+            continue
+
+
+def _copy_label_face(src, dst, ox, oy):
+    """The picture and text of a label/button, laid out the way Tk lays
+    them out (compound picture + text, anchor, padding)."""
+    try:
+        w, h = src.winfo_width(), src.winfo_height()
+        try:
+            img = src.cget("image")
+        except Exception:
+            img = ""
+        try:
+            txt = src.cget("text")
+        except Exception:
+            txt = ""
+        try:
+            compound = str(src.cget("compound") or "none")
+        except Exception:
+            compound = "none"
+        if img and compound == "none":
+            txt = ""                       # Tk shows only the picture then
+        if not img and not txt:
+            return
+
+        def _num(opt):
+            try:
+                return int(float(str(src.cget(opt))))
+            except Exception:
+                return 0
+        edge = _num("bd") + _num("highlightthickness")
+        padx, pady = _num("padx"), _num("pady")
+        iw = ih = tw = th = 0
+        if img:
+            iw = int(src.tk.call("image", "width", img))
+            ih = int(src.tk.call("image", "height", img))
+        if txt:
+            f = tkfont.Font(font=src.cget("font"))
+            lines = str(txt).split("\n")
+            tw = max(f.measure(ln) for ln in lines)
+            th = f.metrics("linespace") * len(lines)
+        # (Tk puts padx between picture and text side by side, pady
+        # between them one above the other)
+        if img and txt and compound in ("left", "right"):
+            cw, ch = iw + padx + tw, max(ih, th)
+        elif img and txt and compound in ("top", "bottom"):
+            cw, ch = max(iw, tw), ih + pady + th
+        elif img:
+            cw, ch = iw, ih
+        else:
+            cw, ch = tw, th
+        x0, x1 = edge + padx, w - edge - padx
+        y0, y1 = edge + pady, h - edge - pady
+        try:
+            anchor = str(src.cget("anchor") or "center")
+        except Exception:
+            anchor = "center"
+        if "w" in anchor:
+            cx = x0
+        elif "e" in anchor:
+            cx = x1 - cw
+        else:
+            cx = (x0 + x1 - cw) / 2.0
+        if "n" in anchor:
+            cy = y0
+        elif "s" in anchor:
+            cy = y1 - ch
+        else:
+            cy = (y0 + y1 - ch) / 2.0
+        cx += ox
+        cy += oy
+        ix, iy, tx, ty = cx, cy + (ch - ih) / 2.0, cx, cy + (ch - th) / 2.0
+        if img and txt:
+            if compound == "left":
+                tx = cx + iw + padx
+            elif compound == "right":
+                ix, tx = cx + tw + padx, cx
+            elif compound == "top":
+                ix, iy = cx + (cw - iw) / 2.0, cy
+                tx, ty = cx + (cw - tw) / 2.0, cy + ih + pady
+            elif compound == "bottom":
+                tx, ty = cx + (cw - tw) / 2.0, cy
+                ix, iy = cx + (cw - iw) / 2.0, cy + th + pady
+        elif img:
+            ix, iy = cx, cy
+        if img:
+            dst.create_image(ix, iy, image=img, anchor="nw", tags="under")
+        if txt:
+            try:
+                justify = str(src.cget("justify") or "left")
+            except Exception:
+                justify = "left"
+            dst.create_text(tx, ty, text=txt, font=src.cget("font"), fill=src.cget("fg"),
+                            anchor="nw", justify=justify, tags="under")
+    except Exception:
+        pass
+
+
+class _PlacedArrow:
+    """The tutorial arrow on a Mac: solid strips (frames) laid with place()
+    into the window the arrow points into — Tk 9 can't make a window of
+    its own see-through there. Answers the few window calls the arrow
+    makes (geometry "+x+y" in screen coordinates, withdraw/deiconify,
+    state, lift, destroy …), so _TutorialArrow uses it like its window."""
+
+    def __init__(self, host, strips, w, h, color):
+        self.host = host
+        self._w, self._h = w, h
+        self._x = self._y = None
+        self._shown = False
+        self.frames = []
+        for x, y, ww, hh, kind in strips:
+            f = tk.Frame(host, bg=("black" if kind == "o" else color), bd=0,
+                         highlightthickness=0, cursor="arrow")
+            self.frames.append((f, kind, x, y, ww, hh))
+
+    def geometry(self, spec=None):
+        try:
+            parts = str(spec).replace("-", "+-").split("+")
+            nums = [int(v) for v in parts if v not in ("", )]
+            self._x, self._y = nums[-2], nums[-1]
+        except Exception:
+            return
+        if self._shown:
+            self._place()
+
+    def _place(self):
+        try:
+            hx, hy = self.host.winfo_rootx(), self.host.winfo_rooty()
+        except Exception:
+            return
+        # (no lift(): the strips are made after everything else in the
+        # window, so they lie on top anyway — and on a Mac every raise is
+        # a costly re-stacking of the whole window)
+        for f, kind, x, y, ww, hh in self.frames:
+            try:
+                f.place(x=self._x - hx + x, y=self._y - hy + y, width=ww, height=hh)
+            except Exception:
+                pass
+
+    def deiconify(self):
+        self._shown = True
+        if self._x is not None:
+            self._place()
+
+    def withdraw(self):
+        self._shown = False
+        for f, *_ in self.frames:
+            try:
+                f.place_forget()
+            except Exception:
+                pass
+
+    def state(self):
+        return "normal" if self._shown else "withdrawn"
+
+    def set_fill(self, color):
+        for f, kind, *_ in self.frames:
+            if kind == "f":
+                try:
+                    f.configure(bg=color)
+                except Exception:
+                    pass
+
+    def lift(self, *a):
+        for f, *_ in self.frames:
+            try:
+                f.lift()
+            except Exception:
+                pass
+
+    def attributes(self, *a, **k):
+        return 0
+
+    def winfo_reqwidth(self):
+        return self._w
+
+    def winfo_reqheight(self):
+        return self._h
+
+    def winfo_exists(self):
+        return 1
+
+    def update_idletasks(self):
+        try:
+            self.host.update_idletasks()
+        except Exception:
+            pass
+
+    def destroy(self):
+        for f, *_ in self.frames:
+            try:
+                f.destroy()
+            except Exception:
+                pass
+        self.frames = []
+
+
+def _ring_rects(x, y, w, h, t):
+    """The four bars of a box lying on the edge of x, y, w, h (screen)."""
+    return [(x, y, w, t),                    # top
+            (x, y + h - t, w, t),            # bottom
+            (x, y, t, h),                    # left
+            (x + w - t, y, t, h)]            # right
+
+
+class _EdgeBar:
+    """One bar of the box round a pointed-at control: a thin frame laid
+    with place() into the control's own window. Answers the window calls
+    the arrow makes of its bars; clicks on it go on to the control."""
+
+    def __init__(self, host, target, color):
+        self.host = host
+        self.target = target
+        self._geo = None
+        self._shown = False
+        self.f = tk.Frame(host, bg=color, bd=0, highlightthickness=0)
+        self.f._goi_arrow = True
+        for seq in ("<ButtonPress-1>", "<ButtonRelease-1>", "<ButtonPress-3>",
+                    "<ButtonRelease-3>"):
+            self.f.bind(seq, lambda e, q=seq: self._forward(q, e))
+
+    def _forward(self, seq, e):
+        try:
+            tg = self.target
+            tg.event_generate(seq, x=e.x_root - tg.winfo_rootx(),
+                              y=e.y_root - tg.winfo_rooty(),
+                              rootx=e.x_root, rooty=e.y_root)
+        except Exception:
+            pass
+        return "break"
+
+    def geometry(self, spec=None):
+        try:
+            size, _, pos = str(spec).partition("+")
+            w, h = (int(v) for v in size.split("x"))
+            x, y = (int(v) for v in pos.split("+"))
+            self._geo = (w, h, x, y)
+        except Exception:
+            return
+        if self._shown:
+            self._place()
+
+    def _place(self):
+        if self._geo is None:
+            return
+        w, h, x, y = self._geo
+        try:
+            self.f.place(x=x - self.host.winfo_rootx(), y=y - self.host.winfo_rooty(),
+                         width=w, height=h)
+            self.f.tk.call("raise", self.f._w)
+        except Exception:
+            pass
+
+    def deiconify(self):
+        self._shown = True
+        self._place()
+
+    def withdraw(self):
+        self._shown = False
+        try:
+            self.f.place_forget()
+        except Exception:
+            pass
+
+    def state(self):
+        return "normal" if self._shown else "withdrawn"
+
+    def configure(self, **kw):
+        try:
+            self.f.configure(**{k: v for k, v in kw.items() if k in ("bg", "background")})
+        except Exception:
+            pass
+
+    def attributes(self, *a, **k):
+        return 0
+
+    def lift(self, *a):
+        try:
+            self.f.tk.call("raise", self.f._w)
+        except Exception:
+            pass
+
+    def destroy(self):
+        try:
+            self.f.destroy()
+        except Exception:
+            pass
+
+
+def _setup_bar(bar, color):
+    """One bar of the ring round the pointed-at control. On a Mac a
+    borderless window gets a soft shadow (the bars looked like blurred,
+    rounded pills): there the window is made transparent — which turns
+    the shadow off — and a coloured frame fills it."""
+    if sys.platform == "darwin":
+        try:
+            bar.wm_attributes("-transparent", True)
+            bar.configure(bg="systemTransparent")
+            f = tk.Frame(bar, bg=color, bd=0, highlightthickness=0)
+            f.place(x=0, y=0, relwidth=1, relheight=1)
+            bar._goi_fill = f
+            return
+        except Exception:
+            pass
+    bar.configure(bg=color)
+
+
+def _paint_bar(bar, color):
+    f = getattr(bar, "_goi_fill", None)
+    if f is not None:
+        f.configure(bg=color)
+    else:
+        bar.configure(bg=color)
+
+
 def _own_by_target_window(w, target):
     """Makes the not-yet-shown helper window `w` (arrow, outline bar) belong
     to the window `target` sits in, when that is a separate (always-on-top)
@@ -3035,6 +3622,7 @@ class _ArrowHighlight:
     COLOR_B = "#954535"  # chestnut brown
 
     def __init__(self, app, target_widget, side="bottom"):
+        _t0 = time.perf_counter()
         self.app = app
         self.target = target_widget
         self.side = side      # "bottom" (points up) or "right" (points left)
@@ -3049,62 +3637,60 @@ class _ArrowHighlight:
         # of the outline/glyph colors above.
         self._key = "#123456"
 
-        self.win = tk.Toplevel(app.root)
-        try:
-            self.win.withdraw()          # shown once owned and placed (below)
-        except Exception:
-            pass
-        try:
-            self.win.overrideredirect(True)
-        except Exception:
-            pass
-        # Owned by the window it points into (set before it is shown —
-        # changing it later makes Windows re-create the window): an owned
-        # window always stays above its owner, so the arrow can't fall
-        # behind the inspection window.
-        _own_by_target_window(self.win, self.target)
-        # ...except when the target is in the always-on-top inspection
-        # window: then the arrow must be on top too (set before the window
-        # is shown, which is when every system takes it).
-        if self._target_on_top():
-            try:
-                self.win.attributes("-topmost", True)
-            except Exception:
-                pass
-        try:
-            self.win.configure(bg=self._key)
-        except Exception:
-            pass
-        # Otherwise deliberately NOT forced "-topmost" — it used to sit above
-        # every other window, including popups/menus the app itself
-        # opens (like the Choose Seeds dialog "Plant" opens), burying
-        # them under the arrow. Without it, normal window stacking
-        # applies: it renders above the main window (being a Toplevel
-        # created after it) but a dialog or menu opened afterward still
-        # comes to the front over it, same as any other window would.
-        bg_color = self._key
-        if sys.platform == "darwin":
-            # macOS has no -transparentcolor; it uses a real transparent
-            # window with the special "systemTransparent" color instead.
-            try:
-                self.win.wm_attributes("-transparent", True)
-                self.win.configure(bg="systemTransparent")
-                bg_color = "systemTransparent"
-            except Exception:
-                pass
+        # On a Mac (Tk 9) a window of its own can't be see-through — the
+        # arrow sat in a black box. There it is built from solid strips
+        # laid into the window it points into (see _PlacedArrow), with
+        # nothing around it that could show.
+        self._mac = sys.platform == "darwin"
+        if self._mac:
+            self.win = None              # made in _build_items
+            self.canvas = None
         else:
+            self.win = tk.Toplevel(app.root)
+            try:
+                self.win.withdraw()          # shown once owned and placed (below)
+            except Exception:
+                pass
+            try:
+                self.win.overrideredirect(True)
+            except Exception:
+                pass
+            # Owned by the window it points into (set before it is shown —
+            # changing it later makes Windows re-create the window): an owned
+            # window always stays above its owner, so the arrow can't fall
+            # behind the inspection window.
+            _own_by_target_window(self.win, self.target)
+            # ...except when the target is in the always-on-top inspection
+            # window: then the arrow must be on top too (set before the window
+            # is shown, which is when every system takes it).
+            if self._target_on_top():
+                try:
+                    self.win.attributes("-topmost", True)
+                except Exception:
+                    pass
+            try:
+                self.win.configure(bg=self._key)
+            except Exception:
+                pass
+            # Otherwise deliberately NOT forced "-topmost" — it used to sit above
+            # every other window, including popups/menus the app itself
+            # opens (like the Choose Seeds dialog "Plant" opens), burying
+            # them under the arrow. Without it, normal window stacking
+            # applies: it renders above the main window (being a Toplevel
+            # created after it) but a dialog or menu opened afterward still
+            # comes to the front over it, same as any other window would.
+            bg_color = self._key
             try:
                 self.win.wm_attributes("-transparentcolor", self._key)
             except Exception:
-                # Not supported on this platform — falls back to a plain,
-                # non-transparent key-colored rectangle behind the arrow.
+                # Not supported on this platform (Linux) — falls back to a
+                # plain key-colored rectangle behind the arrow.
                 pass
-
-        self.canvas = tk.Canvas(
-            self.win, bg=bg_color, highlightthickness=0, bd=0,
-            cursor="arrow",
-        )
-        self.canvas.pack()
+            self.canvas = tk.Canvas(
+                self.win, bg=bg_color, highlightthickness=0, bd=0,
+                cursor="arrow",
+            )
+            self.canvas.pack()
 
         self._build_items()
         self._reposition()
@@ -3116,6 +3702,28 @@ class _ArrowHighlight:
         self._build_ring()
         self._keep_above_target_window()
         self._start_cycling()
+        _dt = time.perf_counter() - _t0
+        try:
+            import __main__ as _m
+            _m._ctrace(f"arrow at {self.target} built in {_dt:.3f} s")
+        except Exception:
+            pass
+
+    def _give_focus_back(self):
+        """macOS: a little borderless window that appears (a bar of the
+        ring) can take over as the active window — the game window then
+        only wakes up with the next click, and the click on the marked
+        button is lost. Hand the focus straight back to the window the
+        target sits in."""
+        if sys.platform != "darwin":
+            return
+        try:
+            top = self.target.winfo_toplevel()
+            self.app.root.after(1, top.focus_force)
+            import __main__ as _m
+            _m._ctrace(f"focus handed back to {top}")
+        except Exception:
+            pass
 
     def _target_on_top(self):
         """True when the pointed-at widget sits in an always-on-top window
@@ -3157,7 +3765,8 @@ class _ArrowHighlight:
         if self.side == "right":
             # Sits to the right of the target, pointing left (←).
             w, h = ah + pad * 2, aw + pad * 2
-            self.canvas.configure(width=w, height=h)
+            if self.canvas is not None:
+                self.canvas.configure(width=w, height=h)
             cy = h // 2
             left, right = pad, pad + ah
             pts = [
@@ -3171,7 +3780,8 @@ class _ArrowHighlight:
             ]
         else:
             w, h = aw + pad * 2, ah + pad * 2
-            self.canvas.configure(width=w, height=h)
+            if self.canvas is not None:
+                self.canvas.configure(width=w, height=h)
             cx = w // 2
             top, bottom = pad, pad + ah
             pts = [
@@ -3183,6 +3793,11 @@ class _ArrowHighlight:
                 cx - shaft_hw, top + head_h,
                 cx - aw // 2, top + head_h,           # left head corner
             ]
+        if getattr(self, "_mac", False):
+            host = self.target.winfo_toplevel()
+            self.win = _SnapshotArrow(host, pts, w, h, o, self.COLOR_A)
+            self._main_id = None
+            return
         self._main_id = self.canvas.create_polygon(
             *pts, fill=self.COLOR_A, outline="black",
             width=o, joinstyle="round",
@@ -3218,10 +3833,12 @@ class _ArrowHighlight:
     RING_THICKNESS = 3
 
     def _build_ring(self):
-        """Four thin borderless bars just outside the target, pulsing in
-        step with the arrow, so the pointed-at control is outlined too.
-        Bars (not one big overlay) so nothing ever covers the widget and
-        clicks still reach it."""
+        """Four thin bars lying ON the target's own edge, pulsing in step
+        with the arrow: the box marks exactly what can be clicked, never
+        more (bars outside it reached over the gaps onto the buttons
+        next to it). Laid into the target's window (see _EdgeBar), so they
+        appear together with the arrow, cast no shadow on a Mac and never
+        take the focus; a click on a bar counts as a click on the target."""
         self._ring = []
         try:
             t = self.RING_THICKNESS
@@ -3229,31 +3846,11 @@ class _ArrowHighlight:
             tg.update_idletasks()
             x, y = tg.winfo_rootx(), tg.winfo_rooty()
             w, h = tg.winfo_width(), tg.winfo_height()
-            rects = [
-                (x - t, y - t, w + 2 * t, t),        # top
-                (x - t, y + h, w + 2 * t, t),        # bottom
-                (x - t, y, t, h),                    # left
-                (x + w, y, t, h),                    # right
-            ]
-            for rx, ry, rw, rh in rects:
-                bar = tk.Toplevel(self.app.root)
-                try:
-                    bar.withdraw()
-                    bar.overrideredirect(True)
-                except Exception:
-                    pass
-                _own_by_target_window(bar, tg)
-                if self._target_on_top():
-                    try:
-                        bar.attributes("-topmost", True)
-                    except Exception:
-                        pass
-                bar.configure(bg=self.COLOR_A)
+            host = tg.winfo_toplevel()
+            for rx, ry, rw, rh in _ring_rects(x, y, w, h, t):
+                bar = _EdgeBar(host, tg, self.COLOR_A)
                 bar.geometry(f"{rw}x{rh}+{rx}+{ry}")
-                try:
-                    bar.deiconify()
-                except Exception:
-                    pass
+                bar.deiconify()
                 self._ring.append(bar)
         except Exception:
             pass
@@ -3262,9 +3859,12 @@ class _ArrowHighlight:
         self._step = max(0, min(self.STEPS, step))
         try:
             color = _lerp_color(self.COLOR_A, self.COLOR_B, self._step / self.STEPS)
-            self.canvas.itemconfigure(self._main_id, fill=color)
+            if isinstance(self.win, (_PlacedArrow, _SnapshotArrow)):
+                self.win.set_fill(color)
+            else:
+                self.canvas.itemconfigure(self._main_id, fill=color)
             for bar in getattr(self, "_ring", []):
-                bar.configure(bg=color)
+                _paint_bar(bar, color)
         except Exception:
             self._alive = False
 
@@ -3345,9 +3945,7 @@ class _ArrowHighlight:
             return                       # just placed by __init__
         self._reposition()
         x, y, w, h = geo
-        t = self.RING_THICKNESS
-        rects = [(x - t, y - t, w + 2 * t, t), (x - t, y + h, w + 2 * t, t),
-                 (x - t, y, t, h), (x + w, y, t, h)]
+        rects = _ring_rects(x, y, w, h, self.RING_THICKNESS)
         for bar, (rx, ry, rw, rh) in zip(getattr(self, "_ring", []) or [], rects):
             try:
                 bar.geometry(f"{rw}x{rh}+{rx}+{ry}")
@@ -3452,6 +4050,14 @@ def _ensure_rich_status_widget(app):
 
 def _show_rich_status_widget(app):
     txt = _ensure_rich_status_widget(app)
+    # Already showing: nothing to do (this runs for every typed letter;
+    # placing, raising and re-centring each time cost a lot on a Mac)
+    try:
+        if getattr(txt, "_placed", False) and txt.winfo_ismapped():
+            return txt
+    except Exception:
+        pass
+    txt._shown = None
     # Stretched to exactly cover status_msg_row (matching the real
     # status_msg Label's own fill="both"/expand=True sizing) rather than
     # a shorter, vertically-centered band — a shorter band left slivers
@@ -3467,6 +4073,7 @@ def _show_rich_status_widget(app):
     except Exception:
         pass
     _center_text_vertically(txt)
+    txt._placed = True
     return txt
 
 
@@ -3510,6 +4117,8 @@ def _hide_rich_status_widget(app):
         txt.configure(state="disabled")
     except Exception:
         pass
+    txt._shown = None
+    txt._placed = False
     try:
         txt.place_forget()
     except Exception:
@@ -3582,8 +4191,42 @@ def _is_shortcut(word):
     return word in _SHORTCUT_WORDS or word in _BIG_GLYPHS
 
 
+def _char_tags(text, words):
+    """The tags of every character of `text` (highlight words matched in
+    the whole line, longest first — so a word has its colour from its
+    first typed letter on, instead of changing once it is complete)."""
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        matched = next((w for w in words if text.startswith(w, i)), None)
+        if matched:
+            if matched in _BIG_GLYPHS:
+                tags = ("base", "highlight", "big")
+            elif _is_shortcut(matched):
+                tags = ("base", "highlight")
+            else:
+                tags = ("base", "normal")       # speaker's colour, not black
+            out.extend([tags] * len(matched))
+            i += len(matched)
+        else:
+            out.append(("base", "normal"))
+            i += 1
+    return out
+
+
+def _insert_runs(txt, text, tags, start):
+    """Inserts text[start:] with its tags, one insert per run of equal tags."""
+    i, n = start, len(text)
+    while i < n:
+        j = i + 1
+        while j < n and tags[j] == tags[i]:
+            j += 1
+        txt.insert("end", text[i:j], tags[i])
+        i = j
+
+
 def _set_rich_status_text(app, text, highlight_words, left_gutter=0, end_image=None,
-                          color=None):
+                          color=None, full_text=None):
     """Renders `text` into the rich status overlay in the speaker's colour.
     Of highlight_words (matched longest-first so e.g. "Plant All" doesn't
     get swallowed by a shorter "Plant" rule) only keyboard shortcuts
@@ -3593,33 +4236,39 @@ def _set_rich_status_text(app, text, highlight_words, left_gutter=0, end_image=N
     first character via the "base" tag's lmargin1 — used while the "◀"
     back button is showing, so the text doesn't start underneath it."""
     txt = _show_rich_status_widget(app)
-    try:
-        txt.tag_configure("base", lmargin1=left_gutter, lmargin2=left_gutter)
-    except Exception:
-        pass
     words = sorted({w for w in (highlight_words or []) if w}, key=len, reverse=True)
-    try:
-        txt.tag_configure("normal", foreground=color or _SPEAKER_COLORS["cyril"])
-    except Exception:
-        pass
+    # Only what changed is touched: while a line types itself, each new
+    # letter is just added at the end. (Redoing the whole line, its tags
+    # and the buttons for every letter made the frame rate drop, on a
+    # Mac most of all.)
+    look = (left_gutter, color or _SPEAKER_COLORS["cyril"])
+    if getattr(txt, "_look", None) != look:
+        try:
+            txt.tag_configure("base", lmargin1=left_gutter, lmargin2=left_gutter)
+            txt.tag_configure("normal", foreground=look[1])
+        except Exception:
+            pass
+        txt._look = look
+        txt._shown = None
+    plan_src = full_text if (full_text and full_text.startswith(text)) else text
+    plan_key = (plan_src, tuple(words))
+    if getattr(txt, "_plan_key", None) != plan_key:
+        txt._plan_key = plan_key
+        txt._plan = _char_tags(plan_src, words)
+        txt._shown = None
+    tags = txt._plan
+    shown = getattr(txt, "_shown", None)
     try:
         txt.configure(state="normal")
-        txt.delete("1.0", "end")
-        i, n = 0, len(text)
-        while i < n:
-            matched = next((w for w in words if text.startswith(w, i)), None)
-            if matched:
-                if matched in _BIG_GLYPHS:
-                    tags = ("base", "highlight", "big")
-                elif _is_shortcut(matched):
-                    tags = ("base", "highlight")
-                else:
-                    tags = ("base", "normal")       # speaker's colour, not black
-                txt.insert("end", matched, tags)
-                i += len(matched)
-            else:
-                txt.insert("end", text[i], ("base", "normal"))
-                i += 1
+        if (shown is not None and end_image is None and not getattr(txt, "_shown_img", False)
+                and text.startswith(shown)):
+            if len(text) > len(shown):
+                _insert_runs(txt, text, tags, len(shown))
+        else:
+            txt.delete("1.0", "end")
+            _insert_runs(txt, text, tags if len(tags) >= len(text) else _char_tags(text, words), 0)
+        txt._shown = text
+        txt._shown_img = end_image is not None
         if end_image is not None:
             try:
                 txt.image_create("end", image=end_image, padx=_END_IMAGE_PAD, align="center")
@@ -4069,14 +4718,34 @@ class _StatusBarDialogue:
                 text = text + suffix
         img = (self._end_image if self._end_image is not None
                and self._char_pos >= len(self._full_text) else None)
+        full = self._prefix + self._full_text
         try:
             left_gutter = self._gutter_width() if self._line_idx > 0 else 0
             _set_rich_status_text(self.app, text, self._highlight_words, left_gutter,
                                   end_image=img,
-                                  color=_SPEAKER_COLORS.get(str(self._speaker or "").strip().lower()))
+                                  color=_SPEAKER_COLORS.get(str(self._speaker or "").strip().lower()),
+                                  full_text=full)
         except Exception:
             pass
-        self._reposition_buttons(text, img)
+        # ▶ / ◀ are placed once for the line — where the finished line will
+        # end — not moved along with every typed letter (each move made Tk
+        # lay out the window again: a slow, jerky typing on a Mac).
+        typing = self._char_pos < len(self._full_text)
+        pos_text = full if typing else text
+        pos_img = self._end_image if typing else img
+        key = (self._line_idx, pos_text, pos_img is not None,
+               getattr(self, "_auto_advance", None), getattr(self, "_no_skip", None),
+               typing)
+        if key != getattr(self, "_btn_key", None):
+            self._btn_key = key
+            self._reposition_buttons(pos_text, pos_img)
+            if typing:
+                # ▶ only once the last letter of the line is there
+                try:
+                    self._stop_next_pulse()
+                    self.next_btn.place_forget()
+                except Exception:
+                    pass
 
     def _start_live_readout(self):
         """Re-renders the current line every 300ms so its "live_readout"
@@ -4746,7 +5415,20 @@ class _StatusBarDialogue:
 
     def _bind_arrow_dismiss_on_click(self, widget):
         def _on_click(event=None):
-            _clear_dialogue_arrow(self)
+            # Not right here, during the press: taking the arrow down (on a
+            # Mac: its many strips) held up the click itself — the button
+            # only answered seconds later. The click goes first.
+            # (only the arrow of this click: the click may already have
+            # moved the dialogue on to a line with an arrow of its own)
+            mine = getattr(self, "_active_arrow", None)
+
+            def _later():
+                if mine is not None and getattr(self, "_active_arrow", None) is mine:
+                    _clear_dialogue_arrow(self)
+            try:
+                widget.after(120, _later)
+            except Exception:
+                _later()
 
         try:
             bind_id = widget.bind("<Button-1>", _on_click, add="+")
