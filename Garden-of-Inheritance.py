@@ -6350,8 +6350,9 @@ class GardenApp(InspectorMixin):
             return False
 
     def _dead_plant_photo(self, plant):
-        """A dead plant in the drawn styles: its last picture, dried to
-        straw and brown and collapsed onto the ground. None for the classic
+        """A dead plant in the drawn styles: the plant as it was when it
+        died, but dried out — brown, shrivelled, its leaves hanging limp and
+        its top bowed over (pea_render's dead mode). None for the classic
         pictures (nothing is shown) or a plant that never came up."""
         if plant is None or getattr(self, "_plant_style", DEFAULT_PLANT_STYLE) == "classic":
             return None
@@ -6359,60 +6360,38 @@ class GardenApp(InspectorMixin):
         if cached is not None:
             return cached
         try:
-            from PIL import ImageOps
             import pea_render as _pr
-            base = plant.__dict__.get("_grown_pil")
             gargs = plant.__dict__.get("_grown_args") or {}
+            if not gargs and int(getattr(plant, "stage", 0) or 0) < 2:
+                return None                        # never came up: nothing to show
             staked = bool(gargs.get("staked")) or getattr(self, "_plant_style", "") in (
                 "grown_staked", "grown_staked_painted")
-            if staked and int(getattr(plant, "stage", 0) or 0) >= 3:
-                # the remains are drawn without the stake: it keeps standing
-                try:
-                    a2 = dict(gargs) if gargs else None
-                    if a2:
-                        a2["staked"] = False
-                        base = self._grown_pil_render(plant, a2, _plant_px())
-                except Exception:
-                    pass
-            else:
-                staked = False
-            if base is None:
-                if int(getattr(plant, "stage", 0) or 0) < 2:
-                    return None                    # never came up: nothing to show
-                import pea_render as _pr
-                args = plant.__dict__.get("_grown_args") or dict(
-                    age=round(self._grown_model_age(plant) * 2) / 2.0, pods_visible=None,
-                    marks=None, late=None, painterly=False, sickness=1.0, flowers_max=None,
-                    flipped=bool(getattr(plant, "flipped_horizontally", False)),
-                    tint=(False, False, False))
-                base = self._grown_pil_render(plant, args, _plant_px())
-            im = base.convert("RGBA")
-            bb = im.getbbox()
-            if not bb:
+            staked = staked and int(getattr(plant, "stage", 0) or 0) >= 3
+            args = dict(gargs) if gargs else dict(
+                age=round(self._grown_model_age(plant) * 2) / 2.0, pods_visible=None,
+                marks=None, late=None, painterly=getattr(self, "_plant_style", "").endswith(
+                    "painted"), flowers_max=None,
+                flipped=bool(getattr(plant, "flipped_horizontally", False)))
+            args.update(dead=True, staked=False, sickness=0.0, tint=(False, False, False),
+                        tframe=0)
+            w = _plant_px()
+            im = self._grown_pil_render(plant, args, w).convert("RGBA")
+            if not im.getbbox():
                 return None
-            w, h = im.size
-            part = im.crop(bb)
-            alpha = part.getchannel("A")
-            dry = ImageOps.colorize(part.convert("L"), black="#3a2814", mid="#7a5a30",
-                                    white="#c8ab72").convert("RGBA")
-            dry.putalpha(alpha)
-            bw, bh = part.size
-            nh = max(6, int(bh * 0.34))
-            nw = min(w, int(bw * 1.15))
-            flat = dry.resize((nw, nh), Image.LANCZOS)
-            out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            out = Image.new("RGBA", im.size, (0, 0, 0, 0))
             if staked:
                 # the stake still stands (weathered), behind the dry remains
                 try:
                     st = _pr.stake_layer(dict(getattr(plant, "traits", {}) or {}),
-                                         _pr.variant_seed(getattr(plant, "id", 0)), gargs, w)
+                                         _pr.variant_seed(getattr(plant, "id", 0)), gargs,
+                                         im.width)
                     if st is not None:
                         if gargs.get("flipped"):
                             st = st.transpose(Image.FLIP_LEFT_RIGHT)
                         out.alpha_composite(st)
                 except Exception:
                     pass
-            out.alpha_composite(flat, (max(0, (w - nw) // 2), max(0, bb[3] - nh)))
+            out.alpha_composite(im)
             photo = ImageTk.PhotoImage(out)
             plant.__dict__["_dead_photo"] = photo
             return photo
@@ -12246,6 +12225,240 @@ class GardenApp(InspectorMixin):
 # ============================================================================
 # Event Handlers
 # ============================================================================
+    # ------------------------------------------------------------------
+    # Genotype Viewer ▸ Chromosome map
+    # ------------------------------------------------------------------
+    # Pea's seven chromosomes with the genes of Mendel's seven traits,
+    # after Feng et al. 2025, Nature, Extended Data Fig. 1 (ZW6 reference
+    # genome). Chromosome lengths and gene positions are read off that
+    # figure (or given in its text) and rounded: a picture, not a map to
+    # navigate by.
+    _CHROM_PAPER = ("Feng, C. et al. Genomic and genetic insights into Mendel's pea genes. "
+                    "Nature (2025). doi:10.1038/s41586-025-08891-6")
+    # number: (length in Mb, centromere at this share of the length, linkage group)
+    _CHROMS = {1: (508, 0.42, "LG VI"), 2: (508, 0.58, "LG I"), 3: (538, 0.89, "LG V"),
+               4: (515, 0.75, "LG IV"), 5: (643, 0.62, "LG III"), 6: (546, 0.43, "LG II"),
+               7: (566, 0.77, "LG VII")}
+    # (chromosome, Mb, gene, trait key, trait, what the gene is, what the recessive allele is)
+    _MENDEL_LOCI = [
+        (1, 381, "P", "pod_shape", "Pod shape (parchment)",
+         "PsCLE41 — a small signalling peptide (TDIF) that lets the pod wall "
+         "build its stiff parchment layer", "p: a premature stop codon"),
+        (2, 498, "I", "seed_color", "Seed colour",
+         "PsSGR — Mg-dechelatase, the enzyme that breaks down chlorophyll as the "
+         "seed ripens (the 'stay-green' gene)",
+         "i: a retrotransposon insertion, or a deletion in its promoter"),
+        (3, 105, "R", "seed_shape", "Seed shape",
+         "PsSBE1 — starch branching enzyme I", "r: a 1 kb transposon (Ips-r) insertion"),
+        (3, 288, "Gp", "pod_color", "Pod colour",
+         "ChlG — chlorophyll synthase", "gp: a 100 kb deletion just upstream disturbs it"),
+        (4, 19, "Fa", "flower_position", "Flower position",
+         "PsCIK2/3 — a receptor kinase that keeps the shoot tip in shape",
+         "fa: a 5 bp deletion (the shoot tip widens: flowers bunch at the top)"),
+        (5, 628, "V", "pod_shape", "Pod shape (parchment)",
+         "PsMYB26 — a MYB transcription factor for the pod's stiff inner layer",
+         "v: an Ogre retrotransposon inserted upstream"),
+        (5, 640, "Le", "plant_height", "Plant height",
+         "GA 3-oxidase 1 — makes the growth hormone gibberellin",
+         "le: a single amino-acid change (Ala229Thr)"),
+        (6, 97, "A", "flower_color", "Flower colour",
+         "a bHLH transcription factor that switches on the purple anthocyanins",
+         "a: a splice-site mutation (G to A)"),
+        (6, 289, "Mfa", "flower_position", "Flower position (modifier)",
+         "'modifier of fa' — the gene itself is not yet known",
+         "fa/fa plants that are also mfa/mfa look normal"),
+    ]
+    _LINKS = {("V", "Le"): "V and Le lie close together on chromosome 5: in this game "
+                           "they are linked (about 12.6 % recombination).",
+              ("R", "Gp"): "R and Gp share chromosome 3: in this game they are loosely "
+                           "linked (about 30 % recombination)."}
+
+    def _add_chromosome_map_tab(self, nb, plant=None):
+        """An extra Genotype Viewer tab: the seven pea chromosomes, a dot
+        for each gene of Mendel's traits; resting the mouse on a dot (or
+        its name) tells the trait, the gene and what its recessive allele
+        is — and, once the genotype has been revealed, this plant's alleles."""
+        BG = getattr(self, "INSPECTOR_BG", "#FAF4E0")
+        INK, MUTED, RUST = "#2D1A0A", "#7A6040", "#7D3C1A"
+        PASTEL = ["#F6C8C2", "#F8DDB0", "#F3EAA8", "#CDE8B5", "#BFE3E0", "#C9D4F2", "#E2CDEE"]
+        EDGE = ["#C98F86", "#C9A46E", "#BFAE5C", "#8FB878", "#7FB2AE", "#8E9CC8", "#A98BBF"]
+
+        tab = tk.Frame(nb, bg=BG)
+        nb.add(tab, text="Chromosome map")
+        tk.Label(tab, text="Where Mendel's genes sit on the seven pea chromosomes",
+                 font=("Segoe UI", _ufont(13), "bold"), bg=BG, fg=INK
+                 ).pack(anchor="w", padx=14, pady=(12, 0))
+        tk.Label(tab, text="Rest the mouse on a gene to see its trait and what it does.",
+                 font=("Segoe UI", _ufont(11), "italic"), bg=BG, fg=MUTED
+                 ).pack(anchor="w", padx=14)
+
+        col_w, top_m, bot_m = _uf(116), _uf(52), _uf(16)
+        H = _uf(420)
+        W = col_w * 7 + _uf(20)
+        cv = tk.Canvas(tab, width=W, height=H, bg=BG, highlightthickness=0, bd=0)
+        cv.pack(padx=10, pady=(6, 0))
+        tab._imgs = []
+        mb_px = (H - top_m - bot_m) / 650.0
+        cap_w = _uf(26)
+
+        def rrect(x0, y0, x1, y1, r, **kw):
+            r = min(r, (x1 - x0) / 2, (y1 - y0) / 2)
+            pts = [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
+                   x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0]
+            return cv.create_polygon(pts, smooth=True, **kw)
+
+        def icon(trait_key):
+            try:
+                path = {"pod_shape": pod_shape_icon_path("inflated", "green"),
+                        "pod_color": pod_shape_icon_path("inflated", "green"),
+                        "flower_position": flower_icon_path("axial", "purple")
+                        or trait_icon_path("flower_position", "axial"),
+                        "flower_color": trait_icon_path("flower_color", "purple"),
+                        "plant_height": trait_icon_path("plant_height", "tall"),
+                        "seed_color": trait_icon_path("seed_color", "yellow"),
+                        "seed_shape": trait_icon_path("seed_shape", "round"),
+                        }.get(trait_key)
+                if not path or not os.path.isfile(path):
+                    return None
+                im = Image.open(path).convert("RGBA")
+                bb = im.getbbox()
+                if bb:
+                    im = im.crop(bb)
+                n = _uf(34) * (1.3 if trait_key.startswith("pod") else 1.0)  # (long, thin)
+                k = n / max(im.width, im.height)
+                im = im.resize((max(1, int(im.width * k)), max(1, int(im.height * k))),
+                               Image.LANCZOS)
+                ph = ImageTk.PhotoImage(im, master=tab)
+                tab._imgs.append(ph)
+                return ph
+            except Exception:
+                return None
+
+        # ---- the chromosomes ------------------------------------------------
+        cx_of = {}
+        for n_, (length, cen, lg) in self._CHROMS.items():
+            cx = _uf(10) + col_w * (n_ - 1) + col_w // 2 - _uf(18)
+            cx_of[n_] = cx
+            y0, y1 = top_m, top_m + length * mb_px
+            yc = y0 + cen * (y1 - y0)
+            fill, edge = PASTEL[n_ - 1], EDGE[n_ - 1]
+            neck = _uf(5)
+            rrect(cx - cap_w / 2, y0, cx + cap_w / 2, yc - neck, cap_w / 2,
+                  fill=fill, outline=edge, width=2)
+            rrect(cx - cap_w / 2, yc + neck, cx + cap_w / 2, y1, cap_w / 2,
+                  fill=fill, outline=edge, width=2)
+            cv.create_rectangle(cx - _uf(5), yc - neck - 2, cx + _uf(5), yc + neck + 2,
+                                fill=fill, outline=edge, width=2)
+            cv.create_rectangle(cx - _uf(5) + 2, yc - neck - 4, cx + _uf(5) - 1, yc + neck + 4,
+                                fill=fill, outline="")
+            # a few soft bands, like a stained chromosome
+            for k_ in range(1, 9):
+                yb = y0 + (y1 - y0) * k_ / 9.0
+                if abs(yb - yc) < neck + _uf(8) or yb < y0 + cap_w / 2 or yb > y1 - cap_w / 2:
+                    continue
+                cv.create_line(cx - cap_w / 2 + 4, yb, cx + cap_w / 2 - 4, yb,
+                               fill=edge, width=max(1, _uf(3) if k_ % 2 else 1))
+            cv.create_text(cx, _uf(14), text=f"Chr {n_}", font=("Segoe UI", _ufont(12), "bold"),
+                           fill=INK)
+            cv.create_text(cx, _uf(32), text=lg, font=("Segoe UI", _ufont(10)), fill=MUTED)
+        # scale bar: 100 Mb
+        sx = W - _uf(14)
+        cv.create_line(sx, H - bot_m - 100 * mb_px, sx, H - bot_m, fill=MUTED, width=2)
+        cv.create_text(sx - _uf(4), H - bot_m - 50 * mb_px, text="100 Mb", angle=90,
+                       font=("Segoe UI", _ufont(9)), fill=MUTED, anchor="s")
+
+        # ---- the genes -----------------------------------------------------
+        geno = getattr(plant, "genotype", None) if plant is not None else None
+        revealed = bool(getattr(self, "_genotype_revealed", False))
+        tip = {"w": None}
+
+        def hide_tip(e=None):
+            if tip["w"] is not None:
+                try:
+                    tip["w"].destroy()
+                except Exception:
+                    pass
+                tip["w"] = None
+
+        def show_tip(e, loc):
+            hide_tip()
+            chrom, mb, gene, tkey, trait, what, rec = loc
+            lines = [f"{trait}  ·  gene {gene}", what, rec,
+                     f"Chromosome {chrom}, about {mb} Mb from its top end"]
+            for (g1, g2), txt in self._LINKS.items():
+                if gene in (g1, g2):
+                    lines.append(txt)
+            if revealed and isinstance(geno, dict) and gene in geno:
+                pair = geno.get(gene) or ("?", "?")
+                lines.append(f"This plant: {pair[0]}/{pair[1]}")
+            w = tk.Toplevel(cv)
+            w.wm_overrideredirect(True)
+            try:
+                w.attributes("-topmost", True)
+            except Exception:
+                pass
+            fr = tk.Frame(w, bg="#FFFBEA", highlightthickness=1, highlightbackground=RUST)
+            fr.pack()
+            tk.Label(fr, text=lines[0], font=("Segoe UI", _ufont(12), "bold"), bg="#FFFBEA",
+                     fg=RUST, anchor="w", justify="left").pack(fill="x", padx=10, pady=(6, 2))
+            tk.Label(fr, text="\n".join(lines[1:]), font=("Segoe UI", _ufont(11)), bg="#FFFBEA",
+                     fg=INK, anchor="w", justify="left", wraplength=_uf(340)
+                     ).pack(fill="x", padx=10, pady=(0, 7))
+            x, y = e.x_root + 16, e.y_root + 12
+            w.geometry(f"+{x}+{y}")
+            try:
+                _keep_tip_on_screen(w, cv, x, y)
+            except Exception:
+                pass
+            tip["w"] = w
+
+        # labels go to the right of the chromosome; where two genes are close
+        # (V and Le), the first goes to the left
+        placed = {}
+        for i_, loc in enumerate(self._MENDEL_LOCI):
+            chrom, mb, gene, tkey, trait, what, rec = loc
+            cx = cx_of[chrom]
+            y = top_m + mb * mb_px
+            others = [m for (c2, m) in placed.get(chrom, []) if abs(m - mb) * mb_px < _uf(30)]
+            later = [l2 for l2 in self._MENDEL_LOCI[i_ + 1:]
+                     if l2[0] == chrom and abs(l2[1] - mb) * mb_px < _uf(30)]
+            left = bool(others)
+            placed.setdefault(chrom, []).append((chrom, mb))
+            tag = f"loc{i_}"
+            dx = -1 if left else 1
+            lx = cx + dx * (cap_w / 2 + _uf(16))
+            # two genes close together: their names step apart a little
+            ly = y + (_uf(16) if left else (-_uf(16) if later else 0))
+            cv.create_line(cx, y, lx - dx * _uf(8), ly, lx - dx * _uf(2), ly, fill=RUST,
+                           width=2, tags=(tag,))
+            r = _uf(6)
+            cv.create_oval(cx - r, y - r, cx + r, y + r, fill=RUST, outline="white", width=2,
+                           tags=(tag, tag + "dot"))
+            anchor = "e" if left else "w"
+            ph = icon(tkey)
+            tx = lx
+            if ph is not None:
+                cv.create_image(lx, ly, image=ph, anchor=anchor, tags=(tag,))
+                tx = lx + dx * (ph.width() + _uf(3))
+            cv.create_text(tx, ly - _uf(1), text=gene, anchor=anchor, fill=INK,
+                           font=("Segoe UI", _ufont(13), "bold italic"), tags=(tag,))
+            cv.tag_bind(tag, "<Enter>", lambda e, l=loc, t=tag: (
+                cv.itemconfigure(t + "dot", fill="#C0582A"), show_tip(e, l)))
+            cv.tag_bind(tag, "<Leave>", lambda e, t=tag: (
+                cv.itemconfigure(t + "dot", fill=RUST), hide_tip()))
+            cv.tag_bind(tag, "<Motion>", lambda e: tip["w"] is not None and tip["w"].geometry(
+                f"+{e.x_root + 16}+{e.y_root + 12}"))
+        cv.configure(cursor="hand2")
+        tab.bind("<Destroy>", hide_tip, add="+")
+
+        tk.Label(tab, text=("Gene positions after Extended Data Fig. 1 of: " + self._CHROM_PAPER
+                            + ". Chromosome 7 carries none of Mendel's seven genes. "
+                            "Positions are approximate."),
+                 font=("Segoe UI", _ufont(10), "italic"), bg=BG, fg=MUTED, justify="left",
+                 wraplength=W - _uf(10)).pack(anchor="w", padx=14, pady=(6, 10))
+        return tab
+
+
     def _on_genetics(self):
         idx = self.selected_index
         plant = self.tiles[idx].plant if (idx is not None) else None
@@ -13471,6 +13684,12 @@ class GardenApp(InspectorMixin):
                     _add_parent_tab(f"Mother: Plant #{m_id}", m_id)
                 if f_id is not None:
                     _add_parent_tab(f"Father: Plant #{f_id}", f_id)
+
+        # Where the genes sit: an extra tab, for any plant (or none)
+        try:
+            self._add_chromosome_map_tab(nb, plant)
+        except Exception:
+            logging.error("Chromosome map failed", exc_info=True)
 
         # Match the plant inspector's look (cream background, same font
         # family) — applied once, after everything above has built the
@@ -21890,9 +22109,12 @@ class GardenApp(InspectorMixin):
         def keys(rows):
             box = tk.Frame(page, bg=BG)
             box.pack(fill="x", padx=_uf(30), pady=(0, _uf(6)))
-            for r_, (k, text_) in enumerate(rows):
+            for r_, row_ in enumerate(rows):
+                k, text_ = row_[0], row_[1]
+                img_ = row_[2] if len(row_) > 2 else None     # e.g. the sun of »▶▶☀«
+                kw_ = {"image": img_, "compound": "right"} if img_ is not None else {}
                 tk.Label(box, text=k, font=F(12, "bold"), bg=CARD, fg=INK, padx=_uf(8),
-                         pady=1, highlightthickness=1, highlightbackground="#D8C8A0"
+                         pady=1, highlightthickness=1, highlightbackground="#D8C8A0", **kw_
                          ).grid(row=r_, column=0, sticky="w", pady=1)
                 tk.Label(box, text=text_, font=F(12), bg=BG, fg=INK, anchor="w",
                          justify="left", wraplength=wrap() - _uf(200)
@@ -21903,7 +22125,7 @@ class GardenApp(InspectorMixin):
             if not os.path.isfile(path):
                 return
             try:
-                im = Image.open(path).convert("RGB")
+                im = Image.open(path).convert("RGBA")     # see-through stays see-through
                 lim = min(wrap(), _uf(max_w or im.width))
                 if im.width > lim:
                     im = im.resize((lim, max(1, int(im.height * lim / im.width))), Image.LANCZOS)
@@ -21927,7 +22149,7 @@ class GardenApp(InspectorMixin):
             each = int((wrap() - _uf(20) * len(files)) / len(files))
             for n, c in files:
                 try:
-                    im = Image.open(os.path.join(ICONS_DIR, "help", n)).convert("RGB")
+                    im = Image.open(os.path.join(ICONS_DIR, "help", n)).convert("RGBA")
                     lim = min(each, _uf(300))
                     im = im.resize((lim, max(1, int(im.height * lim / im.width))), Image.LANCZOS)
                     ph = ImageTk.PhotoImage(im, master=top)
@@ -21946,8 +22168,8 @@ class GardenApp(InspectorMixin):
         # ---- the chapters -------------------------------------------------
         def ch_start():
             p("You are Gregor Mendel, friar in the monastery garden at Brno. Grow peas, "
-              "cross them by hand, count what their children look like — and find the "
-              "rules of inheritance that Mendel found: the three Mendelian laws.")
+              "cross them by hand, count what their children look like — and discover "
+              "the rules of inheritance.")
             h("New here? Play the tutorial")
             p("Help ▸ Tutorial, or the monastery map at the top left ▸ Tutorial. Abbot "
               "Cyril takes you through everything step by step, in a garden of its own.")
@@ -21976,7 +22198,7 @@ class GardenApp(InspectorMixin):
 
         def ch_care():
             h("How a pea grows")
-            pic("help_stages.png", "Seedling → young plant → budding → flowering → pods → ripe seeds")
+            pic("help_stages.png")
             h("Health")
             p("Shown under the plant as a bar (green → yellow → red) or as four hearts "
               "(Game Settings ▸ Garden beds ▸ Health: show as hearts): one heart for each "
@@ -22006,12 +22228,19 @@ class GardenApp(InspectorMixin):
 
         def ch_time():
             h("The clock")
+            try:
+                sun_ = self._sunny_ff_icon()
+            except Exception:
+                sun_ = None
+            if sun_ is not None:
+                top._imgs.append(sun_)
             keys([
                 ("Space", "Pause / run"),
-                ("⏵1h", "One hour on (button at the top)"),
+                ("⏵1h", "One hour on"),
                 (mod + " + ← / →", "Slower / faster (also " + mod + " + < / >)"),
-                ("F", "Fast Forward: jump days ahead. Press F (or the button) again to stop."),
-                ("☀", "Skip to the next sunny morning"),
+                ("▶▶", "Fast Forward (key F): jump days ahead. Press it again to stop."),
+                (("▶▶", "Skip to the next sunny morning", sun_) if sun_ is not None
+                 else ("▶▶☀", "Skip to the next sunny morning")),
             ])
             h("Weather and seasons")
             p("Each day brings its own weather, from Mendel's own records of Brno. Rain "
@@ -22083,20 +22312,286 @@ class GardenApp(InspectorMixin):
                 "View ▸ Achievements: what you have earned so far.",
             ])
 
+        # A plant of random traits for »The seven traits« — chosen once each
+        # time the Help opens, drawn by the game's own plant painter.
+        _EX_CHOICES = [("flower_color", ("purple", "white")),
+                       ("flower_position", ("axial", "terminal")),
+                       ("plant_height", ("tall", "dwarf")),
+                       ("pod_color", ("green", "yellow")),
+                       ("pod_shape", ("inflated", "constricted")),
+                       ("seed_color", ("yellow", "green")),
+                       ("seed_shape", ("round", "wrinkled"))]
+        top._ex_traits = {k: random.choice(v) for k, v in _EX_CHOICES}
+        top._ex_seed = random.randint(1, 10 ** 6)
+        top._ex_pics = None
+
+        def example_card(parent, icon):
+            tr = top._ex_traits
+            if top._ex_pics is None:
+                import pea_render as _pr
+                # early in flowering: every plant then has open flowers
+                # (later on, some have already dropped theirs)
+                # a healthy-looking one: no leaf damage, and not one of the
+                # plants drawn a touch yellower than the rest
+                try:
+                    f_ = _pr.trait_flags(tr)
+                    for _try in range(40):
+                        pp_ = _pr.PeaPlant(tall=f_["tall"], terminal=f_["terminal"],
+                                           purple=f_["purple"], pod_yellow=f_["pod_yellow"],
+                                           constricted=f_["constricted"], seed=top._ex_seed)
+                        if -0.6 <= pp_.green_var <= 0.15:
+                            break
+                        top._ex_seed = random.randint(1, 10 ** 6)
+                except Exception:
+                    pass
+                # buds, open flowers and a pod at once: the age at which its
+                # first flower has just become a young pod; a fresh bud and an
+                # open flower are added like the re-flowering ones
+                age_ = _pr.model_age(5, 0.4)
+                late_ = None
+                try:
+                    pp_ = _pr.PeaPlant(tall=f_["tall"], terminal=f_["terminal"],
+                                       purple=f_["purple"], pod_yellow=f_["pod_yellow"],
+                                       constricted=f_["constricted"], seed=top._ex_seed)
+                    st_ = sorted(x_[2] for x_ in pp_.flowers(80.0))
+                    if st_:
+                        OA, FD = _pr.OPEN_AFTER, _pr.FLOWER_DAYS
+                        best_ = None
+                        for q_ in range(0, 25):            # no wilting (browning) flowers
+                            a_ = st_[0] + OA + FD + 6.0 + q_ * 0.25   # a well-grown pod
+                            ts_ = [a_ - t_ for t_ in st_]
+                            wilt_ = sum(1 for t_ in ts_ if OA + FD * 0.6 <= t_ < OA + FD)
+                            op_ = any(OA <= t_ < OA + FD * 0.6 for t_ in ts_)
+                            bd_ = any(0 <= t_ < OA for t_ in ts_)
+                            sc_ = wilt_ * 10 - op_ * 2 - bd_
+                            if best_ is None or sc_ < best_[0]:
+                                best_ = (sc_, a_, op_, bd_)
+                        _, age_, has_open, has_bud = best_
+                        # where an added flower goes is fixed by its number (see
+                        # pea_render.render). On axial plants pick numbers that
+                        # put it in a leaf axil part-way up the stem, not on the
+                        # top node — there it would look like a terminal flower.
+                        sids_ = [0, 1]
+                        if not f_["terminal"]:
+                            n_ = pp_.node_count(age_)
+                            ok_ = []
+                            for sid_ in range(200):
+                                rl_ = random.Random(int(pp_.rseed) * 1009 + sid_ * 31)
+                                node_ = rl_.randint(max(1, n_ // 3), max(1, n_))
+                                if 2 <= node_ < n_ and node_ not in [o_[1] for o_ in ok_]:
+                                    ok_.append((sid_, node_))
+                                if len(ok_) == 2:
+                                    break
+                            if ok_:
+                                sids_ = [o_[0] for o_ in ok_] + [o_[0] for o_ in ok_]
+                        late_ = ([] if has_bud else [(2.2, sids_[0])]) + \
+                                ([] if has_open else [(OA + 0.8, sids_[1])])
+                except Exception:
+                    late_ = None
+                im = _pr.plant_image(tr, top._ex_seed, age_, sickness=0.0, late=late_ or None,
+                                     painterly=True, size=192, capture=True)
+                parts_ = None
+                try:
+                    parts_ = _pr.last_parts()
+                except Exception:
+                    pass
+                bb = im.getbbox()
+                if bb:
+                    im = im.crop(bb)
+                    if parts_:
+                        parts_ = tuple(m_.crop(bb) for m_ in parts_)
+                top._ex_pics = [im, parts_]
+            card = tk.Frame(parent, bg=CARD, highlightthickness=1,
+                            highlightbackground="#D8C8A0", padx=_uf(10), pady=_uf(6))
+            tk.Label(card, text="Example", font=F(12, "bold"), bg=CARD, fg=SEL, anchor="w"
+                     ).pack(fill="x")
+            im = top._ex_pics[0]
+            W_, H_ = _uf(260), _uf(186)
+            cv = tk.Canvas(card, width=W_, height=H_, bg=CARD, highlightthickness=0, bd=0)
+            cv.pack()
+            # the plant in the middle, one fixed scale for every plant (a
+            # dwarf one looks small); a tall one fills the height
+            k = _uf(148) / 192.0
+            w2, h2 = max(1, int(im.width * k)), max(1, int(im.height * k))
+            im2 = im.resize((w2, h2), Image.LANCZOS)
+            ph = ImageTk.PhotoImage(im2, master=top)
+            top._imgs.append(ph)
+            px0, py0 = (W_ - w2) / 2.0, H_ - 2 - h2
+
+            # Hovering a trait shows where it is on the plant: that part
+            # glows, the rest fades back (height: the whole plant glows).
+            from PIL import ImageFilter, ImageChops
+            pad_ = _uf(6)
+
+            def glow_pic(mask, fade):
+                big = Image.new("RGBA", (w2 + 2 * pad_, h2 + 2 * pad_), (0, 0, 0, 0))
+                m_ = Image.new("L", big.size, 0)
+                m_.paste(mask.resize((w2, h2), Image.LANCZOS), (pad_, pad_))
+                halo = m_.point(lambda v: 255 if v > 60 else 0).filter(
+                    ImageFilter.MaxFilter(2 * max(1, _uf(2)) + 1)).filter(
+                    ImageFilter.GaussianBlur(max(1.0, _uf(3) * 0.8))).point(
+                    lambda v: min(255, int(v * 2.4)))
+                gl = Image.new("RGBA", big.size, (255, 196, 40, 0))
+                gl.putalpha(halo)
+                big.alpha_composite(gl)
+                plant_ = Image.new("RGBA", big.size, (0, 0, 0, 0))
+                plant_.paste(im2, (pad_, pad_))
+                if fade:
+                    # everything but the part: faded towards the card colour
+                    r_, g_, b_, a_ = plant_.split()
+                    keep = m_.point(lambda v: 255 if v > 40 else 0)
+                    pale = Image.merge("RGBA", (r_, g_, b_, a_.point(lambda v: int(v * 0.35))))
+                    plant_ = Image.composite(plant_, pale, keep)
+                big.alpha_composite(plant_)
+                return ImageTk.PhotoImage(big, master=top)
+            hl_ = {}
+            try:
+                parts_ = top._ex_pics[1] if len(top._ex_pics) > 1 else None
+                hl_["all"] = glow_pic(im.getchannel("A"), False)
+                if parts_:
+                    hl_["fl"] = glow_pic(parts_[0], True)
+                    hl_["pod"] = glow_pic(parts_[1], True)
+                top._imgs.extend(hl_.values())
+            except Exception:
+                logging.debug("Example highlights failed", exc_info=True)
+
+            # (icon, its word, unused) — left: what is on
+            # the plant; right: what its flowers will give (pods, seeds)
+            left = [(trait_icon_path("flower_color", tr["flower_color"]), 1.0,
+                     tr["flower_color"], "fl"),
+                    (flower_icon_path(tr["flower_position"], tr["flower_color"])
+                     or trait_icon_path("flower_position", tr["flower_position"]), 1.0,
+                     tr["flower_position"], "fl"),
+                    (trait_icon_path("plant_height", "short" if tr["plant_height"] == "dwarf"
+                                     else "tall"),
+                     0.6 if tr["plant_height"] == "dwarf" else 1.0,
+                     tr["plant_height"], "all")]
+            right = [(pod_shape_icon_path(tr["pod_shape"], tr["pod_color"]), 1.5,
+                      tr["pod_shape"], "pod"),         # (its colour shows in the icon)
+                     (trait_icon_path("seed_color", tr["seed_color"]), 1.0,
+                      tr["seed_color"], "pod"),          # (the seeds grow in the pods)
+                     (trait_icon_path("seed_shape", tr["seed_shape"]), 1.0,
+                      tr["seed_shape"], "pod")]
+            rows_y = [_uf(20), _uf(84), _uf(148)]
+            placed_ = []
+            for side_, items in ((-1, left), (1, right)):
+                ix = _uf(34) if side_ < 0 else W_ - _uf(34)
+                for (path_, frac_, word, part), iy in zip(items, rows_y):
+                    placed_.append((path_, frac_, word, ix, iy, part))
+            plant_item = cv.create_image(px0, py0, image=ph, anchor="nw")
+
+            def show(part):
+                p_ = hl_.get(part) if part else None
+                if p_ is not None:
+                    cv.itemconfigure(plant_item, image=p_)
+                    cv.coords(plant_item, px0 - pad_, py0 - pad_)
+                else:
+                    cv.itemconfigure(plant_item, image=ph)
+                    cv.coords(plant_item, px0, py0)
+            # the icons and their words on either side of the plant
+            for n_, (path_, frac_, word, ix, iy, part) in enumerate(placed_):
+                tag_ = "ex%d" % n_
+                ph_ = icon(path_, 0.76 * frac_)
+                if ph_ is not None:
+                    cv.create_image(ix, iy, image=ph_, tags=(tag_,))
+                t_ = cv.create_text(ix, iy + _uf(19), text=word, anchor="n", justify="center",
+                                    font=F(9), fill=INK, tags=(tag_,))
+                bb = cv.bbox(t_)
+                if bb and (bb[2] > W_ - 1 or bb[0] < 1):      # keep long words inside
+                    cv.move(t_, (W_ - 1 - bb[2]) if bb[2] > W_ - 1 else (1 - bb[0]), 0)
+                    bb = cv.bbox(t_)
+                if bb:
+                    bg_ = cv.create_rectangle(bb[0] - 2, bb[1], bb[2] + 2, bb[3], fill=CARD,
+                                              outline="", tags=(tag_,))
+                    cv.tag_lower(bg_, t_)
+                if part in hl_:
+                    cv.tag_bind(tag_, "<Enter>", lambda e, p_=part: (show(p_),
+                                                                    cv.configure(cursor="hand2")))
+                    cv.tag_bind(tag_, "<Leave>", lambda e: (show(None),
+                                                           cv.configure(cursor="")))
+            return card
+
         def ch_traits():
-            p("Mendel followed seven traits, each with two forms. The first form is "
-              "dominant: it shows whenever the plant carries it at all.")
-            pic("help_traits_plants.png")
-            pic("help_traits_pods.png")
-            keys([
-                ("Flower colour", "purple > white"),
-                ("Flower position", "axial (along the stem) > terminal (at the top)"),
-                ("Plant height", "tall > dwarf"),
-                ("Pod colour", "green > yellow"),
-                ("Pod shape", "inflated > constricted"),
-                ("Seed colour", "yellow > green"),
-                ("Seed shape", "round > wrinkled"),
-            ])
+            p("Mendel followed seven traits, each with two forms. The dominant form shows "
+              "whenever the plant carries it at all; the recessive one only when the plant "
+              "carries nothing else.")
+
+            def icon(path, frac=1.0):
+                try:
+                    if path and os.path.isfile(path):
+                        im = Image.open(path).convert("RGBA")
+                        bb = im.getbbox()                 # trim empty borders
+                        if bb:
+                            im = im.crop(bb)
+                        n = _uf(44) * frac
+                        k = n / max(im.width, im.height)  # up or down to n
+                        im = im.resize((max(1, int(im.width * k)), max(1, int(im.height * k))),
+                                       Image.LANCZOS)
+                        ph = ImageTk.PhotoImage(im, master=top)
+                        top._imgs.append(ph)
+                        return ph
+                except Exception:
+                    pass
+                return None
+
+            # (the same pictures as the selected plant's »Traits« panel)
+            rows_ = [
+                ("Flower colour", trait_icon_path("flower_color", "purple"), "purple",
+                 trait_icon_path("flower_color", "white"), "white"),
+                ("Flower position",
+                 flower_icon_path("axial", "purple") or trait_icon_path("flower_position", "axial"),
+                 "axial",
+                 flower_icon_path("terminal", "purple") or trait_icon_path("flower_position", "terminal"),
+                 "terminal"),
+                ("Plant height", trait_icon_path("plant_height", "tall"), "tall",
+                 (trait_icon_path("plant_height", "short"), 0.55), "dwarf"),
+                # (pods are long and thin: drawn 1.5x larger to be seen)
+                ("Pod colour", (pod_shape_icon_path("inflated", "green"), 1.5), "green",
+                 (pod_shape_icon_path("inflated", "yellow"), 1.5), "yellow"),
+                ("Pod shape", (pod_shape_icon_path("inflated", "green"), 1.5), "inflated",
+                 (pod_shape_icon_path("constricted", "green"), 1.5), "constricted"),
+                ("Seed colour", trait_icon_path("seed_color", "yellow"), "yellow",
+                 trait_icon_path("seed_color", "green"), "green"),
+                ("Seed shape", trait_icon_path("seed_shape", "round"), "round",
+                 trait_icon_path("seed_shape", "wrinkled"), "wrinkled"),
+            ]
+            grid_ = tk.Frame(page, bg=BG)
+            grid_.pack(padx=_uf(22), pady=(_uf(4), _uf(6)))
+            two = wrap() >= _uf(620)          # two cards side by side when there's room
+            for i_, (name_, dpath, dval, rpath, rval) in enumerate(rows_):
+                card = tk.Frame(grid_, bg=CARD, highlightthickness=1,
+                                highlightbackground="#D8C8A0", padx=_uf(10), pady=_uf(6))
+                r_, c_ = (i_ // 2, i_ % 2) if two else (i_, 0)
+                card.grid(row=r_, column=c_, padx=_uf(6), pady=_uf(5), sticky="nsew")
+                tk.Label(card, text=name_, font=F(12, "bold"), bg=CARD, fg=SEL
+                         ).grid(row=0, column=0, columnspan=3, sticky="w")
+                for col_, (path_, val_, role_) in ((0, (dpath, dval, "dominant")),
+                                                   (2, (rpath, rval, "recessive"))):
+                    cell = tk.Frame(card, bg=CARD)
+                    cell.grid(row=1, column=col_, padx=_uf(6), pady=(_uf(2), 0))
+                    # (a picture may come with a size: the dwarf plant is
+                    # drawn smaller than the tall one, standing on the same ground)
+                    ph = icon(*path_) if isinstance(path_, tuple) else icon(path_)
+                    if ph is not None:
+                        tk.Label(cell, image=ph, bg=CARD, width=max(_uf(48), ph.width()),
+                                 height=_uf(48), anchor="s").pack()
+                    tk.Label(cell, text=val_, font=F(12, "bold"), bg=CARD, fg=INK).pack()
+                    tk.Label(cell, text=role_, font=F(10, "italic"), bg=CARD, fg=MUTED).pack()
+                tk.Label(card, text=">", font=F(18, "bold"), bg=CARD, fg=SEL
+                         ).grid(row=1, column=1, padx=_uf(8))
+            # ---- one plant as an example (a new one each time Help opens) --
+            try:
+                ex = example_card(grid_, icon)
+                if ex is not None:
+                    if two:
+                        ex.grid(row=3, column=1, padx=_uf(6), pady=_uf(5), sticky="nsew")
+                    else:
+                        ex.grid(row=len(rows_), column=0, padx=_uf(6), pady=_uf(5), sticky="nsew")
+            except Exception:
+                logging.error("Help example plant failed", exc_info=True)
+            if two:
+                grid_.grid_columnconfigure(0, weight=1, uniform="tr")
+                grid_.grid_columnconfigure(1, weight=1, uniform="tr")
             p("Seed colour and shape can be seen as soon as the seeds are harvested; the "
               "others once the plant grows.", muted=True)
 

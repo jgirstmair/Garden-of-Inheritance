@@ -35,6 +35,16 @@ PAINTERLY = True     # soft, hand-painted polish (set per call by plant_image)
 STAKED = False       # "staked" style: support stake, smaller pods, soft outline
 TENDRIL_FRAME = 0    # 0 = tendrils at rest; 1, 2 = tips bent a little (see render)
 TENDRIL_FRAMES = 3
+# Dead plant: the plant as it was, but dried out — every part brown and
+# shrivelled, leaves hanging limp against the stem, the top bowed over.
+DEAD = False
+DEAD_LEAF = ((150, 112, 58, 255), (118, 84, 42, 255), (172, 138, 80, 255), (96, 68, 36, 255))
+DEAD_STEM = (122, 92, 50, 255)
+DEAD_THIN = (110, 84, 48, 255)          # tendrils and stalks
+DEAD_FLOWER = (140, 104, 70, 255)
+# capture=True (plant_image): the buds/flowers and the pods are also kept
+# as masks, so a picture can show where they are (see last_parts()).
+CAPTURE = False
 TENDRIL_AMP = 0.55   # how far a tendril tip may bend (radians, roughly)
 
 # ---------------------------------------------------------------- colours
@@ -239,6 +249,20 @@ def leaf(d, x, y, ang, length, width, col, back=False):
         d = _layers["back"]
     ang += wiggle()
     dmg, rng = _leaf_damage()
+    if DEAD:
+        # shrivelled to a narrow brown strip, hanging down along the stem
+        r_ = rng or random.Random(int(x) * 31 + int(y))
+        col = mix(r_.choice(DEAD_LEAF), DRY_DARK, r_.random() * 0.25)
+        width *= r_.uniform(0.30, 0.42)
+        length *= r_.uniform(0.70, 0.82)
+        tgt = (math.pi / 2 + 0.22) - 2 * math.pi if math.cos(ang) < 0 else math.pi / 2 - 0.22
+        ang += (tgt - ang) * r_.uniform(0.55, 0.72)
+        shape = leaf_shape(x, y, ang, length, width)
+        poly(d, shape, col)
+        x1, y1 = x + math.cos(ang) * length * 0.15, y + math.sin(ang) * length * 0.15
+        x2, y2 = x + math.cos(ang) * length * 0.8, y + math.sin(ang) * length * 0.8
+        d.line((x1, y1, x2, y2), fill=mix(col, (60, 40, 20, 255), 0.45), width=max(1, SS - 1))
+        return
     if dmg == "dry":
         # dried leaf: brown, a bit shrivelled and curled
         col = mix(DRY, DRY_DARK, rng.random() * 0.5)
@@ -286,12 +310,11 @@ STRING = (222, 206, 164, 255)
 
 
 def _draw_stake(d, plant, cx, ground, nodes, old=0.0):
-    """A slim wooden stake beside the stem — the same long one for dwarf
-    plants as for tall ones (the gardener doesn't cut a shorter stake)."""
+    """A slim wooden stake (dwarfs: a short twig) beside the stem."""
     r = random.Random(int(getattr(plant, "rseed", 0) or 0) * 17 + 3)
     side = r.choice((-1, 1))
     x0 = cx + side * r.uniform(4.5, 5.5) * SS
-    top_h = S * 0.80
+    top_h = (S * 0.80) if plant.tall else (S * 0.40)
     lean = side * r.uniform(0.0, 1.2) * SS
     x1 = x0 + lean
     y0 = ground + 1.5 * SS
@@ -364,12 +387,22 @@ def render(plant, age, phase=0.0, pods_visible=None, sickness=0.0, flowers_max=N
     ground = HS - 6 * SS
     cx = S // 2
     _layers["crumbs"] = (plant, cx, ground)      # drawn in _finish, in front of the stem foot
+    _layers.pop("cap_mask", None)
+    _layers["parts_out"] = None
+    if CAPTURE:
+        for k_ in ("fl", "pod"):
+            im_ = Image.new("RGBA", (S, HS), (0, 0, 0, 0))
+            _layers["cap_%s_img" % k_] = im_
+            _layers["cap_" + k_] = ImageDraw.Draw(im_)
 
     old = max(0.0, min(1.0, (age - SENESCE) / 18.0))
     gv = plant.green_var
     base_leaf = mix(LEAF, (110, 170, 70, 255) if gv > 0 else (60, 128, 84, 255), abs(gv) * 0.45)
     leaf_col = mix(base_leaf, LEAF_OLD, old)
     stem_col = mix(STEM, LEAF_OLD, old * 0.7)
+    if DEAD:
+        _sick["level"] = 1.0                 # (gives every leaf its own fixed dice)
+        stem_col = DEAD_STEM
 
     # The seed it grew from, in its seed colour (yellow or green),
     # lies at the foot of the plant until the shoot is up.
@@ -414,6 +447,16 @@ def render(plant, age, phase=0.0, pods_visible=None, sickness=0.0, flowers_max=N
         y -= seg
         nodes.append((x, y))
 
+    if DEAD:
+        # sagged: a little lower, and the upper part bowed over to one side
+        bow = 1 if (int(getattr(plant, "rseed", 0) or 0) % 2) else -1
+        h0 = max(1.0, ground - nodes[-1][1])
+        nn = []
+        for nx_, ny_ in nodes:
+            f_ = max(0.0, (ground - ny_) / h0)
+            nn.append((nx_ + bow * (f_ ** 2.2) * min(9 * SS, 0.1 * h0), ground - (ground - ny_) * 0.86))
+        nodes = nn
+
     # Never grow out of the picture: leave room above the top for the
     # growing tip / flowers and squeeze the stem pieces if needed.
     room = 16 * SS
@@ -432,7 +475,7 @@ def render(plant, age, phase=0.0, pods_visible=None, sickness=0.0, flowers_max=N
             _draw_stake(ImageDraw.Draw(sl), plant, cx, ground, [], max(old, 0.7))
 
     # Stem (thicker at the base)
-    thick_line(d, nodes, stem_col, 3 * SS)
+    thick_line(d, nodes, stem_col, int((2.2 if DEAD else 3) * SS))
 
     seed_leaves(*nodes[1])
 
@@ -463,9 +506,14 @@ def render(plant, age, phase=0.0, pods_visible=None, sickness=0.0, flowers_max=N
             reach = min(1.0, (node_age - 2.5) / 6.0) * size
             pang = -math.pi / 2 + side * (0.8 + 0.25 * droop) + wiggle() * 0.6
             L = 24 * SS * reach * plant.side_reach
+            if DEAD:                           # limp: shorter, hanging down
+                L *= 0.55
+                pang += ((math.pi / 2 - 0.35) - pang if side > 0 else
+                         (math.pi / 2 + 0.35 - 2 * math.pi) - pang) * 0.55
+            thin = DEAD_THIN if DEAD else TENDRIL
             mx, my = nx + math.cos(pang) * L * 0.5, ny + math.sin(pang) * L * 0.5
             ex, ey = nx + math.cos(pang) * L, ny + math.sin(pang) * L
-            d.line((nx, ny, ex, ey), fill=TENDRIL, width=SS)
+            d.line((nx, ny, ex, ey), fill=thin, width=SS)
             for s2 in (-1, 1):
                 leaf(d, mx, my, pang + s2 * 0.85, 12 * SS * reach, 7 * SS * reach,
                      mix(leaf_col, LEAF_HI, 0.15), back=(s2 > 0))
@@ -479,14 +527,14 @@ def render(plant, age, phase=0.0, pods_visible=None, sickness=0.0, flowers_max=N
                                         + int(b * 100) + TENDRIL_FRAME * 7919)
                     o = tr_.uniform(-1.0, 1.0) * TENDRIL_AMP
                 ba = pang + b + o * 0.35
-                bl = 9 * SS * reach
+                bl = 9 * SS * reach * (0.5 if DEAD else 1.0)
                 bx, by = ex + math.cos(ba) * bl, ey + math.sin(ba) * bl
                 pts = [(ex, ey), (bx, by)]
                 for k in range(4):                     # a single loose curl at the tip
                     a = ba + side * (k + 1) * (0.9 + o * 0.45)
                     rr = 2.2 * SS * reach
                     pts.append((pts[-1][0] + math.cos(a) * rr, pts[-1][1] + math.sin(a) * rr))
-                d.line(pts, fill=TENDRIL, width=SS - 1, joint="curve")
+                d.line(pts, fill=thin, width=SS - 1, joint="curve")
 
     # Growing tip: a folded bud of young leaves, as in the video
     if not (plant.terminal and n >= plant.max_nodes - 1) and n < plant.max_nodes:
@@ -508,8 +556,6 @@ def render(plant, age, phase=0.0, pods_visible=None, sickness=0.0, flowers_max=N
         if node > n or age < start:
             continue
         mk = (marks[j] if marks is not None and j < len(marks) else None) or {}
-        if mk.get("removed"):                    # picked off (bud or flower)
-            continue
         if age - start >= OPEN_AFTER + FLOWER_DAYS:
             if mk.get("gone"):                   # dropped (no pod) or already harvested
                 continue
@@ -525,7 +571,12 @@ def render(plant, age, phase=0.0, pods_visible=None, sickness=0.0, flowers_max=N
             ang = -math.pi / 2 + side * (0.6 + 0.45 * slot)
             ln = (9 + 3 * slot) * SS
         fx, fy = nx + math.cos(ang) * ln, ny + math.sin(ang) * ln
-        d.line((nx, ny, fx, fy), fill=OUT, width=SS + 1)        # flower stalk
+        if DEAD:                                     # stalks hang down too
+            ang += ((math.pi / 2 - 0.5) - ang if math.cos(ang) >= 0 else
+                    (math.pi / 2 + 0.5 - 2 * math.pi) - ang) * 0.45
+            ln *= 0.8
+            fx, fy = nx + math.cos(ang) * ln, ny + math.sin(ang) * ln
+        d.line((nx, ny, fx, fy), fill=POD_DRY_OUT if DEAD else OUT, width=SS + 1)  # flower stalk
         _flower_or_pod(d, plant, fx, fy, age - start, ang)
 
     # Re-flowering: new buds where ripe pods were — on the upper nodes,
@@ -549,6 +600,16 @@ def render(plant, age, phase=0.0, pods_visible=None, sickness=0.0, flowers_max=N
         d.line((nx, ny, fx, fy), fill=OUT, width=SS + 1)
         _flower_or_pod(d, plant, fx, fy, float(tm), ang)
 
+    if CAPTURE:
+        # the flowers and pods back onto the picture (on top, as drawn last),
+        # and their outlines as masks: R = buds/flowers, G = pods
+        fl_im, pod_im = _layers.pop("cap_fl_img"), _layers.pop("cap_pod_img")
+        img = Image.alpha_composite(img, fl_im)
+        img = Image.alpha_composite(img, pod_im)
+        z = Image.new("L", img.size, 0)
+        _layers["cap_mask"] = Image.merge("RGBA", (fl_im.getchannel("A"),
+                                                   pod_im.getchannel("A"), z,
+                                                   Image.new("L", img.size, 255)))
     return _finish(img)
 
 
@@ -755,28 +816,48 @@ def _draw_pod(d, plant, fx, fy, side, g, dry):
     d.line(back[2:-2], fill=seam, width=max(1, SS - 1))
     # dry pods: a few darker wrinkles
     if dry > 0.3:
-        # (inside the pod's outline: from just below its back to just above
-        # its belly, following the same bend and width as the pod there)
-        def _edge(u):
-            curve = math.sin(u * math.pi) * 1.8 * SS * g * -side
-            w = math.sin(math.pi * min(1.0, u * 1.06)) ** 0.45 * W
-            if plant.constricted:
-                bump = 0.5 - 0.5 * math.cos(2 * math.pi * n_seeds * u)
-                w *= 0.74 + 0.26 * bump
-            top = curve - W * 0.28
-            return top, w
-        lw = max(1, SS - 1)
         for u in (0.25, 0.45, 0.65, 0.82):
-            u2 = min(0.95, u + 1.5 * SS / max(1.0, L))
-            t1, w1 = _edge(u)
-            t2, w2 = _edge(u2)
-            a_ = P(u * L, t1 + w1 * 0.22 + lw * 0.5)
-            b_ = P(u2 * L, t2 + w2 * 0.78 - lw * 0.5)
-            d.line([a_, b_], fill=mix(col, POD_DRY_OUT, 0.5 * dry), width=lw)
+            a_ = P(u * L, -W * 0.1)
+            b_ = P(u * L + 1.5 * SS, W * 0.45)
+            d.line([a_, b_], fill=mix(col, POD_DRY_OUT, 0.5 * dry), width=max(1, SS - 1))
     _calyx(d, _local(fx, fy, hang), 0.95, col=mix(CALYX, POD_DRY, dry))
 
 
+THREAD = (200, 40, 40, 255)        # red thread: emasculated flower
+TAG = (250, 248, 236, 255)          # small paper tag: pollinated (crossed) flower
+
+
+def _draw_marks(d, nx, ny, fx, fy, mk):
+    """The gardener's marks on a flower stalk, which stay on the pod: a red
+    thread for an emasculated flower, a little white tag for a pollinated
+    one."""
+    mx, my = nx + (fx - nx) * 0.45, ny + (fy - ny) * 0.45
+    if mk.get("e"):
+        r = 1.6 * SS
+        d.ellipse((mx - r, my - r, mx + r, my + r), outline=THREAD, width=SS)
+    if mk.get("p"):
+        tx, ty = mx + 1.5 * SS, my + 1.0 * SS
+        d.line((mx, my, tx, ty), fill=OUT, width=1)
+        w, h = 3.2 * SS, 4.2 * SS
+        d.rectangle((tx - w / 2, ty, tx + w / 2, ty + h), fill=TAG, outline=OUT, width=max(1, SS - 1))
+
+
 def _flower_or_pod(d, plant, fx, fy, t, ang):
+    if CAPTURE:
+        d = _layers["cap_fl"] if t < OPEN_AFTER + FLOWER_DAYS else _layers["cap_pod"]
+    if DEAD and t < OPEN_AFTER + FLOWER_DAYS:
+        # a bud or flower dried on the stalk: a small shrivelled brown husk
+        P = _local(fx, fy, ang + 0.9 * (1 if math.cos(ang) >= 0 else -1))
+        pts = []
+        for i2 in range(13):
+            u = i2 / 12
+            w = math.sin(math.pi * u) ** 0.8 * 2.4 * SS
+            pts.append((u * 8.5 * SS, w))
+        shape = [P(x_, y_) for x_, y_ in pts] + [P(x_, -y_) for x_, y_ in pts[::-1]]
+        tint = (128, 92, 96, 255) if plant.purple else (164, 134, 92, 255)
+        poly(d, shape, mix(DEAD_FLOWER, tint, 0.45), out=POD_DRY_OUT)
+        _calyx(d, P, 0.8, col=DEAD_STEM)
+        return
     if t < OPEN_AFTER:                                   # bud
         _draw_bud(d, plant, fx, fy, ang, t / OPEN_AFTER)
         return
@@ -789,6 +870,8 @@ def _flower_or_pod(d, plant, fx, fy, t, ang):
     g = min(1.0, 0.3 + 0.7 * t / POD_GROW)
     dry = max(0.0, min(1.0, (t - POD_GROW) / POD_DRY_DAYS))
     side = 1 if math.cos(ang) >= 0 else -1
+    if DEAD:
+        g, dry = g * 0.85, max(dry, 0.9)      # shrunk and dried
     _draw_pod(d, plant, fx, fy, side, g, dry)
 
 
@@ -875,11 +958,17 @@ def _finish(img):
             a = a.point(_LUT_BACK_A)
         img = Image.alpha_composite(Image.merge("RGBA", (r, g, b, a)), img)
     sl = _layers.pop("stake_layer", None)
+    cm = _layers.pop("cap_mask", None)
+    if cm is not None:
+        _, cm = _fit(img, cm)          # (the same crop and scale as the picture)
     if sl is not None:
         img, sl = _fit(img, sl)
     else:
         img = _fit(img)
     out_px = int(_layers.get("out_px") or TILE)  # TILE, or larger (e.g. the Inspect window)
+    if cm is not None:
+        cm = cm.resize((out_px, out_px), Image.LANCZOS, reducing_gap=2.0)
+        _layers["parts_out"] = (cm.getchannel("R"), cm.getchannel("G"))
     if sl is not None:
         _layers["stake_out"] = sl.resize((out_px, out_px), Image.LANCZOS, reducing_gap=2.0)
     small = img.resize((out_px, out_px), Image.LANCZOS, reducing_gap=2.0)
@@ -1034,11 +1123,11 @@ def _trait_flags(traits):
 
 def plant_image(traits, seed, age, pods_visible=None, painterly=True, phase=0.0,
                 sickness=0.0, flowers_max=None, size=TILE, marks=None, late=None,
-                staked=False, tframe=0):
+                staked=False, tframe=0, dead=False, capture=False):
     """PIL RGBA picture (TILE x TILE) of a plant with these Mendel traits
     (dict with plant_height, flower_position, flower_color, pod_color,
     pod_shape) at `age` model days."""
-    global PAINTERLY, SS, S, HS, OW, STAKED, TENDRIL_FRAME
+    global PAINTERLY, SS, S, HS, OW, STAKED, TENDRIL_FRAME, DEAD, CAPTURE
     # Bigger pictures (Inspect window, map) are drawn with more detail:
     # the drawing scale follows the output size (3x for a tile, 6x for
     # 128 px), so they are not just a blown-up tile drawing.
@@ -1059,6 +1148,9 @@ def plant_image(traits, seed, age, pods_visible=None, painterly=True, phase=0.0,
     old = PAINTERLY
     old_staked = STAKED
     old_tf = TENDRIL_FRAME
+    old_dead = DEAD
+    DEAD = bool(dead)
+    CAPTURE = bool(capture)
     PAINTERLY = bool(painterly)
     STAKED = bool(staked)
     TENDRIL_FRAME = int(tframe or 0) % TENDRIL_FRAMES
@@ -1072,6 +1164,8 @@ def plant_image(traits, seed, age, pods_visible=None, painterly=True, phase=0.0,
         PAINTERLY = old
         STAKED = old_staked
         TENDRIL_FRAME = old_tf
+        DEAD = old_dead
+        CAPTURE = False
         SS, S, HS, OW = _saved
         _layers["out_px"] = TILE
 
@@ -1082,6 +1176,13 @@ def plant_image(traits, seed, age, pods_visible=None, painterly=True, phase=0.0,
 # Nothing is saved to disk.
 # ---------------------------------------------------------------------------
 VARIANTS = 6                 # plant shapes per trait combination (x2 by mirroring)
+
+
+def last_parts():
+    """After plant_image(..., capture=True): (flowers, pods) as L masks of
+    the picture's size — buds and open flowers, and the pods. None if the
+    last picture wasn't captured."""
+    return _layers.get("parts_out")
 
 
 def variant_seed(plant_id):
@@ -1108,7 +1209,7 @@ def _cache_key(traits, seed, args, size):
         # before the buds, flower and pod traits don't show: share pictures
         purple, pod_y, constr = True, False, False
     seed_y = f["seed_yellow"] if age < GERMINATE + 3 else None
-    mk = tuple((bool(m.get("gone")), bool(m.get("removed")))
+    mk = tuple((bool(m.get("e")), bool(m.get("p")), bool(m.get("gone")))
                for m in (args.get("marks") or ()) if isinstance(m, dict))
     late = tuple(tuple(x) if isinstance(x, (list, tuple)) else (x,)
                  for x in (args.get("late") or ()))
@@ -1119,7 +1220,7 @@ def _cache_key(traits, seed, args, size):
             f["tall"], f["terminal"], purple, pod_y, constr, seed_y, int(seed), age,
             fmax, args.get("pods_visible"), mk, late,
             round(float(args.get("sickness") or 0.0), 3), int(size),
-            int(args.get("tframe", 0) or 0))
+            int(args.get("tframe", 0) or 0), bool(args.get("dead", False)))
 
 
 def _mem_get(key):
@@ -1149,7 +1250,8 @@ def cached_plant_image(traits, seed, args, size, draw=True):
                      pods_visible=args.get("pods_visible"), painterly=args["painterly"],
                      sickness=args["sickness"], flowers_max=args["flowers_max"],
                      size=size, marks=args.get("marks"), late=args.get("late"),
-                     staked=bool(args.get("staked", False)), tframe=int(args.get("tframe", 0) or 0))
+                     staked=bool(args.get("staked", False)), tframe=int(args.get("tframe", 0) or 0),
+                     dead=bool(args.get("dead", False)))
     _mem_put(key, im)
     return im
 
@@ -1202,34 +1304,3 @@ def model_age(stage, frac, days_in_stage7=0.0):
         return STAGE_AGE[7] + min(28.0, max(0.0, days_in_stage7) * 0.8)
     a0, a1 = STAGE_AGE[stage], STAGE_AGE[stage + 1]
     return a0 + (a1 - a0) * max(0.0, min(1.0, frac))
-
-
-def flower_icon(purple=True, size=64, painterly=False):
-    """One pea flower (seen from the side, as in the garden drawings) as a
-    size x size RGBA picture — for windows that show a flower in the
-    drawn plant styles (e.g. the pollen chooser)."""
-    global SS
-    import types as _types
-    _saved = SS
-    try:
-        big = int(size) * 4
-        SS = 4
-        img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        k = big / (24.0 * SS)
-        fake = _types.SimpleNamespace(purple=bool(purple), rseed=3)
-        _draw_flower(d, fake, big * 0.30, big * 0.58, 0.0, k, 0.0)
-        bb = img.getbbox()
-        if bb:
-            img = img.crop(bb)
-        w, h = img.size
-        sc = (size * 0.94) / float(max(w, h, 1))
-        img = img.resize((max(1, int(w * sc)), max(1, int(h * sc))), Image.LANCZOS)
-        if painterly:
-            r, g, b, a = img.split()
-            img = Image.merge("RGBA", (r.point(_LUT_WARM_R), g, b.point(_LUT_WARM_B), a))
-        out = Image.new("RGBA", (int(size), int(size)), (0, 0, 0, 0))
-        out.paste(img, ((size - img.width) // 2, (size - img.height) // 2), img)
-        return out
-    finally:
-        SS = _saved
